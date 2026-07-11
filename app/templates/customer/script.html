@@ -133,27 +133,33 @@
                 <!-- Gemini API Key (only shown when Gemini provider selected) -->
                 <div x-show="provider === 'gemini'" x-cloak>
                     <label for="gemini_api_key" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Gemini API Key</label>
+                    {% if gemini_key_meta %}
+                    <p class="text-xs text-emerald-400 mb-1">✅ Key saved — ends in <code>****{{ gemini_key_meta.last_four }}</code></p>
+                    {% else %}
+                    <p class="text-xs text-amber-400 mb-1">⚠ No key saved — configure your Gemini API key below.</p>
+                    {% endif %}
                     <input type="password" name="gemini_api_key" id="gemini_api_key"
-                           value="{{ settings.gemini_api_key or '' }}"
-                           placeholder="{% if settings.gemini_api_key %}Key saved — leave blank to keep it, or paste a new one to replace{% else %}Paste your Google Gemini API key{% endif %}"
-                           autocomplete="off"
+                           value=""
+                           placeholder="{% if gemini_key_meta %}Enter a new key to replace the saved one{% else %}Paste your Google Gemini API key{% endif %}"
+                           autocomplete="new-password"
                            class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm focus:outline-none">
-                    <p class="text-[10px] text-slate-500 mt-1">
-                        {% if settings.gemini_api_key %}A key is already saved for this account.{% else %}No key saved yet — voice preview and calls will fall back to the platform default (if configured).{% endif %}
-                    </p>
                 </div>
 
                 <!-- ElevenLabs API Key (only shown when ElevenLabs provider selected) -->
                 <div x-show="provider === 'elevenlabs'" x-cloak>
                     <label for="elevenlabs_api_key" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">ElevenLabs API Key</label>
+                    {% if elevenlabs_key_meta %}
+                    <p class="text-xs text-emerald-400 mb-1">✅ Key saved — ends in <code>****{{ elevenlabs_key_meta.last_four }}</code></p>
+                    {% else %}
+                    <p class="text-xs text-amber-400 mb-1">⚠ No key saved — configure your ElevenLabs API key below.</p>
+                    {% endif %}
                     <input type="password" name="elevenlabs_api_key" id="elevenlabs_api_key"
-                           value="{{ settings.elevenlabs_api_key or '' }}"
-                           placeholder="{% if settings.elevenlabs_api_key %}Key saved — leave blank to keep it, or paste a new one to replace{% else %}Paste your ElevenLabs API key{% endif %}"
-                           autocomplete="off"
-                           hx-get="{{ url_for('customer.api_settings_voices') }}" hx-include="[name='elevenlabs_api_key'],[name='tts_provider']" hx-target="#voice-select" hx-trigger="load, change delay:400ms"
+                           value=""
+                           placeholder="{% if elevenlabs_key_meta %}Enter a new key to replace the saved one{% else %}Paste your ElevenLabs API key{% endif %}"
+                           autocomplete="new-password"
                            class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm focus:outline-none">
                     <p class="text-[10px] text-slate-500 mt-1">
-                        {% if settings.elevenlabs_api_key %}A key is already saved for this account — the Voice Selector below will refresh with your real ElevenLabs voices below (or show an error if the key/account has an issue).{% else %}No key saved yet — Voice Selector will show placeholder voices only, and calls will fall back to the platform default (if configured).{% endif %}
+                        {% if elevenlabs_key_meta %}Voice selector will use your saved key. Refresh after saving a new key.{% else %}Save your key first, then reload to populate the voice selector.{% endif %}
                     </p>
                 </div>
 
@@ -161,7 +167,7 @@
                 <div x-show="provider === 'elevenlabs'" x-cloak>
                     <label for="elevenlabs_model" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">ElevenLabs Model</label>
                     <select name="elevenlabs_model" id="elevenlabs_model"
-                            hx-get="{{ url_for('customer.api_settings_elevenlabs_models') }}" hx-include="[name='elevenlabs_api_key'],[name='tts_provider']" hx-target="this" hx-swap="innerHTML" hx-trigger="load, change from:#elevenlabs_api_key delay:400ms"
+                            hx-get="{{ url_for('customer.api_settings_elevenlabs_models') }}" hx-include="[name='tts_provider']" hx-target="this" hx-swap="innerHTML" hx-trigger="load"
                             class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm focus:outline-none">
                         <option value="eleven_multilingual_v2" {% if settings.elevenlabs_model == 'eleven_multilingual_v2' %}selected{% endif %}>Multilingual v2 (widely used for Bangla/Hindi-adjacent text)</option>
                         <option value="eleven_turbo_v2_5" {% if settings.elevenlabs_model == 'eleven_turbo_v2_5' %}selected{% endif %}>Turbo v2.5 (faster, lower latency)</option>
@@ -339,8 +345,9 @@
             
             <div class="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-5 relative">
                 <!-- HTMX trigger for generating preview -->
-                <button hx-post="{{ url_for('customer.api_tts_preview') }}"
-                        hx-include="#voice_script, [name='tts_provider']:checked, #hidden_edge_voice, #hidden_gemini_voice, #hidden_gtts_lang, #hidden_el_voice, #elevenlabs_api_key, #elevenlabs_model, #gemini_api_key"
+                <button type="button"
+                        hx-post="{{ url_for('customer.api_tts_preview') }}"
+                        hx-include="#voice_script, [name='tts_provider']:checked, #hidden_edge_voice, #hidden_gemini_voice, #hidden_gtts_lang, #hidden_el_voice, #elevenlabs_model"
                         hx-target="#preview-audio-container"
                         hx-indicator="#preview-indicator"
                         hx-trigger="click debounce:500ms"

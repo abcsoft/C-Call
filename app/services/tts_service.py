@@ -340,9 +340,25 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
         model_tag = f"\u200c{gemini_model}"
     text_with_tenant = text + ("\u200b" * tenant_id) + model_tag
 
-    # Keys (can be overridden in settings or default to env variables)
-    elevenlabs_api_key = settings.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
-    gemini_api_key = settings.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY", "")
+    # Resolve tenant-owned API keys.
+    # settings_override may carry an unsaved key typed live in the preview form —
+    # that path is BYOK too, just not yet persisted.
+    # Never fall back to os.environ so one tenant's key cannot bleed into another.
+    from app.models.tenant_secrets import get_secret_plaintext
+    elevenlabs_api_key = (
+        settings_override.get("elevenlabs_api_key", "").strip() if settings_override else ""
+    ) or get_secret_plaintext(tenant_id, "elevenlabs_api_key") or ""
+    gemini_api_key = (
+        settings_override.get("gemini_api_key", "").strip() if settings_override else ""
+    ) or get_secret_plaintext(tenant_id, "gemini_api_key") or ""
+
+    # Platform-managed mode: only when tenant explicitly opts in AND platform key configured
+    tts_credential_mode = settings.get("tts_credential_mode", "byok")
+    if tts_credential_mode == "platform_managed":
+        if provider == "elevenlabs" and not elevenlabs_api_key:
+            elevenlabs_api_key = os.environ.get("PLATFORM_ELEVENLABS_API_KEY", "")
+        if provider == "gemini" and not gemini_api_key:
+            gemini_api_key = os.environ.get("PLATFORM_GEMINI_API_KEY", "")
 
     logger.info(f"Generating TTS for tenant {tenant_id} using provider {provider}")
 

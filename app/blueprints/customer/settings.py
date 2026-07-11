@@ -359,17 +359,26 @@ def voice_script():
     from services.edge_tts_service import EDGE_VOICES
     from call_engine.audio import GEMINI_VOICES
     from app.services.tts_service import DEFAULT_VOICE_SCRIPT
+    from app.models.tenant_secrets import get_secret_meta
     flows = db.query("SELECT id, name FROM flows WHERE tenant_id = %s ORDER BY name ASC", (tenant_id,))
+
+    # Strip any leftover plaintext keys from settings before passing to template
+    safe_settings = {k: v for k, v in settings.items() if k not in ("gemini_api_key", "elevenlabs_api_key")}
+    gemini_key_meta    = get_secret_meta(tenant_id, "gemini_api_key")
+    elevenlabs_key_meta = get_secret_meta(tenant_id, "elevenlabs_api_key")
+
     return render_template(
         "customer/script.html",
-        settings=settings,
+        settings=safe_settings,
         edge_voices=EDGE_VOICES,
         gemini_voices=GEMINI_VOICES,
         flows=flows,
-        default_voice_script=DEFAULT_VOICE_SCRIPT
+        default_voice_script=DEFAULT_VOICE_SCRIPT,
+        gemini_key_meta=gemini_key_meta,
+        elevenlabs_key_meta=elevenlabs_key_meta,
     )
 
-@customer_bp.route("/api/settings/voices", methods=["GET"])
+@customer_bp.route("/api/settings/voices", methods=["GET", "POST"])
 @require_login
 def api_settings_voices():
     """Return dropdown options for the given provider."""
@@ -399,12 +408,11 @@ def api_settings_voices():
         options_html += f'<option value="bn" {"selected" if current_lang == "bn" else ""}>Bangla (Default)</option>'
         options_html += f'<option value="en" {"selected" if current_lang == "en" else ""}>English</option>'
     elif provider == "elevenlabs":
-        # Load custom voices if API key present. Prefer an unsaved key the
-        # admin just typed into the form (live preview before hitting Save),
-        # then the tenant's saved key, then the platform-wide env fallback —
-        # same precedence used by tts_service.generate_order_audio().
-        import os
-        api_key = request.args.get("elevenlabs_api_key") or settings.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
+        # Key resolution (BYOK only — never fall back to os.environ).
+        # An unsaved key typed live in the form is passed via POST body only
+        # (never GET query string). If absent, load from tenant_secrets.
+        from app.models.tenant_secrets import get_secret_plaintext
+        api_key = request.form.get("elevenlabs_api_key", "").strip() or get_secret_plaintext(tenant_id, "elevenlabs_api_key") or ""
         current_voice = settings.get("elevenlabs_voice_id", "")
         
         voices = []
@@ -450,13 +458,12 @@ def api_settings_voices():
 
     return options_html
 
-@customer_bp.route("/api/settings/elevenlabs-models", methods=["GET"])
+@customer_bp.route("/api/settings/elevenlabs-models", methods=["GET", "POST"])
 @require_login
 def api_settings_elevenlabs_models():
     """Return real ElevenLabs model <option>s fetched live from ElevenLabs'
-    own /v1/models endpoint, so the dropdown can never show a fabricated
-    model list — only what the tenant's account actually has access to."""
-    import os
+    own /v1/models endpoint. Key loaded from tenant_secrets (BYOK only)."""
+    from app.models.tenant_secrets import get_secret_plaintext
     tenant_id = g.tenant_id
     tenant = get_tenant_by_id(tenant_id)
     settings = tenant.get("settings") or {}
@@ -466,7 +473,8 @@ def api_settings_elevenlabs_models():
         except Exception:
             settings = {}
 
-    api_key = request.args.get("elevenlabs_api_key") or settings.get("elevenlabs_api_key") or os.environ.get("ELEVENLABS_API_KEY", "")
+    # Accept unsaved key from POST body only (never GET query string)
+    api_key = request.form.get("elevenlabs_api_key", "").strip() or get_secret_plaintext(tenant_id, "elevenlabs_api_key") or ""
     current_model = settings.get("elevenlabs_model", "eleven_v3")
 
     models = []
@@ -521,15 +529,14 @@ def save_script_settings():
     tts_lang = request.form.get("tts_lang", "bn")
     speaking_rate = request.form.get("speaking_rate", "normal")
     language = request.form.get("language", "Bangla")
-    # Blank means "leave the currently saved key alone" (the field is a
-    # password input pre-filled with the saved value, so this only differs
-    # from the saved key when the admin actually typed a replacement).
+    # API keys: blank = "leave current key unchanged". Non-blank = save encrypted.
+    # Keys are stored in tenant_secrets, never in tenants.settings JSON.
     gemini_api_key = request.form.get("gemini_api_key", "").strip()
     elevenlabs_api_key = request.form.get("elevenlabs_api_key", "").strip()
 
     order_call_flow_id = request.form.get("order_call_flow_id", "").strip()
 
-    # Update settings dictionary
+    # Update non-secret settings
     update_dict = {
         "voice_script": voice_script,
         "tts_provider": tts_provider,
@@ -542,18 +549,23 @@ def save_script_settings():
         update_dict["edge_tts_voice"] = edge_tts_voice
     elif tts_provider == "gemini":
         update_dict["gemini_voice_name"] = gemini_voice_name
-        if gemini_api_key:
-            update_dict["gemini_api_key"] = gemini_api_key
     elif tts_provider == "gtts":
         update_dict["tts_lang"] = tts_lang
     elif tts_provider == "elevenlabs":
         update_dict["elevenlabs_voice_id"] = elevenlabs_voice_id
         if elevenlabs_model:
             update_dict["elevenlabs_model"] = elevenlabs_model
-        if elevenlabs_api_key:
-            update_dict["elevenlabs_api_key"] = elevenlabs_api_key
 
     update_tenant_settings(tenant_id, update_dict)
+
+    # Save API keys encrypted in tenant_secrets (never in tenants.settings)
+    from app.models.tenant_secrets import save_secret
+    if gemini_api_key:
+        save_secret(tenant_id, "gemini_api_key", gemini_api_key)
+        logger.info("Tenant %s updated gemini_api_key", tenant_id)
+    if elevenlabs_api_key:
+        save_secret(tenant_id, "elevenlabs_api_key", elevenlabs_api_key)
+        logger.info("Tenant %s updated elevenlabs_api_key", tenant_id)
 
     # Regenerate Order Confirmation Flow root node audio with the new
     # TTS provider/voice so Quick Call and retries immediately use the
