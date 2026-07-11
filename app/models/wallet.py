@@ -32,7 +32,12 @@ def get_wallet(tenant_id: int) -> dict[str, Any] | None:
         from app.extensions import redis_ext
         cached = redis_ext.client.get(_wallet_cache_key(tenant_id))
         if cached:
-            return json.loads(cached.decode("utf-8") if isinstance(cached, bytes) else cached)
+            row = json.loads(cached.decode("utf-8") if isinstance(cached, bytes) else cached)
+            # Re-hydrate Decimal fields so callers always get correct types
+            for field in ("balance", "low_balance_threshold", "total_credited", "total_debited"):
+                if row.get(field) is not None:
+                    row[field] = Decimal(str(row[field]))
+            return row
     except Exception as exc:
         logger.warning("wallet cache read failed for tenant %s: %s", tenant_id, exc)
 

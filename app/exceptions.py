@@ -34,6 +34,15 @@ class OrderAlreadyExistsError(Exception):
         super().__init__(message)
 
 
+class TTSCredentialMissingError(Exception):
+    """Raised when a BYOK TTS provider is selected but the tenant has no API key configured."""
+    def __init__(self, provider: str, message: str | None = None):
+        self.provider = provider
+        if message is None:
+            message = f"API key for provider '{provider}' is not configured for this account."
+        super().__init__(message)
+
+
 class MaxRetriesReachedError(Exception):
     """Raised when an order has reached its maximum call retry attempts."""
     def __init__(self, order_id: int, message: str | None = None):

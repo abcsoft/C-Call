@@ -108,7 +108,7 @@ def customers_list():
 
     for tenant in tenants:
         wallet = get_wallet(tenant["id"])
-        tenant["balance"] = wallet["balance"] if wallet else Decimal("0.0")
+        tenant["balance"] = Decimal(str(wallet["balance"])) if wallet else Decimal("0.0")
         calls_mtd = db.query_one(
             "SELECT COUNT(*) AS n FROM calls WHERE tenant_id = %s AND started_at >= date_trunc('month', CURRENT_DATE)",
             (tenant["id"],),
@@ -198,6 +198,11 @@ def customer_detail(tenant_id: int):
         return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
 
     wallet = get_wallet(tenant_id) or {}
+    if wallet and "balance" in wallet:
+        wallet = dict(wallet)
+        wallet["balance"] = Decimal(str(wallet["balance"]))
+        if wallet.get("low_balance_threshold"):
+            wallet["low_balance_threshold"] = Decimal(str(wallet["low_balance_threshold"]))
     users = get_users_by_tenant(tenant_id)
     transactions = db.query(
         "SELECT * FROM wallet_transactions WHERE tenant_id = %s ORDER BY created_at DESC LIMIT 10",

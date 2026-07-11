@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.models.tenant import get_tenant_by_id
+from app.exceptions import TTSCredentialMissingError
 from call_engine.audio import create_tts_audio
 from app.monitoring import TTS_DURATION
 
@@ -359,6 +360,22 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
             elevenlabs_api_key = os.environ.get("PLATFORM_ELEVENLABS_API_KEY", "")
         if provider == "gemini" and not gemini_api_key:
             gemini_api_key = os.environ.get("PLATFORM_GEMINI_API_KEY", "")
+
+    # --- Strict provider credential guard ---
+    # Raise BEFORE calling audio.py so the dispatcher never silently
+    # falls through to a different provider on missing credentials.
+    CREDENTIAL_REQUIRED = {"elevenlabs", "gemini"}
+    if provider in CREDENTIAL_REQUIRED:
+        if provider == "elevenlabs" and not elevenlabs_api_key:
+            raise TTSCredentialMissingError(
+                provider="elevenlabs",
+                message="ElevenLabs API key is not configured for this account.",
+            )
+        if provider == "gemini" and not gemini_api_key:
+            raise TTSCredentialMissingError(
+                provider="gemini",
+                message="Gemini API key is not configured for this account.",
+            )
 
     logger.info(f"Generating TTS for tenant {tenant_id} using provider {provider}")
 

@@ -19,6 +19,7 @@ from app.blueprints.auth.decorators import require_login, require_role
 from app.models.tenant import get_tenant_by_id, update_tenant_settings
 from app.db import db
 from app.services.tts_service import generate_order_audio
+from app.exceptions import TTSCredentialMissingError
 
 logger = logging.getLogger("ccall")
 
@@ -669,12 +670,16 @@ def api_tts_preview():
     }
     preview_text = render_order_voice_script(script, preview_order, _tenant)
     
+    # Allowlist of valid provider IDs — reject arbitrary values from form
+    VALID_PROVIDERS = {"edge", "gemini", "elevenlabs", "gtts", "openvoice"}
+    if tts_provider not in VALID_PROVIDERS:
+        return "<span class='text-rose-400 text-xs font-semibold'>Invalid TTS provider selected.</span>", 422
+
     start_time = datetime.datetime.now()
     try:
         audio_filename = generate_order_audio(tenant_id, preview_text, settings_override=settings_override)
         elapsed = (datetime.datetime.now() - start_time).total_seconds()
-        
-        # Determine engine name and voice selected
+
         voice_desc = ""
         if tts_provider == "edge":
             voice_desc = edge_tts_voice
@@ -683,18 +688,16 @@ def api_tts_preview():
         elif tts_provider == "gtts":
             voice_desc = "Bangla" if tts_lang == "bn" else "English"
         elif tts_provider == "elevenlabs":
-            voice_desc = elevenlabs_voice_id[:8]
+            voice_desc = elevenlabs_voice_id[:8] if elevenlabs_voice_id else "(default)"
 
         provider_names = {
             "edge": "Edge TTS",
             "gemini": "Gemini TTS",
-            "gtts": "gTTS",
-            "elevenlabs": "ElevenLabs"
+            "gtts": "Google Translate TTS",
+            "elevenlabs": "ElevenLabs",
+            "openvoice": "OpenVoice",
         }
         provider_desc = provider_names.get(tts_provider, tts_provider)
-
-        # Which model actually generated this audio — only meaningful for
-        # ElevenLabs right now (Edge/gTTS/Gemini don't take a model_id here).
         model_desc = (elevenlabs_model or "eleven_v3") if tts_provider == "elevenlabs" else ""
 
         return render_template(
@@ -703,17 +706,24 @@ def api_tts_preview():
             elapsed=elapsed,
             provider_desc=provider_desc,
             voice_desc=voice_desc,
-            model_desc=model_desc
+            model_desc=model_desc,
+        )
+
+    except TTSCredentialMissingError as exc:
+        # Missing API key for selected BYOK provider — clear error, no fallback
+        provider_label = {"elevenlabs": "ElevenLabs", "gemini": "Gemini"}.get(exc.provider, exc.provider)
+        logger.warning("TTS preview credential missing: provider=%s tenant=%s", exc.provider, tenant_id)
+        return (
+            f"<div class='text-amber-400 text-xs font-semibold space-y-1'>"
+            f"<p>⚠ {provider_label} API key not configured for this account.</p>"
+            f"<p class='text-slate-400 font-normal'>Save your {provider_label} API key above, then try again.</p>"
+            f"</div>",
+            422,
         )
     except Exception as exc:
-        logger.error(f"TTS Preview failed: {exc}", exc_info=True)
-        # Returned as 200, not 500: htmx only swaps the target's content on a
-        # successful response by default (hx-swap does not fire on 4xx/5xx
-        # unless htmx.config.responseHandling is customized, which this app
-        # doesn't do). Returning 500 here meant the error message was
-        # generated correctly and logged, but never actually reached the
-        # screen — the button just looked like it silently did nothing.
-        return f"<span class='text-rose-400 text-xs font-semibold'>TTS Preview failed: {exc}</span>", 200
+        logger.error("TTS Preview failed: %s", exc, exc_info=True)
+        safe_msg = str(exc)[:120].replace("<", "&lt;").replace(">", "&gt;")
+        return f"<span class='text-rose-400 text-xs font-semibold'>TTS Preview failed: {safe_msg}</span>", 422
 
 @customer_bp.route("/api/integration/test-order", methods=["POST"])
 @require_login
