@@ -37,7 +37,7 @@ def inject_tenant_info():
         if tenant_id:
             tenant = get_tenant_by_id(tenant_id)
             wallet = get_wallet(tenant_id)
-            balance = wallet.get("balance", Decimal("0.0")) if wallet else Decimal("0.0")
+            balance = Decimal(str(wallet.get("balance", "0"))) if wallet else Decimal("0.0")
             context.update({
                 "current_tenant": tenant,
                 "current_balance": balance,
@@ -58,8 +58,8 @@ def dashboard():
     
     wallet = get_wallet(tenant_id) or {}
     balance = stats["wallet_balance"]
-    low_balance = balance < Decimal(wallet.get("low_balance_threshold") or 50)
-    
+    low_balance = balance < Decimal(str(wallet.get("low_balance_threshold") or 50))
+
     # Check if integrated: has active API keys
     api_key_count = db.query_one(
         "SELECT COUNT(*) FROM api_keys WHERE tenant_id = %s AND is_active = true",
@@ -97,7 +97,7 @@ def api_dashboard_stats():
     if request.headers.get("HX-Request"):
         wallet = get_wallet(tenant_id) or {}
         balance = stats["wallet_balance"]
-        low_balance = balance < Decimal(wallet.get("low_balance_threshold") or 50)
+        low_balance = balance < Decimal(str(wallet.get("low_balance_threshold") or 50))
         return render_template(
             "customer/_dashboard_kpis.html",
             stats=stats,

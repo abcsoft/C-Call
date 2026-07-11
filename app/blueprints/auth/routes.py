@@ -135,7 +135,11 @@ def login():
             flash("Welcome back!", "success")
             next_page = request.args.get("next")
             if next_page:
-                return redirect(next_page)
+                from urllib.parse import urlparse
+                parsed = urlparse(next_page)
+                # Only allow relative internal URLs (no scheme/netloc = internal)
+                if not parsed.scheme and not parsed.netloc:
+                    return redirect(next_page)
 
             if user.role == "super_admin":
                 return redirect(url_for("admin.dashboard"))

@@ -40,8 +40,12 @@ def get_wallet(tenant_id: int) -> dict[str, Any] | None:
     if row:
         try:
             from app.extensions import redis_ext
-            # Serialize Decimal as string so json round-trips cleanly.
-            serializable = {k: str(v) if isinstance(v, Decimal) else v for k, v in row.items()}
+            # Serialize Decimal/datetime as string so json round-trips cleanly.
+            import datetime
+            serializable = {
+                k: str(v) if isinstance(v, (Decimal, datetime.datetime, datetime.date)) else v
+                for k, v in row.items()
+            }
             redis_ext.client.setex(_wallet_cache_key(tenant_id), _WALLET_CACHE_TTL, json.dumps(serializable))
         except Exception as exc:
             logger.warning("wallet cache write failed for tenant %s: %s", tenant_id, exc)
