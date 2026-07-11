@@ -1,0 +1,288 @@
+{% extends "customer/base_customer.html" %}
+
+{% block title %}Dashboard — C-Call IVR{% endblock %}
+
+{% block customer_content %}
+<div class="space-y-8" x-data="{ quickCallOpen: false, callType: 'flow' }">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Merchant Console</h1>
+            <p class="text-slate-400 text-sm mt-1">Real-time confirmation logs and platform performance</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <span class="text-xs text-slate-400 font-semibold bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5">
+                Role: <span class="text-indigo-400 uppercase font-bold">{{ current_user.role }}</span>
+            </span>
+        </div>
+    </div>
+
+    <!-- Alert Banners (Conditional) -->
+    <div class="space-y-3">
+        {% if low_balance %}
+        <div class="bg-rose-950/60 border border-rose-500/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-rose-200 backdrop-blur-md">
+            <div class="flex gap-3">
+                <svg class="w-6 h-6 text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+                <div>
+                    <h4 class="font-bold text-sm">Low Wallet Balance Warning</h4>
+                    <p class="text-xs text-rose-300 mt-1">Balance is ৳{{ "%.2f"|format(balance) }}. Recharge now to avoid call interruption.</p>
+                </div>
+            </div>
+            <a href="{{ url_for('customer.wallet_panel') }}" class="py-2 px-4 bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold rounded-xl text-xs transition-colors self-start sm:self-center shadow-md active:scale-95">
+                Recharge
+            </a>
+        </div>
+        {% endif %}
+
+        {% if not_integrated %}
+        <div class="bg-amber-950/60 border border-amber-500/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-amber-200 backdrop-blur-md">
+            <div class="flex gap-3">
+                <svg class="w-6 h-6 text-amber-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                </svg>
+                <div>
+                    <h4 class="font-bold text-sm">Integration Status</h4>
+                    <p class="text-xs text-amber-300 mt-1">🔌 Connect your store to start receiving orders.</p>
+                </div>
+            </div>
+            <a href="{{ url_for('customer.integration_panel') }}" class="py-2 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs transition-colors self-start sm:self-center shadow-md active:scale-95">
+                Integration Guide
+            </a>
+        </div>
+        {% endif %}
+
+        {% if failed_caller_id %}
+        <div class="bg-rose-950/60 border border-rose-500/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-rose-200 backdrop-blur-md">
+            <div class="flex gap-3">
+                <svg class="w-6 h-6 text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+                <div>
+                    <h4 class="font-bold text-sm">Outbound Calls Failing</h4>
+                    <p class="text-xs text-rose-300 mt-1">⚠ Calls are failing: No outbound phone number is configured for your account. Contact support to assign a caller ID.</p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- KPI Cards Row (HTMX updates every 30s) -->
+    <div id="kpi-cards-container" 
+         hx-get="{{ url_for('customer.api_dashboard_stats') }}" 
+         hx-trigger="every 30s" 
+         hx-swap="innerHTML"
+         class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {% include "customer/_dashboard_kpis.html" %}
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <!-- Quick Call Composer (Collapsible) -->
+        <div class="lg:col-span-1 bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 self-start space-y-4">
+            <div class="flex items-center justify-between cursor-pointer select-none" @click="quickCallOpen = !quickCallOpen">
+                <h3 class="font-outfit font-bold text-lg text-slate-100 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.94.725l.548 2.2a1 1 0 01-.321.988l-1.305.98a10.582 10.582 0 004.872 4.872l.98-1.305a1 1 0 01.988-.321l2.2.548a1 1 0 01.725.94V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path>
+                    </svg>
+                    Quick Call Composer
+                </h3>
+                <svg class="w-5 h-5 text-slate-400 transition-transform duration-200" 
+                     :class="quickCallOpen ? 'rotate-180' : ''" 
+                     fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+            </div>
+
+            <div x-show="quickCallOpen" x-collapse style="display: none;" class="pt-2">
+                <form hx-post="{{ url_for('customer.quick_call') }}" 
+                      hx-target="#quick-call-result" 
+                      hx-swap="innerHTML" 
+                      class="space-y-4">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    
+                    <!-- Phone Input -->
+                    <div>
+                        <label for="phone" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Phone Number</label>
+                        <input type="text" name="phone" id="phone" placeholder="01712345678" required
+                               class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none">
+                    </div>
+
+                    <!-- Call Type Selector -->
+                    <div>
+                        <label for="call_type" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Call Type</label>
+                        <select name="call_type" id="call_type" x-model="callType" required
+                                class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                            <option value="flow">Interactive Voice Flow</option>
+                            <option value="direct">Direct Message TTS</option>
+                        </select>
+                    </div>
+
+                    <!-- Flow selector (Conditional) -->
+                    <div x-show="callType === 'flow'">
+                        <label for="flow_id" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Select Flow</label>
+                        <select name="flow_id" id="flow_id"
+                                class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                            {% for f in flows %}
+                                <option value="{{ f.id }}">{{ f.name }}</option>
+                            {% else %}
+                                <option value="">No configured flows</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Direct Message text input (Conditional) -->
+                    <div x-show="callType === 'direct'">
+                        <label for="message_text" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Direct Message Script</label>
+                        <textarea name="message_text" id="message_text" rows="3" placeholder="পেমেন্ট কনফার্ম করতে..."
+                                  class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none"></textarea>
+                    </div>
+
+                    <button type="submit" 
+                            class="w-full py-2.5 px-4 bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-bold rounded-xl text-xs transition-colors shadow-md active:scale-95">
+                        Launch Call
+                    </button>
+                </form>
+
+                <!-- Feedback container -->
+                <div id="quick-call-result" class="mt-4"></div>
+            </div>
+        </div>
+
+        <!-- 7-Day Chart (Right column) -->
+        <div class="lg:col-span-2 bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 flex flex-col justify-between">
+            <div>
+                <h3 class="font-outfit font-bold text-lg text-slate-100 mb-1">Analytics Overview</h3>
+                <p class="text-xs text-slate-400">Daily confirmation outcomes over the last 7 days</p>
+            </div>
+            
+            <div class="mt-6 relative" style="height: 250px;">
+                <canvas id="dashboard-chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Orders Table -->
+    <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+        <div class="p-6 border-b border-slate-800/80 flex items-center justify-between">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">Recent Confirmation Logs</h3>
+            <a href="{{ url_for('customer.orders_list') }}" class="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1">
+                View all orders
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                </svg>
+            </a>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm text-slate-300">
+                <thead class="bg-slate-950/60 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-6 py-4">Order ID</th>
+                        <th class="px-6 py-4">Customer</th>
+                        <th class="px-6 py-4 font-outfit">COD Amount</th>
+                        <th class="px-6 py-4">Status</th>
+                        <th class="px-6 py-4">Attempts</th>
+                        <th class="px-6 py-4">Last Call</th>
+                        <th class="px-6 py-4">Next Retry / Status Details</th>
+                        <th class="px-6 py-4 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="recent-orders-body" 
+                       hx-get="{{ url_for('customer.api_orders') }}?limit=10&template=raw" 
+                       hx-trigger="load" 
+                       class="divide-y divide-slate-800/50">
+                    <tr>
+                        <td colspan="8" class="px-6 py-8 text-center text-xs text-slate-500">
+                            <span class="inline-block animate-pulse">Loading logs...</span>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Chart.js and rendering scripts -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script nonce="{{ csp_nonce }}">
+    document.addEventListener("DOMContentLoaded", function() {
+        // Fetch 7-day chart data
+        fetch("{{ url_for('customer.api_dashboard_chart') }}")
+            .then(res => res.json())
+            .then(data => {
+                const ctx = document.getElementById('dashboard-chart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: data.labels,
+                        datasets: [
+                            {
+                                label: 'Confirmed',
+                                data: data.confirmed,
+                                backgroundColor: '#10b981', // Emerald 500
+                                borderRadius: 6
+                            },
+                            {
+                                label: 'Cancelled',
+                                data: data.cancelled,
+                                backgroundColor: '#f43f5e', // Rose 500
+                                borderRadius: 6
+                            },
+                            {
+                                label: 'No Answer',
+                                data: data.no_answer,
+                                backgroundColor: '#64748b', // Slate 500
+                                borderRadius: 6
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                labels: {
+                                    color: '#cbd5e1', // Slate 300
+                                    boxWidth: 12,
+                                    font: {
+                                        size: 10,
+                                        family: 'Outfit, sans-serif'
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                stacked: true,
+                                grid: {
+                                    display: false
+                                },
+                                ticks: {
+                                    color: '#94a3b8', // Slate 400
+                                    font: {
+                                        size: 9
+                                    }
+                                }
+                            },
+                            y: {
+                                stacked: true,
+                                grid: {
+                                    color: 'rgba(51, 65, 85, 0.3)' // Slate 700
+                                },
+                                ticks: {
+                                    color: '#94a3b8',
+                                    font: {
+                                        size: 9
+                                    },
+                                    precision: 0
+                                }
+                            }
+                        }
+                    }
+                });
+            });
+    });
+</script>
+{% endblock %}

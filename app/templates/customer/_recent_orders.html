@@ -1,0 +1,46 @@
+{% for order in recent_orders %}
+<tr class="hover:bg-slate-900/30 transition-colors">
+    <td class="px-6 py-4 font-medium text-slate-200">{{ order.external_order_id }}</td>
+    <td class="px-6 py-4 truncate max-w-[150px]">
+        <div class="text-slate-200 text-xs font-semibold">{{ order.customer_name }}</div>
+        <div class="text-slate-500 font-mono text-[10px] mt-0.5">
+            {% set raw_phone = order.phone %}
+            {% if raw_phone|length >= 11 %}
+                {{ raw_phone[:3] }}****{{ raw_phone[-4:] }}
+            {% else %}
+                {{ raw_phone }}
+            {% endif %}
+        </div>
+    </td>
+    <td class="px-6 py-4 font-outfit font-semibold text-slate-200">৳{{ "%.2f"|format(order.amount) }}</td>
+    <td class="px-6 py-4">
+        {% if order.order_status == 'CONFIRMED' %}
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">CONFIRMED</span>
+        {% elif order.order_status == 'CANCELLED' %}
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-rose-500/10 text-rose-400 border border-rose-500/20">CANCELLED</span>
+        {% elif order.order_status == 'RETRY_SCHEDULED' %}
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">RETRYING</span>
+        {% elif order.order_status == 'UNREACHABLE' %}
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-850 text-slate-400 border border-slate-800">UNREACHABLE</span>
+        {% elif order.order_status == 'CALL_QUEUED' or order.order_status == 'CALLING' %}
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 animate-pulse">CALLING</span>
+        {% else %}
+            <span class="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-800 text-slate-400">{{ order.order_status }}</span>
+        {% endif %}
+    </td>
+    <td class="px-6 py-4 text-xs text-slate-400">
+        {{ order.updated_at.strftime('%b %d, %H:%M') if order.updated_at else 'Pending' }}
+    </td>
+    <td class="px-6 py-4 text-right">
+        <button hx-get="{{ url_for('customer.order_detail_modal', order_id=order.id) }}"
+                hx-target="#modal-container"
+                class="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors">
+            View
+        </button>
+    </td>
+</tr>
+{% else %}
+<tr>
+    <td colspan="6" class="px-6 py-10 text-center text-slate-500 font-medium">No recent orders found.</td>
+</tr>
+{% endfor %}

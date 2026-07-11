@@ -1,0 +1,97 @@
+{% for call in calls %}
+<tr class="hover:bg-slate-900/20 transition-colors cursor-pointer"
+    hx-get="{{ url_for('customer.api_cdr_details', call_id=call.id) }}"
+    hx-target="#detail-{{ call.id }}"
+    hx-swap="innerHTML"
+    hx-trigger="click"
+    x-data="{ expanded: false }"
+    @click="expanded = !expanded">
+    <td class="px-5 py-3.5 align-middle text-slate-300 font-medium">{{ call.formatted_start }}</td>
+    <td class="px-5 py-3.5 align-middle text-slate-200 font-semibold">{{ call.external_order_id or '—' }}</td>
+    <td class="px-5 py-3.5 align-middle text-slate-300 font-mono">{{ call.masked_phone }}</td>
+    <td class="px-5 py-3.5 align-middle">
+        <div class="text-slate-300 font-semibold">{{ call.formatted_duration }}</div>
+        <div class="text-slate-500 text-[10px]">Billable: {{ call.formatted_billable }}</div>
+    </td>
+    <td class="px-5 py-3.5 align-middle text-center text-slate-300">{{ call.formatted_dtmf }}</td>
+    <td class="px-5 py-3.5 align-middle">
+        {% if call.status == 'completed' %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">Completed</span>
+        {% elif call.status == 'failed' %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/15">Failed</span>
+        {% elif call.status == 'no_answer' %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/15">No Answer</span>
+        {% elif call.status == 'busy' %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/15">Busy</span>
+        {% else %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 uppercase">{{ call.status }}</span>
+        {% endif %}
+    </td>
+    <td class="px-5 py-3.5 align-middle text-right">
+        <span class="font-semibold text-teal-400">{{ call.display_charge }}</span>
+        {% if call.is_unbilled_historical %}
+        <div class="mt-0.5">
+            <span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                  title="Completed call with talk time but no wallet deduction recorded — predates billing_service.">
+                Unbilled historical call
+            </span>
+        </div>
+        {% endif %}
+    </td>
+    <td class="px-5 py-3.5 align-middle text-center" @click.stop>
+        {% if call.recording_path %}
+        <button class="py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg border border-slate-700/50 transition-all flex items-center gap-1 mx-auto"
+                x-data="{ playing: false, loaded: false }"
+                @click="playing = !playing; if (playing && !loaded) { $refs.player.src = '{{ url_for('customer.serve_recording', filename=call.recording_path | basename) }}'; loaded = true; }; if (playing) $refs.player.play(); else $refs.player.pause();">
+            <span x-text="playing ? '⏸ Pause' : '▶ Play'"></span>
+            <audio x-ref="player" @ended="playing = false" class="hidden"></audio>
+        </button>
+        {% else %}
+        <span class="text-slate-600">—</span>
+        {% endif %}
+    </td>
+</tr>
+<tr x-show="expanded" style="display: none;" @click.stop>
+    <td colspan="8" class="p-0">
+        <div id="detail-{{ call.id }}" class="bg-slate-950/40 border-t border-b border-slate-800/40 p-6 space-y-4">
+            <div class="flex items-center justify-center py-4">
+                <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-teal-500"></div>
+            </div>
+        </div>
+    </td>
+</tr>
+{% else %}
+<tr>
+    <td colspan="8" class="px-5 py-10 text-center text-slate-500 font-medium">No call records found matching active filters.</td>
+</tr>
+{% endfor %}
+
+{% if has_prev or has_next %}
+<tr>
+    <td colspan="8" class="px-5 py-4 bg-slate-950/30 border-t border-slate-800/80">
+        <div class="flex items-center justify-between">
+            <span class="text-slate-400 text-xs">Total: {{ total }} records</span>
+            <div class="flex items-center gap-2">
+                {% if has_prev %}
+                <button hx-get="{{ url_for('customer.api_cdr', before=prev_cursor) }}"
+                        hx-include="[name='status'], [name='search'], [name='date_from'], [name='date_to']"
+                        hx-target="#cdr-table-body"
+                        hx-swap="innerHTML"
+                        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-all">
+                    &larr; Prev
+                </button>
+                {% endif %}
+                {% if has_next %}
+                <button hx-get="{{ url_for('customer.api_cdr', after=next_cursor) }}"
+                        hx-include="[name='status'], [name='search'], [name='date_from'], [name='date_to']"
+                        hx-target="#cdr-table-body"
+                        hx-swap="innerHTML"
+                        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-all">
+                    Next &rarr;
+                </button>
+                {% endif %}
+            </div>
+        </div>
+    </td>
+</tr>
+{% endif %}

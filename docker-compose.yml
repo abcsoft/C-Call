@@ -1,19 +1,39 @@
+version: '3.8'
+
 services:
-  db:
-    image: postgres:16
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./instance:/app/instance
+
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     environment:
-      POSTGRES_USER: ivr
-      POSTGRES_PASSWORD: ivr
-      POSTGRES_DB: ivr
+      POSTGRES_DB: ccall
+      POSTGRES_USER: ccall
+      POSTGRES_PASSWORD: ccall_dev_password
     ports:
       - "5432:5432"
-    volumes:
-      - ivr_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ivr -d ivr"]
+      test: ["CMD-SHELL", "pg_isready -U ccall -d ccall"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-redis_dev_password}
+
 volumes:
-  ivr_pgdata:
+  postgres_data:

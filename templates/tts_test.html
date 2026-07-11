@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% block title %}TTS Test — C-Call IVR{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="page-tag"><i class="ti ti-microphone-2"></i> Voice Lab</div>
+  <h1 class="page-title">TTS Test</h1>
+  <p class="page-desc">Generate a sample with any configured provider, listen to it, and optionally save it to the cache for reuse in calls.</p>
+</div>
+
+<div class="card sc-card" id="tts-test-card">
+  <div class="sc-header">
+    <div class="sc-icon"><i class="ti ti-microphone"></i></div>
+    <div>
+      <div class="sc-title">Generate Voice Sample</div>
+      <div class="sc-sub">Uses the API key / model already saved in Settings for each provider</div>
+    </div>
+  </div>
+  <div class="sc-body">
+
+    <div class="form-group fg">
+      <label class="form-label">Text</label>
+      <textarea class="form-input" id="tt-text" rows="5" placeholder="Type the sentence to speak…">Hello, this is a C-Call IVR voice test. One, two, three.</textarea>
+    </div>
+
+    <div class="form-row fg">
+      <div class="form-group">
+        <label class="form-label">Provider</label>
+        <select class="form-select" id="tt-provider-select" title="TTS provider">
+          <option value="gtts">gTTS — Google (free, multi-language)</option>
+          <option value="elevenlabs">ElevenLabs v3</option>
+          <option value="gemini">Google Gemini 2.5 Flash TTS</option>
+          <option value="edge" selected>Edge-TTS — Microsoft (free, Bangla neural)</option>
+          <option value="openvoice">OpenVoice V2 — backup (preview/pre-gen only, no Edge substitution)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Voice</label>
+        <select class="form-select" id="tt-voice-select" title="Voice"></select>
+      </div>
+    </div>
+
+    <div class="voice-picker-row tt-actions">
+      <button type="button" class="voice-load-btn" id="tt-generate-btn" onclick="ttGenerate()">
+        <i class="ti ti-player-play"></i> Generate
+      </button>
+      <button type="button" class="voice-load-btn" id="tt-stop-btn" onclick="ttStop()">
+        <i class="ti ti-player-stop"></i> Stop
+      </button>
+      <button type="button" class="voice-load-btn" id="tt-save-btn" onclick="ttSave()">
+        <i class="ti ti-device-floppy"></i> Save
+      </button>
+    </div>
+
+    <div class="field-note" id="tt-status"></div>
+    <audio id="tt-audio" class="tt-audio" controls></audio>
+
+  </div>
+</div>
+
+<div class="card sc-card" id="tts-recent-card">
+  <div class="sc-header">
+    <div class="sc-icon"><i class="ti ti-history"></i></div>
+    <div>
+      <div class="sc-title">Recent Generations</div>
+      <div class="sc-sub">Last 10 cached samples across all providers</div>
+    </div>
+  </div>
+  <div class="sc-body">
+    <div class="table-wrap">
+      <table class="data history-table" id="tt-recent-table">
+        <thead>
+          <tr><th>Provider</th><th>Voice</th><th>Text</th><th>Cached At</th></tr>
+        </thead>
+        <tbody id="tt-recent-body">
+          <tr><td colspan="4" class="field-note">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<style>
+.tt-actions { flex-wrap: wrap; }
+.tt-audio { margin-top: 14px; width: 100%; display: block; }
+#tt-recent-table td, #tt-recent-table th { font-size: 13px; }
+#tt-recent-table td:nth-child(3) { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) {
+  #tt-recent-table td:nth-child(3) { max-width: 140px; }
+}
+</style>
+
+<script>
+const ttProvider = document.getElementById('tt-provider-select');
+const ttVoice = document.getElementById('tt-voice-select');
+const ttStatus = document.getElementById('tt-status');
+const ttAudio = document.getElementById('tt-audio');
+
+const GTTS_LANGS = [
+  {value: 'bn', label: 'Bengali (bn)'},
+  {value: 'en', label: 'English (en)'},
+  {value: 'hi', label: 'Hindi (hi)'},
+  {value: 'ar', label: 'Arabic (ar)'},
+];
+
+function setTtStatus(kind, html) {
+  ttStatus.className = 'field-note' + (kind ? ' ' + kind + '-note' : '');
+  ttStatus.innerHTML = html;
+}
+
+function fillVoiceSelect(options, savedValue) {
+  ttVoice.innerHTML = '';
+  options.forEach(opt => {
+    const el = document.createElement('option');
+    el.value = opt.value;
+    el.textContent = opt.label;
+    if (opt.value === savedValue) el.selected = true;
+    ttVoice.appendChild(el);
+  });
+}
+
+async function loadVoicesForProvider() {
+  const provider = ttProvider.value;
+  if (provider === 'gtts') {
+    fillVoiceSelect(GTTS_LANGS, '{{ tts.TTS_LANG or "bn" }}');
+    return;
+  }
+  if (provider === 'elevenlabs') {
+    // Needs the saved API key — read from settings; if no voice saved, prompt to use Settings page.
+    fillVoiceSelect(
+      [{value: '{{ tts.ELEVENLABS_VOICE_ID }}', label: '{{ tts.ELEVENLABS_VOICE_ID or "Set a voice in Settings first" }}'}],
+      '{{ tts.ELEVENLABS_VOICE_ID }}'
+    );
+    return;
+  }
+  const endpoint = {
+    gemini: '/api/voices/gemini',
+    edge: '/api/voices/edge',
+    openvoice: '/api/voices/openvoice',
+  }[provider];
+  const savedValue = {
+    gemini: '{{ tts.GEMINI_VOICE_NAME }}',
+    edge: '{{ tts.EDGE_TTS_VOICE }}',
+    openvoice: '{{ tts.OPENVOICE_VOICE }}',
+  }[provider];
+  try {
+    const res = await fetch(endpoint);
+    const data = await res.json();
+    const opts = (data.voices || []).map(v => ({value: v.voice_name, label: v.voice_name}));
+    fillVoiceSelect(opts, savedValue);
+  } catch (err) {
+    fillVoiceSelect([], '');
+  }
+  if (provider === 'openvoice') checkOpenVoiceInstalled();
+}
+
+async function checkOpenVoiceInstalled() {
+  try {
+    const res = await fetch('/api/openvoice/status');
+    const data = await res.json();
+    setTtStatus(data.installed ? 'ok' : 'warn',
+      data.installed
+        ? '<i class="ti ti-circle-check"></i> OpenVoice runtime installed.'
+        : '<i class="ti ti-alert-triangle"></i> OpenVoice: Not configured — Generate/Save will fail with a clear error (no Edge-TTS substitution).');
+  } catch (err) { /* status check is best-effort */ }
+}
+
+ttProvider.addEventListener('change', loadVoicesForProvider);
+loadVoicesForProvider();
+
+function buildPayload() {
+  const provider = ttProvider.value;
+  const text = ttText().trim();
+  const payload = {provider, text};
+  if (provider === 'gtts') payload.lang = ttVoice.value;
+  else if (provider === 'elevenlabs') payload.voice_id = ttVoice.value;
+  else payload.voice_name = ttVoice.value;
+  return payload;
+}
+
+function ttText() {
+  return document.getElementById('tt-text').value;
+}
+
+function ttStop() {
+  ttAudio.pause();
+  ttAudio.currentTime = 0;
+  setTtStatus('', '<i class="ti ti-player-stop"></i> Stopped.');
+}
+
+async function ttGenerate() {
+  if (!ttText().trim()) {
+    setTtStatus('warn', '⚠ Enter some text first.');
+    return;
+  }
+  setTtStatus('', '<i class="ti ti-loader spin"></i> Generating…');
+  try {
+    const res = await fetch('/api/tts/preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(buildPayload())
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed');
+    }
+    const blob = await res.blob();
+    ttAudio.src = URL.createObjectURL(blob);
+    ttAudio.play();
+    setTtStatus('ok', '<i class="ti ti-check"></i> Sample ready — playing.');
+  } catch (err) {
+    setTtStatus('warn', '⚠ ' + err.message);
+  }
+}
+
+async function ttSave() {
+  if (!ttText().trim()) {
+    setTtStatus('warn', '⚠ Enter some text first.');
+    return;
+  }
+  setTtStatus('', '<i class="ti ti-loader spin"></i> Saving to cache…');
+  try {
+    const res = await fetch('/api/tts/pregenerate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(buildPayload())
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Failed');
+    setTtStatus('ok', `<i class="ti ti-circle-check"></i> Saved — cached as <code>${data.audio_name}</code>`);
+    loadRecentGenerations();
+  } catch (err) {
+    setTtStatus('warn', '⚠ ' + err.message);
+  }
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function loadRecentGenerations() {
+  const body = document.getElementById('tt-recent-body');
+  try {
+    const res = await fetch('/api/tts/cache');
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) {
+      body.innerHTML = '<tr><td colspan="4" class="field-note">No cached generations yet.</td></tr>';
+      return;
+    }
+    body.innerHTML = items.map(it => `
+      <tr>
+        <td>${escapeHtml(it.provider)}</td>
+        <td>${escapeHtml(it.voice)}</td>
+        <td title="${escapeHtml(it.text)}">${escapeHtml(it.text)}</td>
+        <td>${escapeHtml(it.created_at)}</td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    body.innerHTML = '<tr><td colspan="4" class="field-note">Failed to load.</td></tr>';
+  }
+}
+
+loadRecentGenerations();
+</script>
+{% endblock %}

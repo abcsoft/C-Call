@@ -1,0 +1,70 @@
+{% for order in orders %}
+<tr class="hover:bg-slate-900/20 transition-colors">
+    <td class="px-6 py-4 font-medium text-slate-200 font-mono text-xs">{{ order.external_order_id }}</td>
+    <td class="px-6 py-4">
+        <div class="text-slate-200 text-xs font-semibold">{{ order.customer_name or '—' }}</div>
+        <div class="text-slate-500 font-mono text-[10px] mt-0.5">
+            {% set raw_phone = order.phone %}
+            {% if raw_phone|length >= 11 %}
+                {{ raw_phone[:3] }}****{{ raw_phone[-4:] }}
+            {% else %}
+                {{ raw_phone }}
+            {% endif %}
+        </div>
+    </td>
+    <td class="px-6 py-4 font-outfit font-semibold text-slate-200">৳{{ "%.2f"|format(order.amount or 0) }}</td>
+    <td class="px-6 py-4">
+        {% if order.order_status == 'CONFIRMED' %}
+            <span class="px-2.5 py-1 text-[10px] font-bold rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">CONFIRMED</span>
+        {% elif order.order_status == 'CANCELLED' %}
+            <span class="px-2.5 py-1 text-[10px] font-bold rounded bg-rose-500/10 text-rose-400 border border-rose-500/20">CANCELLED</span>
+        {% elif order.order_status == 'RETRY_SCHEDULED' %}
+            <span class="px-2.5 py-1 text-[10px] font-bold rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">RETRYING</span>
+        {% elif order.order_status == 'UNREACHABLE' %}
+            <span class="px-2.5 py-1 text-[10px] font-bold rounded bg-slate-800 text-slate-400 border border-slate-700">UNREACHABLE</span>
+        {% elif order.order_status == 'CALL_QUEUED' or order.order_status == 'CALLING' %}
+            <span class="px-2.5 py-1 text-[10px] font-bold rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 animate-pulse">CALLING</span>
+        {% else %}
+            <span class="px-2.5 py-1 text-[10px] font-bold rounded bg-slate-800 text-slate-400">{{ order.order_status }}</span>
+        {% endif %}
+    </td>
+    <td class="px-6 py-4">
+        <span class="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-bold">
+            {{ order.attempt_count }} / {{ order.max_attempts }}
+        </span>
+    </td>
+    <td class="px-6 py-4 text-xs text-slate-400">
+        {{ order.updated_at|time_ago }}
+    </td>
+    <td class="px-6 py-4 text-xs">
+        {% if order.order_status == 'RETRY_SCHEDULED' and order.next_retry_at %}
+            <span class="text-amber-400 font-semibold">in {{ order.next_retry_at|time_ago|replace('in ', '') }}</span>
+        {% elif order.order_status == 'CONFIRMED' %}
+            <span class="text-slate-500 text-[10px]">Confirmed at {{ order.confirmed_at.strftime('%H:%M, %d %b') if order.confirmed_at else '—' }}</span>
+        {% else %}
+            <span class="text-slate-500">—</span>
+        {% endif %}
+    </td>
+    <td class="px-6 py-4 text-right">
+        <div class="flex items-center justify-end gap-2">
+            <a href="{{ url_for('customer.order_detail', external_order_id=order.external_order_id) }}"
+               class="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-lg text-slate-200 transition-colors">
+                View
+            </a>
+            {% if order.order_status in ('PENDING', 'NO_ANSWER', 'RETRY_SCHEDULED', 'UNREACHABLE', 'FAILED') and current_user.role in ('admin', 'agent') %}
+            <form method="POST" action="{{ url_for('customer.order_recall', external_order_id=order.external_order_id) }}" class="inline">
+                <button type="submit" class="py-1.5 px-3 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/30 text-teal-400 text-xs font-semibold rounded-lg transition-colors">
+                    Re-call
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </td>
+</tr>
+{% else %}
+<tr>
+    <td colspan="8" class="px-6 py-10 text-center text-slate-500 font-medium">
+        No orders found matching the filter criteria.
+    </td>
+</tr>
+{% endfor %}

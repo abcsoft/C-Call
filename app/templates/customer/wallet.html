@@ -1,0 +1,223 @@
+{% extends "customer/base_customer.html" %}
+
+{% block title %}Prepaid Wallet — C-Call IVR{% endblock %}
+
+{% block customer_content %}
+<div class="space-y-8" x-data="{ showRechargeModal: false, rechargeAmount: 500, paymentMethod: 'sslcommerz' }">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Prepaid Wallet</h1>
+            <p class="text-slate-400 text-sm mt-1">Manage your prepaid balance, configure low-balance alert thresholds, and view transactions.</p>
+        </div>
+        {% if current_user.role == 'admin' %}
+        <button @click="showRechargeModal = true"
+                class="py-2.5 px-5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:brightness-110 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md active:scale-95 flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+            Recharge Wallet
+        </button>
+        {% endif %}
+    </div>
+
+    <!-- Alert banner if balance is low -->
+    {% if low_balance %}
+    <div class="p-4 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-semibold rounded-2xl flex items-center gap-3">
+        <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0"></span>
+        <span>Low Wallet Balance Alert: Your balance is below the configured threshold (৳{{ "%.2f"|format(wallet.low_balance_threshold or 50.00) }}). Recharge now to prevent call campaigns from auto-pausing.</span>
+    </div>
+    {% endif %}
+
+    <!-- Cards Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Balance Display Card -->
+        <div class="bg-gradient-to-br from-slate-900 to-teal-950/20 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 relative overflow-hidden group flex flex-col justify-between min-h-[160px]">
+            <div class="absolute -right-6 -bottom-6 w-28 h-28 bg-teal-500/5 rounded-full blur-xl transition-all group-hover:scale-150"></div>
+            <div>
+                <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-1">Available Balance</p>
+                <div class="flex items-baseline gap-1.5 mt-3">
+                    <span class="text-sm text-slate-500 font-bold">৳</span>
+                    <span class="text-4xl font-outfit font-extrabold text-teal-400 tracking-tight">
+                        {{ "%.2f"|format(balance or 0.00) }}
+                    </span>
+                </div>
+            </div>
+            <div class="flex items-center justify-between mt-4">
+                <div class="flex items-center gap-1.5 text-[10px] font-medium text-emerald-400">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    Prepaid billing active
+                </div>
+                <div class="text-[10px] text-slate-500">
+                    Min Call Rate: ~৳1.50/min
+                </div>
+            </div>
+        </div>
+
+        <!-- Threshold Config Form -->
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 flex flex-col justify-between min-h-[160px]">
+            <div>
+                <h3 class="text-slate-200 font-semibold text-sm mb-1.5">Low Balance Threshold Settings</h3>
+                <p class="text-[11px] text-slate-500 leading-relaxed mb-4">We will display a dashboard warning alert when your prepaid balance drops below this set value.</p>
+            </div>
+            <form hx-post="{{ url_for('customer.api_wallet_settings') }}" hx-swap="none" class="space-y-2">
+                <div class="flex gap-2">
+                    <div class="relative flex-1">
+                        <span class="absolute left-3.5 top-2.5 text-slate-500 text-xs font-semibold">৳</span>
+                        <input type="number" name="threshold" id="threshold" min="10" max="10000" value="{{ wallet.low_balance_threshold or 50 }}" required
+                               class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl pl-7 pr-4 py-2 text-slate-100 text-xs focus:outline-none transition-all">
+                    </div>
+                    <button type="submit" 
+                            class="py-2.5 px-5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-all border border-slate-750 active:scale-[0.98]">
+                        Save Threshold
+                    </button>
+                </div>
+                <div id="settings-status"></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Transactions List -->
+    <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+        <div class="p-6 border-b border-slate-800/80">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">Transaction History</h3>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300 min-w-[700px]">
+                <thead class="bg-slate-950/60 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-6 py-4">Date & Time</th>
+                        <th class="px-6 py-4">Type</th>
+                        <th class="px-6 py-4">Description</th>
+                        <th class="px-6 py-4 font-outfit">Amount</th>
+                        <th class="px-6 py-4">Balance After</th>
+                    </tr>
+                </thead>
+                <!-- Rows swapped by HTMX -->
+                <tbody id="transactions-table-body"
+                       hx-get="{{ url_for('customer.api_wallet_transactions') }}"
+                       hx-trigger="load"
+                       hx-swap="innerHTML"
+                       class="divide-y divide-slate-800/50">
+                    <tr>
+                        <td colspan="5" class="px-6 py-10 text-center text-slate-500 font-medium">Loading transactions...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Recharge Modal (Alpine.js) -->
+    {% if current_user.role == 'admin' %}
+    <div class="fixed inset-0 z-50 overflow-y-auto"
+         x-show="showRechargeModal"
+         style="display: none;"
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0">
+        <div class="flex min-h-screen items-center justify-center p-4 text-center sm:p-0">
+            <div class="fixed inset-0 bg-slate-950/85 backdrop-blur-sm" @click="showRechargeModal = false"></div>
+            
+            <div class="relative transform overflow-hidden rounded-2xl bg-slate-900 border border-slate-800 text-left shadow-2xl transition-all sm:my-8 sm:w-full sm:max-w-md z-10 p-6 space-y-6"
+                 x-show="showRechargeModal"
+                 x-transition:enter="transition ease-out duration-300"
+                 x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+                 x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
+                 x-transition:leave="transition ease-in duration-200"
+                 x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
+                 x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95">
+                
+                <!-- Modal Close -->
+                <div class="flex items-center justify-between border-b border-slate-800/80 pb-4">
+                    <h3 class="font-outfit font-extrabold text-lg text-slate-100 tracking-tight">Recharge Wallet</h3>
+                    <button @click="showRechargeModal = false" class="text-slate-400 hover:text-slate-200 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+
+                <form method="POST" action="{{ url_for('customer.wallet_recharge') }}" class="space-y-6">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <!-- Quick amount buttons -->
+                    <div class="space-y-2">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Quick Amount Selection</label>
+                        <div class="grid grid-cols-4 gap-2">
+                            <button type="button" @click="rechargeAmount = 100"
+                                    class="py-2 text-xs font-semibold rounded-lg border transition-all"
+                                    :class="rechargeAmount == 100 ? 'bg-teal-500/10 border-teal-500 text-teal-400 font-bold' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-350 hover:bg-slate-900/60'">
+                                ৳100
+                            </button>
+                            <button type="button" @click="rechargeAmount = 500"
+                                    class="py-2 text-xs font-semibold rounded-lg border transition-all"
+                                    :class="rechargeAmount == 500 ? 'bg-teal-500/10 border-teal-500 text-teal-400 font-bold' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-350 hover:bg-slate-900/60'">
+                                ৳500
+                            </button>
+                            <button type="button" @click="rechargeAmount = 1000"
+                                    class="py-2 text-xs font-semibold rounded-lg border transition-all"
+                                    :class="rechargeAmount == 1000 ? 'bg-teal-500/10 border-teal-500 text-teal-400 font-bold' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-350 hover:bg-slate-900/60'">
+                                ৳1000
+                            </button>
+                            <button type="button" @click="rechargeAmount = 2000"
+                                    class="py-2 text-xs font-semibold rounded-lg border transition-all"
+                                    :class="rechargeAmount == 2000 ? 'bg-teal-500/10 border-teal-500 text-teal-400 font-bold' : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-350 hover:bg-slate-900/60'">
+                                ৳2000
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Custom input amount -->
+                    <div class="space-y-2">
+                        <label for="amount" class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Amount (৳)</label>
+                        <div class="relative">
+                            <span class="absolute left-3.5 top-3 text-slate-500 text-sm font-semibold">৳</span>
+                            <input type="number" name="amount" id="amount" min="10" max="50000" required x-model.number="rechargeAmount"
+                                   class="w-full bg-slate-950 border border-slate-800 focus:border-teal-500/80 rounded-xl pl-7 pr-4 py-3 text-slate-100 text-sm font-semibold focus:outline-none transition-all">
+                        </div>
+                    </div>
+
+                    <!-- Payment methods -->
+                    <div class="space-y-2">
+                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Payment Method</label>
+                        <div class="grid grid-cols-2 gap-3">
+                            <!-- SSLCommerz -->
+                            <label class="relative flex items-center justify-between p-3.5 bg-slate-950 border rounded-xl cursor-pointer hover:bg-slate-900/40 transition-all"
+                                   :class="paymentMethod == 'sslcommerz' ? 'border-teal-500/80 bg-teal-500/[0.02]' : 'border-slate-800'">
+                                <div class="flex items-center gap-2.5">
+                                    <input type="radio" name="payment_method" value="sslcommerz" x-model="paymentMethod" class="sr-only">
+                                    <div class="w-3.5 h-3.5 rounded-full border border-slate-700 flex items-center justify-center"
+                                         :class="paymentMethod == 'sslcommerz' ? 'border-teal-500' : ''">
+                                        <div class="w-1.5 h-1.5 rounded-full bg-teal-500" x-show="paymentMethod == 'sslcommerz'"></div>
+                                    </div>
+                                    <span class="text-xs font-semibold text-slate-200">SSLCommerz</span>
+                                </div>
+                                <span class="text-[9px] font-bold text-teal-400 px-1.5 py-0.5 bg-teal-500/10 rounded">Cards/Net</span>
+                            </label>
+
+                            <!-- bKash -->
+                            <label class="relative flex items-center justify-between p-3.5 bg-slate-950 border rounded-xl cursor-pointer hover:bg-slate-900/40 transition-all opacity-60 hover:opacity-100"
+                                   :class="paymentMethod == 'bkash' ? 'border-pink-500 bg-pink-500/[0.02]' : 'border-slate-800'">
+                                <div class="flex items-center gap-2.5">
+                                    <input type="radio" name="payment_method" value="bkash" x-model="paymentMethod" class="sr-only">
+                                    <div class="w-3.5 h-3.5 rounded-full border border-slate-700 flex items-center justify-center"
+                                         :class="paymentMethod == 'bkash' ? 'border-pink-500' : ''">
+                                        <div class="w-1.5 h-1.5 rounded-full bg-pink-500" x-show="paymentMethod == 'bkash'"></div>
+                                    </div>
+                                    <span class="text-xs font-semibold text-slate-200">bKash</span>
+                                </div>
+                                <span class="text-[9px] font-bold text-pink-400 px-1.5 py-0.5 bg-pink-500/10 rounded">MFS</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Proceed to Checkout -->
+                    <button type="submit"
+                            class="w-full py-3 bg-gradient-to-r from-teal-500 to-emerald-500 text-slate-950 font-bold rounded-xl text-sm transition-all hover:brightness-110 active:scale-[0.98] shadow-lg shadow-teal-500/10">
+                        Proceed to Payment
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

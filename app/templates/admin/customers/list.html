@@ -1,0 +1,145 @@
+{% extends "admin/base_admin.html" %}
+
+{% block title %}Tenants — C-Call Admin{% endblock %}
+
+{% block admin_content %}
+<div class="space-y-8" x-data="{ showCreateModal: false }">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Tenants</h1>
+            <p class="text-slate-400 text-sm mt-1">{{ total }} merchant account(s) registered on the platform</p>
+        </div>
+        <button @click="showCreateModal = true"
+                class="px-4 py-2.5 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-400 hover:to-purple-400 text-white font-bold rounded-xl text-sm transition-all shadow-lg">
+            + Create Tenant
+        </button>
+    </div>
+
+    <!-- A. Search + Filters -->
+    <form method="GET" class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 grid grid-cols-1 md:grid-cols-4 gap-4">
+        <input type="text" name="search" value="{{ search or '' }}" placeholder="Search business name or email..."
+               class="md:col-span-2 bg-slate-950/80 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-sm focus:outline-none">
+        <select name="status" class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 text-sm focus:outline-none">
+            <option value="">All Statuses</option>
+            {% for s in ('active', 'trial', 'suspended', 'cancelled') %}
+            <option value="{{ s }}" {{ 'selected' if status_filter == s }}>{{ s | title }}</option>
+            {% endfor %}
+        </select>
+        <select name="plan_id" class="bg-slate-950/80 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 text-sm focus:outline-none">
+            <option value="">All Plans</option>
+            {% for p in plans %}
+            <option value="{{ p.id }}" {{ 'selected' if plan_filter == p.id|string }}>{{ p.name | title }}</option>
+            {% endfor %}
+        </select>
+        <button type="submit" class="md:col-start-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold">Filter</button>
+    </form>
+
+    <!-- B. Tenants Table -->
+    <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm text-slate-300">
+                <thead class="bg-slate-950/60 text-slate-400 text-[11px] font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-5 py-3">Business Name</th>
+                        <th class="px-5 py-3">Email</th>
+                        <th class="px-5 py-3">Plan</th>
+                        <th class="px-5 py-3">Balance</th>
+                        <th class="px-5 py-3">Calls MTD</th>
+                        <th class="px-5 py-3">Status</th>
+                        <th class="px-5 py-3">Created</th>
+                        <th class="px-5 py-3 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/50">
+                    {% for t in tenants %}
+                    <tr class="hover:bg-slate-950/30">
+                        <td class="px-5 py-3.5 font-semibold text-slate-100">
+                            <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="hover:text-indigo-400 hover:underline">{{ t.business_name }}</a>
+                        </td>
+                        <td class="px-5 py-3.5 text-slate-400">{{ t.email }}</td>
+                        <td class="px-5 py-3.5">{{ t.plan_name or '—' }}</td>
+                        <td class="px-5 py-3.5 font-mono {{ 'text-emerald-400' if t.balance > 100 else ('text-amber-400' if t.balance > 10 else 'text-red-400') }}">
+                            ৳{{ "%.2f"|format(t.balance) }}
+                        </td>
+                        <td class="px-5 py-3.5">{{ t.calls_mtd }}</td>
+                        <td class="px-5 py-3.5">
+                            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase
+                                {{ 'bg-emerald-900/50 text-emerald-400' if t.status == 'active'
+                                   else 'bg-amber-900/50 text-amber-400' if t.status == 'trial'
+                                   else 'bg-red-900/50 text-red-400' }}">
+                                {{ t.status }}
+                            </span>
+                        </td>
+                        <td class="px-5 py-3.5 text-slate-500 text-xs">{{ t.created_at.strftime('%Y-%m-%d') if t.created_at else '—' }}</td>
+                        <td class="px-5 py-3.5 text-right space-x-2 whitespace-nowrap">
+                            <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="text-indigo-400 hover:underline text-xs font-semibold">View</a>
+                            <form method="POST" action="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="inline">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <input type="hidden" name="status" value="{{ 'suspended' if t.status != 'suspended' else 'active' }}">
+                                <button type="submit" class="text-amber-400 hover:underline text-xs font-semibold">{{ 'Unsuspend' if t.status == 'suspended' else 'Suspend' }}</button>
+                            </form>
+                            <form method="POST" action="{{ url_for('admin.impersonate', tenant_id=t.id) }}" class="inline" onsubmit="return promptReason(this)">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                <input type="hidden" name="reason" value="">
+                                <button type="submit" class="text-teal-400 hover:underline text-xs font-semibold">Impersonate</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="8" class="px-5 py-8 text-center text-slate-500">No tenants found.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- C. Create Tenant Modal -->
+    <div x-show="showCreateModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center p-4" style="display:none;">
+        <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm" @click="showCreateModal = false"></div>
+        <form method="POST" action="{{ url_for('admin.customers_list') }}"
+              class="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-md space-y-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">Create Tenant</h3>
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Business Name</label>
+                <input type="text" name="business_name" required class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none focus:border-indigo-500/80">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Email</label>
+                <input type="email" name="email" required class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none focus:border-indigo-500/80">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Initial Password</label>
+                <input type="password" name="password" required minlength="8" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none focus:border-indigo-500/80">
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Plan</label>
+                    <select name="plan_name" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
+                        {% for p in plans %}
+                        <option value="{{ p.name }}">{{ p.name | title }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Initial Credit (৳)</label>
+                    <input type="number" name="initial_credit" min="0" step="0.01" value="0" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
+                </div>
+            </div>
+            <div class="flex justify-end gap-3 pt-2">
+                <button type="button" @click="showCreateModal = false" class="px-4 py-2 text-slate-400 hover:text-slate-200 text-sm font-semibold">Cancel</button>
+                <button type="submit" class="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-bold rounded-xl text-sm">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+function promptReason(form) {
+    const reason = window.prompt("Reason for impersonation (required, logged in audit trail):");
+    if (!reason || !reason.trim()) return false;
+    form.querySelector('input[name="reason"]').value = reason.trim();
+    return true;
+}
+</script>
+{% endblock %}

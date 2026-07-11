@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  app:
+    image: ghcr.io/ccall/app:${VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ccall
+      POSTGRES_USER: ccall
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccall -d ccall"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+volumes:
+  postgres_prod_data:

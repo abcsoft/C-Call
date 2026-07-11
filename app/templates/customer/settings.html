@@ -1,0 +1,108 @@
+{% extends "customer/base_customer.html" %}
+
+{% block title %}SMS Fallback Settings — C-Call IVR{% endblock %}
+
+{% block customer_content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div>
+        <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">SMS Fallback Settings</h1>
+        <p class="text-slate-400 text-sm mt-1">Configure SMS alerts sent to customers when automated calls are unreachable.</p>
+    </div>
+
+    <!-- Main Config Card -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <!-- Left: Configuration Form (Takes 2 cols) -->
+        <div class="lg:col-span-2 bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-6">
+            <div class="border-b border-slate-800/80 pb-4">
+                <h3 class="font-outfit font-bold text-lg text-slate-100">SMS Configuration</h3>
+                <p class="text-xs text-slate-400 mt-1">Enable fallback SMS and set your API keys or templates.</p>
+            </div>
+
+            <form method="POST" action="{{ url_for('customer.settings_page') }}" class="space-y-6">
+                <!-- Toggle -->
+                <div class="flex items-center justify-between p-4 bg-slate-950/40 rounded-xl border border-slate-800/60">
+                    <div>
+                        <label class="block text-slate-200 text-sm font-semibold">Enable SMS Fallback</label>
+                        <span class="text-xs text-slate-400">Send an SMS when an order reaches UNREACHABLE status.</span>
+                    </div>
+                    <label class="relative inline-flex items-center cursor-pointer select-none">
+                        <input type="checkbox" name="enable_sms_fallback_toggle" id="enable_sms_fallback_toggle" value="true"
+                               {% if settings.enable_sms_fallback %}checked{% endif %}
+                               onchange="document.getElementById('enable_sms_fallback').value = this.checked ? 'true' : 'false';"
+                               class="sr-only peer">
+                        <input type="hidden" name="enable_sms_fallback" id="enable_sms_fallback" value="{% if settings.enable_sms_fallback %}true{% else %}false{% endif %}">
+                        <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-500 peer-checked:after:bg-slate-950"></div>
+                    </label>
+                </div>
+
+                <!-- API Key -->
+                <div class="space-y-2">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">SMSLayer API Key</label>
+                    <input type="password" name="smslayer_api_key" value="{{ settings.smslayer_api_key or '' }}" 
+                           placeholder="Leave blank to use platform SMS API key (standard billing rates apply)"
+                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                    <p class="text-[10px] text-slate-500">If using your own SMSLayer key, SMS cost is billed directly to your SMSLayer account. If using platform key, wallet balance will be debited per SMS sent.</p>
+                </div>
+
+                <!-- SMS Template -->
+                <div class="space-y-2">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">SMS Template</label>
+                    <textarea name="sms_template" rows="4" required
+                              placeholder="আপনার অর্ডার #{order_id} ({amount} টাকা) নিশ্চিত করতে কল করুন: {callback_number}"
+                              class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full font-mono">{{ settings.sms_template or 'আপনার অর্ডার #{order_id} ({amount} টাকা) নিশ্চিত করতে কল করুন: {callback_number}' }}</textarea>
+                    
+                    <!-- Help box -->
+                    <div class="bg-slate-950/30 rounded-lg p-3 border border-slate-800/40 text-[10px] text-slate-400 space-y-1">
+                        <div class="font-bold text-slate-300">Available Variables:</div>
+                        <div><code class="text-teal-400">{order_id}</code> - Order reference number (external)</div>
+                        <div><code class="text-teal-400">{amount}</code> - Total order amount</div>
+                        <div><code class="text-teal-400">{callback_number}</code> - Dedicated tenant CLI or default callback number</div>
+                    </div>
+                </div>
+
+                <!-- Action Button -->
+                <div class="flex justify-end pt-4 border-t border-slate-800/60">
+                    <button type="submit" 
+                            class="py-2.5 px-6 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md">
+                        Save SMS Configuration
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Right: Test SMS Panel (Takes 1 col) -->
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-6 h-fit">
+            <div class="border-b border-slate-800/80 pb-4">
+                <h3 class="font-outfit font-bold text-lg text-slate-100">Test SMS Gateway</h3>
+                <p class="text-xs text-slate-400 mt-1">Send a test SMS message to verify gateway connectivity and API keys.</p>
+            </div>
+
+            <form hx-post="{{ url_for('customer.test_sms') }}"
+                  hx-target="#test-sms-result"
+                  hx-indicator="#test-sms-indicator"
+                  class="space-y-4">
+                <div class="space-y-2">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Test Phone Number</label>
+                    <input type="text" name="phone" placeholder="e.g. 01712345678" required
+                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                </div>
+
+                <button type="submit" 
+                        class="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-2">
+                    <span>Send Test SMS</span>
+                    <!-- HTMX Indicator Loader -->
+                    <span id="test-sms-indicator" class="htmx-indicator">
+                        <svg class="animate-spin h-4 w-4 text-slate-200" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </span>
+                </button>
+            </form>
+
+            <div id="test-sms-result" class="mt-4"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}

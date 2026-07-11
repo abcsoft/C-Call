@@ -1,0 +1,375 @@
+{% extends "customer/base_customer.html" %}
+
+{% block title %}API & Integrations — C-Call IVR{% endblock %}
+
+{% block customer_content %}
+<div class="space-y-8" x-data="{ activeTab: 'woocommerce' }">
+    <!-- Header -->
+    <div>
+        <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">API & Integrations</h1>
+        <p class="text-slate-400 text-sm mt-1">Configure secure API keys, outbound webhooks, and explore custom integration guides.</p>
+    </div>
+
+    <!-- Top Grid: API Keys + Webhook Configurations -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <!-- API Keys Card -->
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-6 flex flex-col justify-between">
+            <div class="space-y-4">
+                <div class="border-b border-slate-800/80 pb-4">
+                    <h3 class="font-outfit font-bold text-lg text-slate-100">REST API Access Keys</h3>
+                    <p class="text-xs text-slate-400 mt-1">Authenticate external systems using C-Call API keys. Only one key can be active at a time.</p>
+                </div>
+
+                <!-- HTMX API Key generation form -->
+                <form hx-post="{{ url_for('customer.key_generate') }}"
+                      hx-target="#new-key-container"
+                      hx-swap="innerHTML"
+                      hx-on::after-request="this.reset()"
+                      hx-confirm="Are you sure you want to generate a new key? Any existing key will stop working immediately."
+                      class="flex gap-2">
+                    <input type="text" name="name" placeholder="Key name (e.g. WooCommerce)" required
+                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                    <button type="submit" 
+                            class="py-2.5 px-4 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md shrink-0">
+                        Generate Key
+                    </button>
+                </form>
+
+                <!-- Target for key creation result -->
+                <div id="new-key-container"></div>
+
+                <!-- API Keys List -->
+                <div class="border border-slate-800/80 rounded-xl overflow-hidden">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider">
+                            <tr>
+                                <th class="px-4 py-3">Name</th>
+                                <th class="px-4 py-3 font-mono">Prefix</th>
+                                <th class="px-4 py-3">Status</th>
+                                <th class="px-4 py-3 text-right">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800/50">
+                            {% for key in api_keys %}
+                            <tr id="key-row-{{ key.id }}" class="hover:bg-slate-900/10 transition-colors">
+                                <td class="px-4 py-3.5 font-semibold text-slate-200">{{ key.name }}</td>
+                                <td class="px-4 py-3.5 font-mono text-slate-400">{{ key.key_prefix }}••••••••</td>
+                                <td class="px-4 py-3.5">
+                                    {% if key.is_active %}
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">ACTIVE</span>
+                                    {% else %}
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-500">INACTIVE</span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-4 py-3.5 text-right">
+                                    <button hx-delete="{{ url_for('customer.key_revoke', key_id=key.id) }}"
+                                            hx-target="#key-row-{{ key.id }}"
+                                            hx-swap="outerHTML"
+                                            hx-confirm="Are you sure you want to revoke this API key? This cannot be undone."
+                                            class="py-1 px-2.5 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/20 hover:border-rose-500/30 text-rose-400 text-[10px] font-bold rounded-lg transition-colors">
+                                        Revoke
+                                    </button>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="4" class="px-4 py-6 text-center text-slate-500 font-medium">No API keys generated. Create one above to connect your store.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Webhook Configurations Card -->
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-6 flex flex-col justify-between">
+            <div class="space-y-4">
+                <div class="border-b border-slate-800/80 pb-4">
+                    <h3 class="font-outfit font-bold text-lg text-slate-100 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        Webhook Configurations
+                    </h3>
+                    <p class="text-xs text-slate-400 mt-1">Outbound webhooks notify your platform immediately when order status updates occur.</p>
+                </div>
+
+                <form method="POST" action="{{ url_for('customer.integration_panel') }}" class="space-y-4">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <!-- Webhook URL Input -->
+                    <div>
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Webhook Endpoint URL</label>
+                        <div class="flex gap-2">
+                            <input type="url" name="webhook_url" value="{{ settings.webhook_url or '' }}" placeholder="https://my-store.com/api/webhook"
+                                   class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                            <button type="submit" 
+                                    class="py-2.5 px-4 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md shrink-0">
+                                Save URL
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <!-- Webhook Secret Display -->
+                <div class="bg-slate-950/60 border border-slate-800/80 rounded-xl p-4 space-y-3" x-data="{ revealed: false, secret: '{{ settings.get('webhook_secret') or '' }}' }">
+                    <div class="flex items-center justify-between">
+                        <span class="block text-slate-300 text-[10px] font-bold uppercase tracking-wider">Paste this into your WooCommerce plugin under C-Call IVR → Webhook Secret</span>
+                        <form method="POST" action="{{ url_for('customer.regenerate_webhook_secret') }}" hx-confirm="Regenerating the webhook secret will break current signature verifications until updated in your store. Proceed?">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="text-[10px] text-teal-400 font-bold hover:underline">Regenerate Secret</button>
+                        </form>
+                    </div>
+
+                    {% if webhook_secret_once %}
+                    <div class="p-3 bg-emerald-950/60 border border-emerald-500 rounded-lg text-emerald-300 text-xs flex flex-col gap-1.5">
+                        <span class="font-bold">Copy Secret (Shown Once):</span>
+                        <div class="flex items-center justify-between gap-2 bg-black/40 p-2 rounded font-mono text-[11px] border border-emerald-500/30 overflow-x-auto select-all">
+                            <span>{{ webhook_secret_once }}</span>
+                            <button onclick="navigator.clipboard.writeText('{{ webhook_secret_once }}'); alert('Webhook Secret copied!');"
+                                    class="py-0.5 px-1.5 bg-emerald-500 text-slate-950 font-bold rounded text-[9px] shrink-0" type="button">
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="flex items-center justify-between gap-2 bg-black/30 p-2.5 rounded-xl font-mono text-xs text-slate-400 border border-slate-800/40">
+                        <span x-text="revealed ? secret : secret.substring(0, 8) + '•'.repeat(Math.max(0, secret.length - 8))" class="select-all break-all w-full"></span>
+                        <div class="flex items-center gap-1.5 shrink-0">
+                            <button @click="revealed = !revealed" type="button" class="text-[10px] text-teal-400 font-bold hover:underline px-1.5">
+                                <span x-text="revealed ? 'Hide' : 'Reveal'"></span>
+                            </button>
+                            <button @click="navigator.clipboard.writeText(secret); alert('Webhook Secret copied!');" type="button"
+                                    class="py-0.5 px-1.5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded text-[9px]">
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- Test webhook execution panel -->
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Test Webhook Delivery</label>
+                        <button hx-get="{{ url_for('customer.webhook_test') }}"
+                                hx-target="#webhook-test-result"
+                                hx-indicator="#webhook-indicator"
+                                class="py-1 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5">
+                            Send Test Webhook
+                        </button>
+                    </div>
+
+                    <!-- Loader -->
+                    <div id="webhook-indicator" class="htmx-indicator flex items-center justify-center p-3.5 bg-slate-950/40 border border-slate-800 rounded-xl">
+                        <div class="inline-block animate-spin rounded-full h-4 w-4 border-t-2 border-teal-500 mr-2"></div>
+                        <span class="text-xs text-slate-400">Triggering test payload...</span>
+                    </div>
+
+                    <!-- Test Result -->
+                    <div id="webhook-test-result"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Guides Tabs Panel -->
+    <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-6">
+        <!-- Tabs Navigation -->
+        <div class="flex flex-wrap gap-2 border-b border-slate-800/80 pb-4">
+            <button @click="activeTab = 'woocommerce'"
+                    :class="activeTab === 'woocommerce' ? 'bg-teal-500 text-slate-950 font-bold' : 'bg-slate-950 hover:bg-slate-900 text-slate-300 hover:text-slate-100'"
+                    class="px-4 py-2 rounded-xl text-xs transition-colors duration-200">
+                WooCommerce Setup
+            </button>
+            <button @click="activeTab = 'custom-api'"
+                    :class="activeTab === 'custom-api' ? 'bg-teal-500 text-slate-950 font-bold' : 'bg-slate-950 hover:bg-slate-900 text-slate-300 hover:text-slate-100'"
+                    class="px-4 py-2 rounded-xl text-xs transition-colors duration-200">
+                Custom API Reference
+            </button>
+            <button @click="activeTab = 'webhook-verify'"
+                    :class="activeTab === 'webhook-verify' ? 'bg-teal-500 text-slate-950 font-bold' : 'bg-slate-950 hover:bg-slate-900 text-slate-300 hover:text-slate-100'"
+                    class="px-4 py-2 rounded-xl text-xs transition-colors duration-200">
+                Webhook Verification
+            </button>
+            <button @click="activeTab = 'test-form'"
+                    :class="activeTab === 'test-form' ? 'bg-teal-500 text-slate-950 font-bold' : 'bg-slate-950 hover:bg-slate-900 text-slate-300 hover:text-slate-100'"
+                    class="px-4 py-2 rounded-xl text-xs transition-colors duration-200">
+                Test Order Form
+            </button>
+        </div>
+
+        <!-- Tab Content: WooCommerce -->
+        <div x-show="activeTab === 'woocommerce'" class="space-y-4">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">WooCommerce Store Integration</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Connect your WordPress/WooCommerce site to automate payment and cash-on-delivery (COD) confirmation calls instantly.
+            </p>
+
+            <div class="space-y-4 pt-2 text-xs text-slate-300">
+                <div class="flex gap-3">
+                    <span class="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center font-bold text-[10px] text-teal-400 shrink-0 mt-0.5">1</span>
+                    <div>
+                        <p class="font-bold text-slate-200">Install the C-Call WordPress Plugin</p>
+                        <p class="text-slate-400 mt-1">Download and upload our lightweight plugin zip to your WordPress admin console.</p>
+                        <a href="{{ url_for('static', filename='ccall-ivr.zip') }}" download
+                           class="inline-flex items-center mt-2 py-1.5 px-3 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-lg text-[10px] transition-colors shadow-md">
+                            <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                            Download Plugin (.zip)
+                        </a>
+                    </div>
+                </div>
+                <div class="flex gap-3">
+                    <span class="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center font-bold text-[10px] text-teal-400 shrink-0 mt-0.5">2</span>
+                    <div>
+                        <p class="font-bold text-slate-200">Configure credentials in settings</p>
+                        <p class="text-slate-400 mt-1">Open WooCommerce settings -> **C-Call Settings**, and input your generated **API Key** and **Webhook Secret**.</p>
+                    </div>
+                </div>
+                <div class="flex gap-3">
+                    <span class="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center font-bold text-[10px] text-teal-400 shrink-0 mt-0.5">3</span>
+                    <div>
+                        <p class="font-bold text-slate-200">Define Status Triggers</p>
+                        <p class="text-slate-400 mt-1">Choose which WooCommerce order status changes trigger calls (e.g. "Processing" or "Pending Payment").</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab Content: Custom API -->
+        <div x-show="activeTab === 'custom-api'" class="space-y-4">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">Direct API Integration</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Trigger automated confirmation calls dynamically from any custom codebase using our standard JSON payload.
+            </p>
+
+            <div class="space-y-3">
+                <span class="block text-xs font-bold text-slate-300">Create Order / Queue Call Endpoint:</span>
+                <div class="bg-slate-950 p-4 rounded-xl border border-slate-800/80 font-mono text-[11px] text-slate-300 select-all overflow-x-auto leading-relaxed">
+                    POST https://app.ccall.com.bd/api/v1/orders
+                </div>
+
+                <span class="block text-xs font-bold text-slate-300 mt-4">Example Request via curl:</span>
+                <pre class="bg-slate-950 p-4 rounded-xl border border-slate-800/80 text-[11px] font-mono text-slate-300 overflow-x-auto leading-relaxed select-all">
+curl -X POST https://app.ccall.com.bd/api/v1/orders \
+  -H "X-API-Key: cc_live_xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_id": "ORD-1001",
+    "phone": "01711234567",
+    "customer_name": "Sakib Hasan",
+    "amount": "1500.00",
+    "product_name": "একটি পাঞ্জাবি",
+    "webhook_url": "{{ settings.webhook_url or 'https://mystore.com/api/webhook' }}"
+  }'</pre>
+            </div>
+        </div>
+
+        <!-- Tab Content: Webhook Verification -->
+        <div x-show="activeTab === 'webhook-verify'" class="space-y-4">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">Webhook Signature Verification</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Ensure webhook calls are authentic and originate from C-Call by verifying the `X-CCAll-Signature` header against your Webhook Secret.
+            </p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                <!-- Python Verification -->
+                <div class="space-y-2">
+                    <span class="block text-xs font-bold text-slate-300">Python Example (Flask):</span>
+                    <pre class="bg-slate-950 p-4 rounded-xl border border-slate-800/80 text-[10px] font-mono text-slate-300 overflow-x-auto leading-relaxed select-all">
+import hmac
+import hashlib
+
+def verify_webhook(secret_key, request_body, signature_header):
+    # signature_header = request.headers.get('X-CCAll-Signature')
+    # request_body = raw byte content of POST request
+    computed = hmac.new(
+        secret_key.encode('utf-8'),
+        request_body,
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(
+        f"sha256={computed}", 
+        signature_header
+    )</pre>
+                </div>
+
+                <!-- PHP Verification -->
+                <div class="space-y-2">
+                    <span class="block text-xs font-bold text-slate-300">PHP Example:</span>
+                    <pre class="bg-slate-950 p-4 rounded-xl border border-slate-800/80 text-[10px] font-mono text-slate-300 overflow-x-auto leading-relaxed select-all">
+&lt;?php
+function verify_webhook($secret_key, $request_body, $signature_header) {
+    // $request_body = file_get_contents('php://input');
+    // $signature_header = $_SERVER['HTTP_X_CCALL_SIGNATURE'] ?? '';
+    
+    $computed = hash_hmac(
+        'sha256', 
+        $request_body, 
+        $secret_key
+    );
+    return hash_equals(
+        "sha256=" . $computed, 
+        $signature_header
+    );
+}</pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab Content: Test Order Form -->
+        <div x-show="activeTab === 'test-form'" class="space-y-4">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">Send Test Order</h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+                Test order confirmation calls immediately by creating a sample order and placing a real call to your test phone number.
+            </p>
+
+            <form hx-post="/api/integration/test-order"
+                  hx-target="#test-order-result"
+                  hx-indicator="#test-order-indicator"
+                  class="bg-slate-950/40 border border-slate-800/80 rounded-2xl p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+                
+                <div>
+                    <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1.5">Phone Number (BD E.164)</label>
+                    <input type="text" name="phone" value="01711234567" placeholder="e.g. 01711234567" required
+                           class="w-full bg-slate-950 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-xs focus:outline-none">
+                </div>
+                
+                <div>
+                    <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1.5">Customer Name</label>
+                    <input type="text" name="customer_name" value="সাকিব হাসান" placeholder="e.g. সাকিব হাসান" required
+                           class="w-full bg-slate-950 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-xs focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1.5">COD Amount (BDT)</label>
+                    <input type="number" name="amount" value="1500" placeholder="e.g. 1500" required
+                           class="w-full bg-slate-950 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-xs focus:outline-none">
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold uppercase text-slate-400 mb-1.5">Product Name</label>
+                    <input type="text" name="product_name" value="একটি পাঞ্জাবি" placeholder="e.g. একটি পাঞ্জাবি" required
+                           class="w-full bg-slate-950 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-xs focus:outline-none">
+                </div>
+
+                <div class="md:col-span-2 pt-2 flex flex-col gap-3">
+                    <button type="submit" 
+                            class="w-full py-2.5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md">
+                        Send Test Order
+                    </button>
+
+                    <!-- Indicators -->
+                    <div id="test-order-indicator" class="htmx-indicator flex items-center justify-center p-3 bg-slate-900 border border-slate-800 rounded-xl">
+                        <div class="inline-block animate-spin rounded-full h-4 w-4 border-t-2 border-teal-500 mr-2"></div>
+                        <span class="text-xs text-slate-400">Placing test order and calling...</span>
+                    </div>
+
+                    <!-- Result output -->
+                    <div id="test-order-result"></div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

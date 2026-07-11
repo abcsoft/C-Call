@@ -1,0 +1,41 @@
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <!-- Today's Stats -->
+    <div class="bg-gradient-to-br from-slate-900 to-teal-950/20 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 relative overflow-hidden group">
+        <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-teal-500/5 rounded-full blur-xl transition-all group-hover:scale-150"></div>
+        <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">Today's Usage</p>
+        <div class="grid grid-cols-3 gap-4 mt-3">
+            <div>
+                <span class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Calls</span>
+                <span class="text-xl font-outfit font-extrabold text-slate-200 tracking-tight">{{ summaries.today.calls }}</span>
+            </div>
+            <div>
+                <span class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Minutes</span>
+                <span class="text-xl font-outfit font-extrabold text-slate-200 tracking-tight">{{ summaries.today.minutes }}m</span>
+            </div>
+            <div>
+                <span class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Charged</span>
+                <span class="text-xl font-outfit font-extrabold text-teal-400 tracking-tight">৳{{ "%.2f"|format(summaries.today.charged) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Month's Stats -->
+    <div class="bg-gradient-to-br from-slate-900 to-indigo-950/20 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 relative overflow-hidden group">
+        <div class="absolute -right-6 -bottom-6 w-24 h-24 bg-indigo-500/5 rounded-full blur-xl transition-all group-hover:scale-150"></div>
+        <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-2">This Month's Usage</p>
+        <div class="grid grid-cols-3 gap-4 mt-3">
+            <div>
+                <span class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Calls</span>
+                <span class="text-xl font-outfit font-extrabold text-slate-200 tracking-tight">{{ summaries.month.calls }}</span>
+            </div>
+            <div>
+                <span class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Minutes</span>
+                <span class="text-xl font-outfit font-extrabold text-slate-200 tracking-tight">{{ summaries.month.minutes }}m</span>
+            </div>
+            <div>
+                <span class="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Charged</span>
+                <span class="text-xl font-outfit font-extrabold text-teal-400 tracking-tight">৳{{ "%.2f"|format(summaries.month.charged) }}</span>
+            </div>
+        </div>
+    </div>
+</div>

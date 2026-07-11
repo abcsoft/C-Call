@@ -89,6 +89,8 @@
               <option value="gtts"       {{ 'selected' if tts.TTS_PROVIDER=='gtts' }}>gTTS — Google (free, multi-language)</option>
               <option value="elevenlabs" {{ 'selected' if tts.TTS_PROVIDER=='elevenlabs' }}>ElevenLabs v3 — High-quality AI voices</option>
               <option value="gemini"     {{ 'selected' if tts.TTS_PROVIDER=='gemini' }}>Google Gemini 2.5 Flash TTS</option>
+              <option value="edge"       {{ 'selected' if tts.TTS_PROVIDER=='edge' }}>Edge-TTS — Microsoft (free, Bangla neural voices)</option>
+              <option value="openvoice"  {{ 'selected' if tts.TTS_PROVIDER=='openvoice' }}>OpenVoice V2 — backup (preview/pre-gen only; live calls need pre-generated cache)</option>
             </select>
           </div>
 
@@ -191,6 +193,52 @@
             </div>
           </div>
 
+          <!-- Edge-TTS fields -->
+          <div class="js-edge-fields tts-pane" style="{{ '' if tts.TTS_PROVIDER=='edge' else 'display:none;' }}">
+            <div class="tts-badge"><i class="ti ti-sparkles"></i> Edge-TTS (Microsoft, free)</div>
+            <div class="form-group fg">
+              <label class="form-label">Voice</label>
+              <div class="voice-picker-row">
+                <select class="form-select" name="EDGE_TTS_VOICE" id="edge-voice-select">
+                  {% for v in edge_voices %}
+                  <option value="{{ v }}" {{ 'selected' if tts.EDGE_TTS_VOICE==v }}>{{ v }}</option>
+                  {% endfor %}
+                </select>
+                <button type="button" class="voice-load-btn" onclick="testEdge()">
+                  <i class="ti ti-plug-connected"></i> Test Voice
+                </button>
+                <button type="button" class="voice-load-btn" onclick="previewVoice('edge')">
+                  <i class="ti ti-player-play"></i> Preview
+                </button>
+              </div>
+              <div class="field-note" id="edge-test-status"><i class="ti ti-info-circle"></i> No API key required. Bangla neural voices.</div>
+              <audio id="edge-preview" controls style="margin-top:10px; width:100%; display:none;"></audio>
+            </div>
+          </div>
+
+          <!-- OpenVoice fields -->
+          <div class="js-openvoice-fields tts-pane" style="{{ '' if tts.TTS_PROVIDER=='openvoice' else 'display:none;' }}">
+            <div class="tts-badge"><i class="ti ti-sparkles"></i> OpenVoice V2 (backup) <span id="ov-install-badge"></span></div>
+            <div class="form-group fg">
+              <label class="form-label">Voice</label>
+              <div class="voice-picker-row">
+                <select class="form-select" name="OPENVOICE_VOICE" id="ov-voice-select">
+                  {% for v in openvoice_voices %}
+                  <option value="{{ v }}" {{ 'selected' if tts.OPENVOICE_VOICE==v }}>{{ v }}</option>
+                  {% endfor %}
+                </select>
+                <button type="button" class="voice-load-btn" onclick="testOpenVoice()">
+                  <i class="ti ti-plug-connected"></i> Test Voice
+                </button>
+                <button type="button" class="voice-load-btn" onclick="previewVoice('openvoice')">
+                  <i class="ti ti-player-play"></i> Preview
+                </button>
+              </div>
+              <div class="field-note" id="ov-test-status"><i class="ti ti-info-circle"></i> Preview/pre-generation only — never used live. If the runtime isn't installed, generation fails with a clear error (it does not substitute Edge-TTS).</div>
+              <audio id="ov-preview" controls style="margin-top:10px; width:100%; display:none;"></audio>
+            </div>
+          </div>
+
         </div>
       </section>
 
@@ -260,7 +308,7 @@ const ttsSelect = document.getElementById('tts-provider-select');
 function updateTtsPanes() {
   const val = ttsSelect.value;
   document.querySelectorAll('.tts-pane').forEach(p => p.style.display = 'none');
-  const map = {gtts: '.js-gtts-fields', elevenlabs: '.js-elevenlabs-fields', gemini: '.js-gemini-fields'};
+  const map = {gtts: '.js-gtts-fields', elevenlabs: '.js-elevenlabs-fields', gemini: '.js-gemini-fields', edge: '.js-edge-fields', openvoice: '.js-openvoice-fields'};
   const el = document.querySelector(map[val]);
   if (el) el.style.display = 'block';
 }
@@ -355,21 +403,83 @@ async function testGemini() {
   }
 }
 
+// Test Edge-TTS voice
+async function testEdge() {
+  const status = document.getElementById('edge-test-status');
+  setStatus(status, '', '<i class="ti ti-loader spin"></i> Testing voice (generates a sample)…');
+  try {
+    const res = await fetch('/api/test/edge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({voice_name: document.getElementById('edge-voice-select').value})
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Failed');
+    setStatus(status, 'ok', `<i class="ti ti-circle-check"></i> ${data.message}`);
+  } catch (err) {
+    setStatus(status, 'warn', '⚠ ' + err.message);
+  }
+}
+
+// Show "Not configured" if the OpenVoice runtime isn't installed (cheap check, no generation)
+async function checkOpenVoiceInstalled() {
+  const badge = document.getElementById('ov-install-badge');
+  if (!badge) return;
+  try {
+    const res = await fetch('/api/openvoice/status');
+    const data = await res.json();
+    badge.innerHTML = data.installed
+      ? '<span class="warn-note" style="color:var(--teal);">· Installed</span>'
+      : '<span class="warn-note">· Not configured</span>';
+  } catch (err) {
+    badge.innerHTML = '';
+  }
+}
+checkOpenVoiceInstalled();
+
+// Test OpenVoice (preview path — fails clearly if the runtime is unavailable, no Edge-TTS substitution)
+async function testOpenVoice() {
+  const status = document.getElementById('ov-test-status');
+  setStatus(status, '', '<i class="ti ti-loader spin"></i> Testing voice (generates a sample)…');
+  try {
+    const res = await fetch('/api/test/openvoice', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({voice_name: document.getElementById('ov-voice-select').value})
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Failed');
+    setStatus(status, 'ok', `<i class="ti ti-circle-check"></i> ${data.message}`);
+  } catch (err) {
+    setStatus(status, 'warn', '⚠ ' + err.message);
+  }
+}
+
 // Generate + play a short voice sample
 async function previewVoice(provider) {
-  const isEl = provider === 'elevenlabs';
-  const status = document.getElementById(isEl ? 'el-voice-status' : 'gm-voice-status');
-  const audio = document.getElementById(isEl ? 'el-preview' : 'gm-preview');
+  const idMap = {
+    elevenlabs: {status: 'el-voice-status', audio: 'el-preview'},
+    gemini: {status: 'gm-voice-status', audio: 'gm-preview'},
+    edge: {status: 'edge-test-status', audio: 'edge-preview'},
+    openvoice: {status: 'ov-test-status', audio: 'ov-preview'},
+  };
+  const ids = idMap[provider];
+  const status = document.getElementById(ids.status);
+  const audio = document.getElementById(ids.audio);
   setStatus(status, '', '<i class="ti ti-loader spin"></i> Generating sample…');
   const payload = {provider: provider};
-  if (isEl) {
+  if (provider === 'elevenlabs') {
     payload.api_key = elKey();
     payload.voice_id = document.getElementById('el-voice-select').value;
     payload.model = document.getElementById('el-model').value;
-  } else {
+  } else if (provider === 'gemini') {
     payload.api_key = gmKey();
     payload.voice_name = document.getElementById('gm-voice-select').value;
     payload.model = document.getElementById('gm-model').value;
+  } else if (provider === 'edge') {
+    payload.voice_name = document.getElementById('edge-voice-select').value;
+  } else if (provider === 'openvoice') {
+    payload.voice_name = document.getElementById('ov-voice-select').value;
   }
   try {
     const res = await fetch('/api/tts/preview', {

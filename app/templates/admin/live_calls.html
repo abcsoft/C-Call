@@ -1,0 +1,141 @@
+{% extends "admin/base_admin.html" %}
+
+{% block title %}Live Call Monitor — C-Call Console{% endblock %}
+
+{% block admin_content %}
+<div class="space-y-6" x-data="liveCallMonitor()" x-init="start()">
+    <div>
+        <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Live Call Monitor</h1>
+        <p class="text-slate-400 text-sm mt-1">Real-time view of every in-progress call across all merchant tenants.</p>
+    </div>
+
+    <!-- Summary cards -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Active Calls</p>
+            <p class="text-2xl font-outfit font-extrabold text-indigo-400 mt-1" x-text="summary.active_calls"></p>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Ringing</p>
+            <p class="text-2xl font-outfit font-extrabold text-amber-400 mt-1" x-text="summary.ringing"></p>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Answered</p>
+            <p class="text-2xl font-outfit font-extrabold text-emerald-400 mt-1" x-text="summary.answered"></p>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Calls Today</p>
+            <p class="text-2xl font-outfit font-extrabold text-slate-200 mt-1" x-text="summary.calls_today"></p>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Failed Today</p>
+            <p class="text-2xl font-outfit font-extrabold text-rose-400 mt-1" x-text="summary.failed_today"></p>
+        </div>
+    </div>
+
+    <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm text-slate-300">
+                <thead class="bg-slate-950/60 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-5 py-4">Tenant</th>
+                        <th class="px-5 py-4">Order</th>
+                        <th class="px-5 py-4">Phone</th>
+                        <th class="px-5 py-4">Caller ID</th>
+                        <th class="px-5 py-4">Gateway</th>
+                        <th class="px-5 py-4">Status</th>
+                        <th class="px-5 py-4">Ring</th>
+                        <th class="px-5 py-4">Talk</th>
+                        <th class="px-5 py-4">DTMF</th>
+                        <th class="px-5 py-4">Charge</th>
+                        <th class="px-5 py-4">Started</th>
+                        <th class="px-5 py-4 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/50">
+                    <template x-if="calls.length === 0">
+                        <tr><td colspan="12" class="px-5 py-10 text-center text-slate-500 font-medium">No live calls right now.</td></tr>
+                    </template>
+                    <template x-for="call in calls" :key="call.call_id">
+                        <tr class="hover:bg-slate-900/20 transition-colors">
+                            <td class="px-5 py-3.5 font-mono text-xs" x-text="call.tenant_id"></td>
+                            <td class="px-5 py-3.5" x-text="call.order_id || '—'"></td>
+                            <td class="px-5 py-3.5 font-mono text-xs" x-text="call.phone"></td>
+                            <td class="px-5 py-3.5 font-mono text-xs" x-text="call.caller_id || '—'"></td>
+                            <td class="px-5 py-3.5 font-mono text-xs" x-text="call.sip_gateway_id || '—'"></td>
+                            <td class="px-5 py-3.5">
+                                <span class="px-2 py-0.5 rounded text-[10px] font-bold border"
+                                      :class="statusBadge(call.status)" x-text="call.status"></span>
+                            </td>
+                            <td class="px-5 py-3.5" x-text="call.ring_seconds + 's'"></td>
+                            <td class="px-5 py-3.5" x-text="call.talk_seconds + 's'"></td>
+                            <td class="px-5 py-3.5" x-text="call.dtmf_digit || '—'"></td>
+                            <td class="px-5 py-3.5 text-teal-400 font-semibold" x-text="'৳' + (call.charge || 0)"></td>
+                            <td class="px-5 py-3.5 text-xs text-slate-400" x-text="formatTime(call.started_at)"></td>
+                            <td class="px-5 py-3.5 text-right">
+                                <button x-show="call.cancel_supported"
+                                        @click="hangup(call.call_id)"
+                                        class="py-1 px-3 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 text-[10px] font-bold rounded-lg transition-all">
+                                    Hangup
+                                </button>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+function liveCallMonitor() {
+    return {
+        calls: [],
+        summary: { active_calls: 0, ringing: 0, answered: 0, calls_today: 0, failed_today: 0 },
+        timer: null,
+
+        start() {
+            this.poll();
+        },
+        async poll() {
+            try {
+                const resp = await fetch("{{ url_for('admin.api_live_calls') }}", { headers: { 'Accept': 'application/json' } });
+                const data = await resp.json();
+                if (data.success) {
+                    this.calls = data.calls;
+                    this.summary = data.summary;
+                }
+            } catch (e) { /* keep last known state on transient error */ }
+            clearTimeout(this.timer);
+            const interval = this.calls.length > 0 ? 1000 : 5000;
+            this.timer = setTimeout(() => this.poll(), interval);
+        },
+        async hangup(callId) {
+            if (!confirm('Hang up this call?')) return;
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+            await fetch(`/admin/api/live-calls/${callId}/hangup`, {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrfToken }
+            });
+            this.poll();
+        },
+        statusBadge(status) {
+            const map = {
+                ringing: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+                answered: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                waiting_dtmf: 'bg-sky-500/10 text-sky-400 border-sky-500/20',
+                playing_tts: 'bg-sky-500/10 text-sky-400 border-sky-500/20',
+                failed: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+                completed: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
+            };
+            return map[status] || 'bg-slate-800 text-slate-400 border-slate-700';
+        },
+        formatTime(iso) {
+            if (!iso) return '—';
+            const d = new Date(iso);
+            return d.toLocaleTimeString();
+        }
+    };
+}
+</script>
+{% endblock %}

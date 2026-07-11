@@ -1,0 +1,443 @@
+{% extends "customer/base_customer.html" %}
+
+{% block title %}Edit {{ flow.name }} — C-Call IVR{% endblock %}
+
+{% block customer_content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-slate-800 pb-5">
+        <div>
+            <div class="flex items-center gap-2">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-teal-500/10 text-teal-300 border border-teal-500/20">
+                    <svg class="w-3 h-3 mr-1 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 5.636l-3.536 3.536m0 0A5 5 0 1111 8.828l-3.536-3.536m3.536 3.536L12 21"></path>
+                    </svg>
+                    Flow Designer
+                </span>
+            </div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight mt-1">{{ flow.name }}</h1>
+            <p class="text-slate-400 text-sm mt-1">{{ flow.description or 'No description provided.' }}</p>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap">
+            <a href="{{ url_for('customer.flows_list') }}" 
+               class="py-2.5 px-4 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-200 font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                </svg>
+                Back to Flows
+            </a>
+            <form method="POST" action="{{ url_for('customer.flow_delete', flow_id=flow.id) }}"
+                  onsubmit="return confirm('Delete this entire flow, all nodes, and all keypress mappings? Order call records will remain but will lose flow configuration context.')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" 
+                        class="py-2.5 px-4 bg-rose-950/40 hover:bg-rose-950/60 text-rose-300 border border-rose-900/40 hover:border-rose-900/80 font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5">
+                    <svg class="w-4 h-4 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                    </svg>
+                    Delete Flow
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Config Forms -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <!-- 1. Add Node Card -->
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-4" x-data="{ nodeType: 'menu' }">
+            <div class="border-b border-slate-800/80 pb-3">
+                <h3 class="font-outfit font-bold text-lg text-slate-100">Add Menu Node</h3>
+                <p class="text-xs text-slate-400 mt-1">Create a new interactive state or step within the IVR flow.</p>
+            </div>
+
+            <form method="POST" action="{{ url_for('customer.flow_add_node', flow_id=flow.id) }}" enctype="multipart/form-data" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="space-y-2">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Node Name</label>
+                    <input type="text" name="name" placeholder="e.g., Main Menu, Sales Message, Hanging Up" required
+                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                </div>
+
+                <div class="space-y-2">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Node Type</label>
+                    <select name="node_type" x-model="nodeType"
+                            class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                        <option value="menu">Menu (plays prompt & gathers DTMF keypress)</option>
+                        <option value="message">Message (plays announcement then hangs up)</option>
+                        <option value="transfer">Transfer (transfers call to agent number)</option>
+                        <option value="hangup">Hang Up (silently ends call)</option>
+                    </select>
+                </div>
+
+                <!-- Prompt text field: Show for menu, message, transfer -->
+                <div class="space-y-2" x-show="nodeType !== 'hangup'">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Prompt Text (Spoken via TTS)</label>
+                    <textarea name="prompt_text" rows="3" placeholder="বাংলার জন্য ১ চাপুন, For English press 2."
+                              class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full"></textarea>
+                </div>
+
+                <!-- Prompt configuration: Show for menu, message, transfer -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4" x-show="nodeType !== 'hangup'">
+                    <div class="space-y-2">
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">TTS Language</label>
+                        <input type="text" name="prompt_lang" value="bn"
+                               class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Or Upload Audio File</label>
+                        <input type="file" name="prompt_file" accept="audio/*,.mp3,.wav"
+                               class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-1.5 text-slate-400 text-xs focus:outline-none w-full">
+                    </div>
+                </div>
+
+                <!-- Timeout / Retries config: Show only for menu -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4" x-show="nodeType === 'menu'">
+                    <div class="space-y-2">
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Gather Timeout (s)</label>
+                        <input type="number" name="gather_timeout_seconds" value="8" min="1"
+                               class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Max Retries</label>
+                        <input type="number" name="max_retries" value="2" min="0"
+                               class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                    </div>
+                </div>
+
+                <!-- Transfer target number: Show only for transfer -->
+                <div class="space-y-2" x-show="nodeType === 'transfer'">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Transfer Phone Number</label>
+                    <input type="text" name="transfer_number" placeholder="e.g. 01712345678"
+                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                    <p class="text-[10px] text-slate-500 leading-normal">System attempts SIP REFER redirection first, then falls back to bridging.</p>
+                </div>
+
+                <button type="submit" 
+                        class="w-full py-2.5 px-6 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md flex items-center justify-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                    </svg>
+                    Add Node
+                </button>
+            </form>
+        </div>
+
+        <!-- 2. Connect Keypresses & Settings Card -->
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-6">
+            <div>
+                <h3 class="font-outfit font-bold text-lg text-slate-100 border-b border-slate-800/80 pb-3">Keypress Routing (Transitions)</h3>
+                <p class="text-xs text-slate-400 mt-1">Map DTMF keypad digits to destination steps in the flow.</p>
+            </div>
+
+            {% if nodes %}
+            <form method="POST" action="{{ url_for('customer.flow_add_transition', flow_id=flow.id) }}" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <div class="space-y-2">
+                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">From Menu Node</label>
+                    <select name="node_id" required
+                            class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                        {% for n in nodes %}
+                            {% if n.node_type == 'menu' %}
+                                <option value="{{ n.id }}">{{ n.name }} ({{ n.node_type }})</option>
+                            {% endif %}
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="space-y-2">
+                        <label class="block text-slate-3:00 text-xs font-semibold uppercase tracking-wider">Caller Presses Key</label>
+                        <input type="text" name="digit" maxlength="1" placeholder="0-9, * or #" required
+                               class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full font-mono text-center">
+                    </div>
+                    <div class="space-y-2">
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Go to Node</label>
+                        <select name="next_node_id" required
+                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                            {% for n in nodes %}
+                                <option value="{{ n.id }}">{{ n.name }} ({{ n.node_type }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="space-y-2">
+                    <label class="block text-slate-3:00 text-xs font-semibold uppercase tracking-wider">Transition Label (Optional)</label>
+                    <input type="text" name="label" placeholder="e.g. Confirmed purchase, Back to main"
+                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                </div>
+
+                <button type="submit" 
+                        class="w-full py-2.5 px-6 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5">
+                    <svg class="w-4 h-4 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                    </svg>
+                    Map Keypress Transition
+                </button>
+            </form>
+
+            <hr class="border-slate-800/80 my-6">
+
+            <!-- Set Start Node -->
+            <div>
+                <h3 class="font-outfit font-bold text-base text-slate-200 mb-3">Entry Point (Start Node)</h3>
+                <form method="POST" action="{{ url_for('customer.flow_set_root', flow_id=flow.id) }}" class="flex items-end gap-3">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <div class="flex-1 space-y-2">
+                        <select name="root_node_id"
+                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                            {% for n in nodes %}
+                                <option value="{{ n.id }}" {{ 'selected' if n.id == flow.root_node_id }}>{{ n.name }} ({{ n.node_type }})</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <button type="submit" 
+                            class="py-2.5 px-5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md shrink-0 flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                        </svg>
+                        Set Start Node
+                    </button>
+                </form>
+            </div>
+            {% else %}
+            <div class="py-8 text-center bg-slate-950/30 rounded-xl border border-slate-800/50">
+                <svg class="mx-auto h-8 w-8 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
+                <div class="mt-2 text-xs text-slate-400 font-medium">Create at least one node on the left to map transitions or configure entry point.</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- 3. Node list / Visual Graph Tree -->
+    <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+        <div class="px-6 py-5 border-b border-slate-800/80">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">Flow Diagram & Node List</h3>
+            <p class="text-xs text-slate-400 mt-1">Detailed nodes and transitions configured in this menu tree.</p>
+        </div>
+
+        <div class="p-6 space-y-6">
+            {% if nodes %}
+                {% for n in nodes %}
+                <div class="p-5 rounded-2xl border transition-all duration-200 bg-slate-950/40 relative {% if n.id == flow.root_node_id %}border-teal-500/50 bg-teal-950/5{% else %}border-slate-800/80{% endif %}"
+                     x-data="{ editing: false, editType: '{{ n.node_type }}' }">
+                    
+                    <!-- Read-only Mode -->
+                    <div x-show="!editing" class="space-y-4">
+                        <div class="flex items-center justify-between gap-4 flex-wrap">
+                            <div class="flex items-center gap-2">
+                                <!-- Type badge -->
+                                <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded-md tracking-wider
+                                    {% if n.node_type == 'menu' %}bg-indigo-500/10 text-indigo-300 border border-indigo-500/20
+                                    {% elif n.node_type == 'message' %}bg-sky-500/10 text-sky-300 border border-sky-500/20
+                                    {% elif n.node_type == 'transfer' %}bg-amber-500/10 text-amber-300 border border-amber-500/20
+                                    {% else %}bg-slate-800 text-slate-400 border border-slate-700
+                                    {% endif %}">
+                                    {{ n.node_type }}
+                                </span>
+                                <span class="text-sm font-bold text-slate-200">{{ n.name }}</span>
+                                {% if n.id == flow.root_node_id %}
+                                    <span class="px-2 py-0.5 text-[9px] font-extrabold bg-teal-500 text-slate-950 rounded-md tracking-wider">START NODE</span>
+                                {% endif %}
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button type="button" @click="editing = true"
+                                        class="inline-flex items-center px-2.5 py-1 bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-300 rounded-lg text-xs transition-colors">
+                                    <svg class="w-3.5 h-3.5 mr-1 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path>
+                                    </svg>
+                                    Edit
+                                </button>
+                                <form method="POST" action="{{ url_for('customer.flow_delete_node', flow_id=flow.id, node_id=n.id) }}"
+                                      onsubmit="return confirm('Delete this node? All keypress transitions pointing to or starting from this node will be removed.')">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" 
+                                            class="inline-flex items-center px-2.5 py-1 bg-rose-950/20 hover:bg-rose-950/40 text-rose-300 border border-rose-900/30 hover:border-rose-900/60 rounded-lg text-xs transition-colors">
+                                        <svg class="w-3.5 h-3.5 mr-1 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                                        </svg>
+                                        Delete
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <!-- Prompt Information -->
+                        {% if n.prompt_text or n.prompt_audio or n.node_type == 'transfer' %}
+                        <div class="pl-4 border-l-2 border-slate-800 space-y-2">
+                            {% if n.prompt_text %}
+                            <p class="text-sm text-slate-300 italic font-medium leading-relaxed font-sans">“{{ n.prompt_text }}”</p>
+                            {% endif %}
+                            
+                            <div class="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-500">
+                                {% if n.prompt_audio %}
+                                <span class="flex items-center gap-1">
+                                    <svg class="w-4 h-4 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path>
+                                    </svg>
+                                    Audio Prompt: <code class="text-teal-400/90 font-mono">{{ n.prompt_audio }}.ulaw</code>
+                                </span>
+                                {% endif %}
+                                {% if n.node_type == 'transfer' %}
+                                <span class="flex items-center gap-1 text-amber-500/90 font-semibold">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.94.725l.548 2.2a1 1 0 01-.321.988l-1.305.98a10.582 10.582 0 004.872 4.872l.98-1.305a1 1 0 01.988-.321l2.2.548a1 1 0 01.725.94V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path>
+                                    </svg>
+                                    Forward target: {{ n.transfer_number }}
+                                </span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        <!-- Keypress Mapping List -->
+                        {% set tlist = transitions.get(n.id, []) %}
+                        {% if tlist %}
+                        <div class="pt-2 border-t border-slate-900">
+                            <span class="block text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-2.5">Keypad Branches (Transitions)</span>
+                            <div class="flex flex-col gap-2">
+                                {% for t in tlist %}
+                                <div class="flex items-center justify-between bg-slate-950/40 p-2 px-3 rounded-xl border border-slate-800/40 text-xs">
+                                    <div class="flex items-center gap-2">
+                                        <span class="w-5 h-5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-mono font-bold flex items-center justify-center select-none shadow-sm">{{ t.digit }}</span>
+                                        <svg class="w-3.5 h-3.5 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                        </svg>
+                                        <span class="font-bold text-slate-300">{{ t.next_name or '—' }}</span>
+                                        {% if t.label %}
+                                        <span class="text-slate-500 text-[11px] font-medium">({{ t.label }})</span>
+                                        {% endif %}
+                                    </div>
+                                    <form method="POST" action="{{ url_for('customer.flow_delete_transition', flow_id=flow.id, transition_id=t.id) }}">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                        <button type="submit" class="text-rose-400 hover:text-rose-300 font-bold text-[11px] transition-colors">
+                                            Remove Branch
+                                        </button>
+                                    </form>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% elif n.node_type == 'menu' %}
+                        <div class="pt-2 border-t border-slate-900 text-xs text-slate-500 italic">
+                            No branches mapped. Calls reaching this node will hang up after playing the prompt.
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- Edit/Update Form Mode -->
+                    <div x-show="editing" class="space-y-4" style="display:none;">
+                        <div class="border-b border-slate-800 pb-2">
+                            <h4 class="font-bold text-slate-200 text-sm">Update Node: {{ n.name }}</h4>
+                        </div>
+
+                        <form method="POST" action="{{ url_for('customer.flow_update_node', flow_id=flow.id, node_id=n.id) }}" enctype="multipart/form-data" class="space-y-4">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="space-y-2">
+                                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Node Name</label>
+                                    <input type="text" name="name" value="{{ n.name }}" required
+                                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2 text-slate-100 text-xs focus:outline-none w-full">
+                                </div>
+                                <div class="space-y-2">
+                                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Node Type</label>
+                                    <select name="node_type" x-model="editType"
+                                            class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2 text-slate-100 text-xs focus:outline-none w-full">
+                                        <option value="menu" {{ 'selected' if n.node_type == 'menu' }}>Menu (gathers keypress)</option>
+                                        <option value="message" {{ 'selected' if n.node_type == 'message' }}>Message (plays then hangs up)</option>
+                                        <option value="transfer" {{ 'selected' if n.node_type == 'transfer' }}>Transfer</option>
+                                        <option value="hangup" {{ 'selected' if n.node_type == 'hangup' }}>Hang Up</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Prompt Text -->
+                            <div class="space-y-2" x-show="editType !== 'hangup'">
+                                <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Prompt Text</label>
+                                <textarea name="prompt_text" rows="3"
+                                          class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full font-sans">{{ n.prompt_text }}</textarea>
+                                <p class="text-[10px] text-slate-500">Edit prompt text here. Select "Regenerate voice" checkbox below to update prompt audio files using your tenant TTS settings.</p>
+                            </div>
+
+                            <!-- Prompt Language & Upload Audio -->
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4" x-show="editType !== 'hangup'">
+                                <div class="space-y-2">
+                                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">TTS Language</label>
+                                    <input type="text" name="prompt_lang" value="{{ n.prompt_lang or 'bn' }}"
+                                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                                </div>
+                                <div class="space-y-2">
+                                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Upload Replacement Audio</label>
+                                    <input type="file" name="prompt_file" accept="audio/*,.mp3,.wav"
+                                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-1.5 text-slate-400 text-xs focus:outline-none w-full">
+                                </div>
+                            </div>
+
+                            <!-- Gather Settings -->
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4" x-show="editType === 'menu'">
+                                <div class="space-y-2">
+                                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Gather Timeout (s)</label>
+                                    <input type="number" name="gather_timeout_seconds" value="{{ n.gather_timeout_seconds or 8 }}" min="1"
+                                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                                </div>
+                                <div class="space-y-2">
+                                    <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Max Retries</label>
+                                    <input type="number" name="max_retries" value="{{ n.max_retries or 2 }}" min="0"
+                                           class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                                </div>
+                            </div>
+
+                            <!-- Transfer Target number -->
+                            <div class="space-y-2" x-show="editType === 'transfer'">
+                                <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Transfer Phone Number</label>
+                                <input type="text" name="transfer_number" value="{{ n.transfer_number }}" placeholder="01712345678"
+                                       class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none w-full">
+                            </div>
+
+                            <!-- Checkboxes for synthesis and clearing -->
+                            <div class="flex flex-col sm:flex-row gap-4 py-1" x-show="editType !== 'hangup'">
+                                <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                                    <input type="checkbox" name="regenerate_audio" value="1"
+                                           class="h-4 w-4 text-teal-600 focus:ring-teal-500 bg-slate-950 border-slate-800 rounded">
+                                    <span class="text-xs text-slate-300">Regenerate voice from prompt text</span>
+                                </label>
+                                <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                                    <input type="checkbox" name="clear_audio" value="1"
+                                           class="h-4 w-4 text-rose-600 focus:ring-rose-500 bg-slate-950 border-slate-800 rounded">
+                                    <span class="text-xs text-rose-400">Clear current audio file</span>
+                                </label>
+                            </div>
+
+                            <!-- Save / Cancel buttons -->
+                            <div class="flex items-center gap-3 pt-2">
+                                <button type="submit" 
+                                        class="py-2 px-5 bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold rounded-xl text-xs transition-colors flex items-center gap-1">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                    </svg>
+                                    Save Changes
+                                </button>
+                                <button type="button" @click="editing = false"
+                                        class="py-2 px-5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-200 font-bold rounded-xl text-xs transition-colors">
+                                    Cancel
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="py-12 text-center">
+                    <svg class="mx-auto h-12 w-12 text-slate-650" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18.364 5.636l-3.536 3.536m0 0A5 5 0 1111 8.828l-3.536-3.536m3.536 3.536L12 21"></path>
+                    </svg>
+                    <h3 class="mt-2 text-sm font-semibold text-slate-300">No nodes in this flow</h3>
+                    <p class="mt-1 text-xs text-slate-500">Add nodes above to start constructing the visual tree.</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

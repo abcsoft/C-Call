@@ -1,0 +1,52 @@
+{% extends "admin/base_admin.html" %}
+
+{% block title %}System Settings — C-Call Console{% endblock %}
+
+{% block admin_content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div>
+        <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">System Settings</h1>
+        <p class="text-slate-400 text-sm mt-1">Configure platform-wide settings, gateways, and pricing rates.</p>
+    </div>
+
+    <!-- Main Config Card -->
+    <div class="max-w-3xl bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-6">
+        <div class="border-b border-slate-800/80 pb-4">
+            <h3 class="font-outfit font-bold text-lg text-slate-100">SMS Fallback Gateway Configuration</h3>
+            <p class="text-xs text-slate-400 mt-1">Configure the global platform SMS gateway and default billing rate charged to tenants.</p>
+        </div>
+
+        <form method="POST" action="{{ url_for('admin.settings') }}" class="space-y-6">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <!-- Platform API Key -->
+            <div class="space-y-2">
+                <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Platform SMSLayer API Key</label>
+                <input type="password" name="smslayer_api_key" value="{{ smslayer_api_key }}" 
+                       placeholder="Enter global SMSLayer API key"
+                       class="bg-slate-950/80 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                <p class="text-[10px] text-slate-500">This key is used as a fallback when a tenant has not configured their own SMS key.</p>
+            </div>
+
+            <!-- SMS Billing Rate -->
+            <div class="space-y-2">
+                <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider">Tenant Billing Rate (৳ per SMS)</label>
+                <div class="relative">
+                    <span class="absolute inset-y-0 left-0 pl-4 flex items-center text-slate-500 font-bold text-xs">৳</span>
+                    <input type="number" name="sms_rate" value="{{ sms_rate }}" step="0.0001" min="0" placeholder="0.30"
+                           class="bg-slate-950/80 border border-slate-800 focus:border-indigo-500/80 rounded-xl pl-8 pr-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full">
+                </div>
+                <p class="text-[10px] text-slate-500">The amount debited from the tenant's pre-paid wallet for every fallback SMS sent using the platform API key.</p>
+            </div>
+
+            <!-- Action Button -->
+            <div class="flex justify-end pt-4 border-t border-slate-800/60">
+                <button type="submit" 
+                        class="py-2.5 px-6 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition-all shadow-md">
+                    Save System Settings
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

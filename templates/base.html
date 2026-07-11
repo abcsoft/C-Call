@@ -26,6 +26,8 @@
          href="{{ url_for('ecommerce') }}"><i class="ti ti-shopping-cart"></i> Ecommerce</a>
       <a class="nav-link {% if request.endpoint == 'bangla_guide' %}active{% endif %}"
          href="{{ url_for('bangla_guide') }}"><i class="ti ti-help-circle"></i> Bangla Guide</a>
+      <a class="nav-link {% if request.endpoint == 'tts_test' %}active{% endif %}"
+         href="{{ url_for('tts_test') }}"><i class="ti ti-microphone-2"></i> TTS Test</a>
       <a class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}"
          href="{{ url_for('settings') }}"><i class="ti ti-settings"></i> Settings</a>
     </div>

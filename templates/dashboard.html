@@ -97,7 +97,7 @@
           <div class="form-group">
             <label class="form-label">Audio Source</label>
             <select class="form-select js-audio-source" name="audio_mode" data-target="single">
-              <option value="tts">Text-to-Speech ({{ {'gtts':'gTTS','elevenlabs':'ElevenLabs','gemini':'Gemini'}.get(tts_provider, 'gTTS') }})</option>
+              <option value="tts">Text-to-Speech ({{ {'gtts':'gTTS','elevenlabs':'ElevenLabs','gemini':'Gemini','edge':'Edge-TTS','openvoice':'OpenVoice V2'}.get(tts_provider, 'gTTS') }})</option>
               <option value="upload">Upload Audio File</option>
             </select>
           </div>
@@ -167,7 +167,7 @@
           <div class="form-group">
             <label class="form-label">Audio Source</label>
             <select class="form-select js-audio-source" name="audio_mode" data-target="bulk">
-              <option value="tts">Text-to-Speech ({{ {'gtts':'gTTS','elevenlabs':'ElevenLabs','gemini':'Gemini'}.get(tts_provider, 'gTTS') }})</option>
+              <option value="tts">Text-to-Speech ({{ {'gtts':'gTTS','elevenlabs':'ElevenLabs','gemini':'Gemini','edge':'Edge-TTS','openvoice':'OpenVoice V2'}.get(tts_provider, 'gTTS') }})</option>
               <option value="upload">Upload Audio File</option>
             </select>
           </div>

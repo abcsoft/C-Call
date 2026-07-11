@@ -1,0 +1,155 @@
+{% extends "admin/base_admin.html" %}
+
+{% block title %}Revenue Reports — C-Call Console{% endblock %}
+
+{% block admin_content %}
+<div class="space-y-8">
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Revenue & Profitability</h1>
+            <p class="text-slate-400 text-sm mt-1">{{ date_from.strftime('%Y-%m-%d') }} to {{ date_to.strftime('%Y-%m-%d') }}</p>
+        </div>
+        <a href="{{ url_for('admin.revenue_export_csv', range=range_key, date_from=date_from, date_to=date_to) }}"
+           class="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-sm">Export CSV</a>
+    </div>
+
+    <!-- A. Date Range Selector -->
+    <form method="GET" class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-5 flex flex-wrap items-end gap-4">
+        <div class="flex gap-2">
+            <a href="{{ url_for('admin.revenue_report', range='this_month') }}"
+               class="px-4 py-2 rounded-xl text-xs font-bold {{ 'bg-indigo-500 text-white' if range_key == 'this_month' else 'bg-slate-800 text-slate-300' }}">This Month</a>
+            <a href="{{ url_for('admin.revenue_report', range='last_month') }}"
+               class="px-4 py-2 rounded-xl text-xs font-bold {{ 'bg-indigo-500 text-white' if range_key == 'last_month' else 'bg-slate-800 text-slate-300' }}">Last Month</a>
+        </div>
+        <div class="flex items-end gap-2">
+            <input type="hidden" name="range" value="custom">
+            <div>
+                <label for="date_from" class="block text-[10px] text-slate-500 uppercase font-semibold mb-1">From</label>
+                <input type="date" id="date_from" name="date_from" value="{{ date_from }}" class="bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none">
+            </div>
+            <div>
+                <label for="date_to" class="block text-[10px] text-slate-500 uppercase font-semibold mb-1">To</label>
+                <input type="date" id="date_to" name="date_to" value="{{ date_to }}" class="bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none">
+            </div>
+            <button type="submit" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold">Apply</button>
+        </div>
+    </form>
+
+    <!-- B. Summary Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Gross Revenue</p>
+            <span class="text-2xl font-outfit font-bold text-emerald-400 mt-2 block">৳{{ "%.2f"|format(report.total_revenue) }}</span>
+            <p class="text-[10px] text-slate-500 mt-1">{{ report.total_calls }} calls, {{ report.total_minutes }} min</p>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">SIP Cost (est.)</p>
+            <span class="text-2xl font-outfit font-bold text-amber-400 mt-2 block">৳{{ "%.2f"|format(report.total_cost) }}</span>
+            <p class="text-[10px] text-slate-500 mt-1">Estimated trunk cost</p>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Net Profit</p>
+            <span class="text-2xl font-outfit font-bold {{ 'text-emerald-400' if report.total_profit >= 0 else 'text-red-400' }} mt-2 block">৳{{ "%.2f"|format(report.total_profit) }}</span>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Margin</p>
+            <span class="text-2xl font-outfit font-bold text-indigo-400 mt-2 block">{{ "%.1f"|format(report.margin_pct) }}%</span>
+        </div>
+    </div>
+
+    <!-- C + E: Revenue chart & Status distribution -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2 bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+            <h3 class="font-outfit font-bold text-lg text-slate-100 mb-4">Daily Revenue</h3>
+            <canvas id="revenueChart" height="100"></canvas>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+            <h3 class="font-outfit font-bold text-lg text-slate-100 mb-4">Call Outcome Distribution</h3>
+            <canvas id="statusChart" height="180"></canvas>
+        </div>
+    </div>
+
+    <!-- D. Per-Tenant Revenue Table -->
+    <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6" x-data="{ sortKey: 'revenue', sortDir: -1 }">
+        <h3 class="font-outfit font-bold text-lg text-slate-100 mb-4">Per-Tenant Revenue</h3>
+        <div class="overflow-x-auto border border-slate-800/80 rounded-xl">
+            <table class="w-full text-left text-xs text-slate-300" id="tenantRevenueTable">
+                <thead class="bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-4 py-3 cursor-pointer" onclick="sortTable(0)">Tenant</th>
+                        <th class="px-4 py-3 cursor-pointer" onclick="sortTable(1)">Plan</th>
+                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(2)">Calls</th>
+                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(3)">Minutes</th>
+                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(4)">Revenue</th>
+                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(5)">Cost</th>
+                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(6)">Profit</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/50">
+                    {% for row in report.per_tenant %}
+                    <tr>
+                        <td class="px-4 py-3 font-semibold text-slate-200">
+                            <a href="{{ url_for('admin.customer_detail', tenant_id=row.tenant_id) }}" class="hover:text-indigo-400 hover:underline">{{ row.name }}</a>
+                        </td>
+                        <td class="px-4 py-3">{{ row.plan }}</td>
+                        <td class="px-4 py-3 text-right">{{ row.calls }}</td>
+                        <td class="px-4 py-3 text-right">{{ row.minutes }}</td>
+                        <td class="px-4 py-3 text-right font-outfit font-bold text-emerald-400">৳{{ "%.2f"|format(row.revenue) }}</td>
+                        <td class="px-4 py-3 text-right text-amber-400">৳{{ "%.2f"|format(row.cost) }}</td>
+                        <td class="px-4 py-3 text-right font-bold {{ 'text-emerald-400' if row.profit >= 0 else 'text-red-400' }}">৳{{ "%.2f"|format(row.profit) }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="7" class="px-4 py-6 text-center text-slate-500">No revenue in this period.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script nonce="{{ csp_nonce }}">
+const dailyData = {{ report.daily_breakdown | tojson }};
+new Chart(document.getElementById('revenueChart'), {
+    type: 'bar',
+    data: {
+        labels: dailyData.map(r => r.day),
+        datasets: [{ label: 'Revenue (BDT)', data: dailyData.map(r => parseFloat(r.revenue)), backgroundColor: 'rgba(45, 212, 191, 0.6)', borderRadius: 4 }],
+    },
+    options: {
+        scales: { x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } }, y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } } },
+        plugins: { legend: { labels: { color: '#cbd5e1' } } },
+    },
+});
+
+const statusData = {{ report.status_distribution | tojson }};
+new Chart(document.getElementById('statusChart'), {
+    type: 'pie',
+    data: {
+        labels: Object.keys(statusData),
+        datasets: [{
+            data: Object.values(statusData),
+            backgroundColor: ['#10b981', '#f59e0b', '#6366f1', '#64748b', '#ef4444'],
+        }],
+    },
+    options: { plugins: { legend: { labels: { color: '#cbd5e1', font: { size: 10 } }, position: 'bottom' } } },
+});
+
+function sortTable(colIndex) {
+    const table = document.getElementById('tenantRevenueTable');
+    const tbody = table.tBodies[0];
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const isNumeric = colIndex >= 2;
+    table.dataset.sortDir = table.dataset.sortCol == colIndex && table.dataset.sortDir == 'asc' ? 'desc' : 'asc';
+    table.dataset.sortCol = colIndex;
+    const dir = table.dataset.sortDir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+        let av = a.children[colIndex].innerText.replace(/[৳,]/g, '').trim();
+        let bv = b.children[colIndex].innerText.replace(/[৳,]/g, '').trim();
+        if (isNumeric) { av = parseFloat(av) || 0; bv = parseFloat(bv) || 0; return (av - bv) * dir; }
+        return av.localeCompare(bv) * dir;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+}
+</script>
+{% endblock %}

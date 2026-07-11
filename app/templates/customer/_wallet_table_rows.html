@@ -1,0 +1,51 @@
+{% for tx in transactions %}
+<tr class="hover:bg-slate-900/20 transition-colors">
+    <td class="px-6 py-4 text-xs text-slate-400 font-medium">{{ tx.formatted_created_at }}</td>
+    <td class="px-6 py-4">
+        {% if tx.type == 'credit' %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">CREDIT</span>
+        {% elif tx.type == 'refund' %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/15">REFUND</span>
+        {% else %}
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/15">DEBIT</span>
+        {% endif %}
+    </td>
+    <td class="px-6 py-4 text-slate-300 font-normal truncate max-w-[250px]" title="{{ tx.description }}">{{ tx.description }}</td>
+    <td class="px-6 py-4 font-outfit font-semibold {% if tx.type == 'credit' or tx.type == 'refund' %}text-emerald-400{% else %}text-rose-400{% endif %}">
+        {% if tx.type == 'credit' or tx.type == 'refund' %}+{% else %}-{% endif %}{{ tx.display_amount }}
+    </td>
+    <td class="px-6 py-4 font-outfit font-medium text-slate-400">{{ tx.display_balance_after }}</td>
+</tr>
+{% else %}
+<tr>
+    <td colspan="5" class="px-6 py-10 text-center text-slate-500 font-medium">No transactions found.</td>
+</tr>
+{% endfor %}
+
+{% if has_prev or has_next %}
+<tr>
+    <td colspan="5" class="px-6 py-4 bg-slate-950/30 border-t border-slate-800/80">
+        <div class="flex items-center justify-between">
+            <span class="text-slate-400 text-xs">Total: {{ total }} transactions</span>
+            <div class="flex items-center gap-2">
+                {% if has_prev %}
+                <button hx-get="{{ url_for('customer.api_wallet_transactions', before=prev_cursor) }}"
+                        hx-target="#transactions-table-body"
+                        hx-swap="innerHTML"
+                        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-all">
+                    &larr; Prev
+                </button>
+                {% endif %}
+                {% if has_next %}
+                <button hx-get="{{ url_for('customer.api_wallet_transactions', after=next_cursor) }}"
+                        hx-target="#transactions-table-body"
+                        hx-swap="innerHTML"
+                        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg transition-all">
+                    Next &rarr;
+                </button>
+                {% endif %}
+            </div>
+        </div>
+    </td>
+</tr>
+{% endif %}

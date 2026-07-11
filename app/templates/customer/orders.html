@@ -1,0 +1,203 @@
+{% extends "customer/base_customer.html" %}
+
+{% block title %}Orders — C-Call IVR{% endblock %}
+
+{% block customer_content %}
+<div class="space-y-6" x-data="{ openModal: false }">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Order Logs</h1>
+            <p class="text-slate-400 text-sm mt-1">Review, recall, or track IVR verification states for all e-commerce orders</p>
+        </div>
+    </div>
+
+    <!-- Filters & Search -->
+    <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-5">
+        <form method="GET" action="{{ url_for('customer.orders_list') }}" class="flex flex-col md:flex-row gap-4 items-end">
+            <!-- Search -->
+            <div class="flex-1 w-full">
+                <label for="search" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Search Orders</label>
+                <div class="relative">
+                    <input type="text" name="search" id="search" value="{{ search or '' }}" placeholder="Search by name, phone, or order ID..."
+                           class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 text-sm transition-all focus:outline-none">
+                </div>
+            </div>
+
+            <!-- Status Filter -->
+            <div class="w-full md:w-56">
+                <label for="status" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Status</label>
+                <select name="status" id="status" 
+                        class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none">
+                    <option value="">All Statuses</option>
+                    <option value="PENDING" {% if status == 'PENDING' %}selected{% endif %}>PENDING</option>
+                    <option value="CONFIRMED" {% if status == 'CONFIRMED' %}selected{% endif %}>CONFIRMED</option>
+                    <option value="CANCELLED" {% if status == 'CANCELLED' %}selected{% endif %}>CANCELLED</option>
+                    <option value="RETRY_SCHEDULED" {% if status == 'RETRY_SCHEDULED' %}selected{% endif %}>RETRY SCHEDULED</option>
+                    <option value="NO_ANSWER" {% if status == 'NO_ANSWER' %}selected{% endif %}>NO ANSWER</option>
+                    <option value="UNREACHABLE" {% if status == 'UNREACHABLE' %}selected{% endif %}>UNREACHABLE</option>
+                </select>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex gap-2 w-full md:w-auto">
+                <button type="submit" 
+                        class="flex-1 md:flex-none py-3 px-6 bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold rounded-xl text-sm transition-all">
+                    Filter
+                </button>
+                <a href="{{ url_for('customer.orders_list') }}" 
+                   class="flex-1 md:flex-none py-3 px-6 bg-slate-950/40 border border-slate-800 hover:bg-slate-900/60 text-slate-400 hover:text-slate-200 font-bold rounded-xl text-sm transition-all text-center">
+                    Reset
+                </a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Orders Table -->
+    <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm text-slate-300">
+                <thead class="bg-slate-950/60 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-6 py-4">Order ID</th>
+                        <th class="px-6 py-4">Customer</th>
+                        <th class="px-6 py-4">Phone Number</th>
+                        <th class="px-6 py-4 font-outfit">COD Amount</th>
+                        <th class="px-6 py-4">Attempts</th>
+                        <th class="px-6 py-4">Order Status</th>
+                        <th class="px-6 py-4">Last Updated</th>
+                        <th class="px-6 py-4 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/50">
+                    {% for order in orders %}
+                    <tr class="hover:bg-slate-900/20 transition-colors">
+                        <td class="px-6 py-4 font-medium text-slate-200">{{ order.external_order_id }}</td>
+                        <td class="px-6 py-4 truncate max-w-[150px]">{{ order.customer_name }}</td>
+                        <td class="px-6 py-4 font-mono text-xs">
+                            {% set raw_phone = order.phone %}
+                            {% if raw_phone|length >= 11 %}
+                                {{ raw_phone[:3] }}****{{ raw_phone[-4:] }}
+                            {% else %}
+                                {{ raw_phone }}
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 font-outfit font-semibold text-slate-200">৳{{ "%.2f"|format(order.amount) }}</td>
+                        <td class="px-6 py-4">
+                            <span class="text-xs px-2.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-bold">
+                                {{ order.attempt_count }} / 3
+                            </span>
+                        </td>
+                        <td class="px-6 py-4">
+                            {% if order.order_status == 'CONFIRMED' %}
+                                <span class="px-2.5 py-1 text-xs font-bold rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                    CONFIRMED
+                                </span>
+                            {% elif order.order_status == 'CANCELLED' %}
+                                <span class="px-2.5 py-1 text-xs font-bold rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                    CANCELLED
+                                </span>
+                            {% elif order.order_status == 'RETRY_SCHEDULED' %}
+                                <span class="px-2.5 py-1 text-xs font-bold rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                    RETRYING
+                                </span>
+                            {% else %}
+                                <span class="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-800 text-slate-400">
+                                    {{ order.order_status }}
+                                </span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 text-xs text-slate-400">{{ order.updated_at.strftime('%Y-%m-%d %H:%M') if order.updated_at else 'Pending' }}</td>
+                        <td class="px-6 py-4 text-right">
+                            <div class="flex items-center justify-end gap-2">
+                                <button hx-get="{{ url_for('customer.order_detail_modal', order_id=order.id) }}"
+                                        hx-target="#modal-container"
+                                        hx-trigger="click"
+                                        @click="openModal = true"
+                                        class="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-lg text-slate-200 transition-colors">
+                                    Details
+                                </button>
+                                {% if order.order_status in ('PENDING', 'NO_ANSWER', 'RETRY_SCHEDULED') and current_user.role in ('admin', 'agent') %}
+                                <form method="POST" action="{{ url_for('customer.order_recall', order_id=order.id) }}" class="inline">
+                                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                    <button type="submit" class="py-1.5 px-3 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/30 text-teal-400 text-xs font-semibold rounded-lg transition-colors">
+                                        Recall
+                                    </button>
+                                </form>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="8" class="px-6 py-10 text-center text-slate-500 font-medium">
+                            No orders found matching the filter criteria.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if pages > 1 %}
+        <div class="px-6 py-4 bg-slate-950/30 border-t border-slate-800/80 flex items-center justify-between">
+            <span class="text-xs text-slate-400">Showing page {{ page }} of {{ pages }} (Total {{ total }} orders)</span>
+            <div class="flex items-center gap-1.5">
+                {% if page > 1 %}
+                <a href="{{ url_for('customer.orders_list', page=page-1, status=status or '', search=search or '') }}"
+                   class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">&larr; Prev</a>
+                {% endif %}
+                
+                {% for p in range(1, pages + 1) %}
+                    {% if p == page %}
+                    <span class="px-3 py-1.5 bg-teal-500 text-slate-950 rounded-lg text-xs font-bold">{{ p }}</span>
+                    {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+                    <a href="{{ url_for('customer.orders_list', page=p, status=status or '', search=search or '') }}"
+                       class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">{{ p }}</a>
+                    {% elif p == 4 or p == pages - 3 %}
+                    <span class="text-slate-600 text-xs px-1">...</span>
+                    {% endif %}
+                {% endfor %}
+
+                {% if page < pages %}
+                <a href="{{ url_for('customer.orders_list', page=page+1, status=status or '', search=search or '') }}"
+                   class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">Next &rarr;</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Modal Backdrop Container (Alpine.js controls visibility) -->
+    <div class="fixed inset-0 z-50 overflow-y-auto" 
+         x-show="openModal" 
+         style="display: none;"
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0">
+        <div class="flex min-h-screen items-center justify-center p-4 text-center sm:p-0">
+            <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm" @click="openModal = false"></div>
+            
+            <div id="modal-container" 
+                 class="relative transform overflow-hidden rounded-2xl bg-slate-900 border border-slate-800 text-left shadow-2xl transition-all sm:my-8 sm:w-full sm:max-w-3xl z-10"
+                 x-show="openModal"
+                 x-transition:enter="transition ease-out duration-300"
+                 x-transition:enter-start="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"
+                 x-transition:enter-end="opacity-100 translate-y-0 sm:scale-100"
+                 x-transition:leave="transition ease-in duration-200"
+                 x-transition:leave-start="opacity-100 translate-y-0 sm:scale-100"
+                 x-transition:leave-end="opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95">
+                <!-- HTMX will inject content here -->
+                <div class="p-8 text-center text-slate-400">
+                    <div class="inline-block animate-spin rounded-full h-8 w-8 border-t-2 border-teal-500 mb-2"></div>
+                    <p class="text-sm font-medium">Loading details...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

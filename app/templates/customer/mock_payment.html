@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSLCommerz Simulated Checkout Gateway</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@800&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .font-outfit {
+            font-family: 'Outfit', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md bg-slate-900 border border-slate-800/80 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+        <!-- Accent Glows -->
+        <div class="absolute -right-12 -top-12 w-32 h-32 bg-teal-500/10 rounded-full blur-2xl"></div>
+        <div class="absolute -left-12 -bottom-12 w-32 h-32 bg-indigo-500/10 rounded-full blur-2xl"></div>
+
+        <!-- Logo / Header -->
+        <div class="text-center space-y-2 mb-8">
+            <span class="px-3 py-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 font-semibold text-[10px] uppercase tracking-wider rounded-full">
+                Sandbox Payment Gateway
+            </span>
+            <h1 class="font-outfit font-extrabold text-2xl tracking-tight mt-4 text-slate-100">SSLCommerz Simulation</h1>
+            <p class="text-slate-400 text-xs mt-1">Simulating payment processing for transaction intent <span class="font-mono font-semibold">#{{ intent.id }}</span></p>
+        </div>
+
+        <!-- Details Card -->
+        <div class="bg-slate-950/60 border border-slate-800 p-6 rounded-2xl mb-8 space-y-4">
+            <div class="flex justify-between items-center pb-3 border-b border-slate-800/80">
+                <span class="text-slate-500 text-xs font-medium">Merchant</span>
+                <span class="text-slate-300 text-xs font-semibold">C-Call IVR Platform</span>
+            </div>
+            <div class="flex justify-between items-center pb-3 border-b border-slate-800/80">
+                <span class="text-slate-500 text-xs font-medium">Payment ID</span>
+                <span class="text-slate-300 font-mono text-xs font-semibold">{{ intent.id }}</span>
+            </div>
+            <div class="flex justify-between items-center">
+                <span class="text-slate-400 text-sm font-semibold">Amount to Pay</span>
+                <span class="text-xl font-outfit font-extrabold text-teal-400">৳{{ "%.2f"|format(intent.amount) }}</span>
+            </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="space-y-3">
+            <!-- Simulate Success Form -->
+            <form method="POST" action="{{ url_for('customer.payment_callback', gateway='sslcommerz') }}">
+                <input type="hidden" name="status" value="VALID">
+                <input type="hidden" name="tran_id" value="{{ intent.id }}">
+                <input type="hidden" name="amount" value="{{ intent.amount }}">
+                <input type="hidden" name="val_id" value="val_{{ intent.id }}mock{{ range(10000, 99999) | random }}">
+                <button type="submit" 
+                        class="w-full py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-bold rounded-xl text-sm transition-all hover:brightness-110 active:scale-[0.98] shadow-lg shadow-emerald-500/10">
+                    Simulate Payment Success
+                </button>
+            </form>
+
+            <!-- Simulate Failure Form -->
+            <form method="POST" action="{{ url_for('customer.payment_callback', gateway='sslcommerz') }}">
+                <input type="hidden" name="status" value="FAILED">
+                <input type="hidden" name="tran_id" value="{{ intent.id }}">
+                <input type="hidden" name="amount" value="{{ intent.amount }}">
+                <button type="submit" 
+                        class="w-full py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl text-sm transition-all active:scale-[0.98]">
+                    Simulate Payment Failure
+                </button>
+            </form>
+        </div>
+
+        <!-- Footer -->
+        <p class="text-center text-[10px] text-slate-500 mt-8 leading-relaxed">
+            This checkout portal is for staging and sandbox testing purposes only. No actual funds will be transferred.
+        </p>
+    </div>
+</body>
+</html>

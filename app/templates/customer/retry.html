@@ -1,0 +1,298 @@
+{% extends "customer/base_customer.html" %}
+
+{% block title %}Retry & DND Rules — C-Call IVR{% endblock %}
+
+{% block customer_content %}
+<div class="space-y-8"
+     x-data='retrySettings({
+        rules: {{ rules | tojson }},
+        maxAttempts: {{ max_attempts }},
+        dndStart: {{ dnd_start | tojson }},
+        dndEnd: {{ dnd_end | tojson }},
+        retryEnabled: {{ retry_enabled | tojson }},
+        retryOnOptions: {{ retry_on_options | tojson }},
+        maxAttemptsCap: {{ max_attempts_cap }}
+     })'>
+    <!-- Header -->
+    <div>
+        <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Retry & DND Settings</h1>
+        <p class="text-slate-400 text-sm mt-1">Configure automated retry delays and silent DND hours for customer voice confirmation calls</p>
+    </div>
+
+    <form method="POST" action="{{ url_for('customer.retry_settings') }}" class="max-w-4xl space-y-6" @submit="return validate($event)">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <template x-if="clientErrors.length">
+            <div class="p-4 bg-rose-950/60 border border-rose-500/80 rounded-xl text-rose-300 text-xs space-y-1">
+                <template x-for="err in clientErrors" :key="err">
+                    <p x-text="err"></p>
+                </template>
+            </div>
+        </template>
+
+        <!-- A. Master Toggle -->
+        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 flex items-center justify-between gap-4">
+            <div>
+                <h3 class="font-outfit font-bold text-lg text-slate-100">Auto Retry on No-Answer / Busy</h3>
+                <p class="text-xs text-slate-400 mt-1">When off, calls that go unanswered or busy are marked unreachable immediately — no retries are scheduled.</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                <input type="checkbox" name="retry_enabled" x-model="retryEnabled" aria-label="Auto retry on no-answer / busy" class="sr-only peer">
+                <div class="w-12 h-7 bg-slate-800 peer-checked:bg-teal-500 rounded-full transition-colors"></div>
+                <div class="absolute left-1 top-1 w-5 h-5 bg-slate-300 peer-checked:bg-slate-950 rounded-full transition-transform peer-checked:translate-x-5"></div>
+            </label>
+        </div>
+
+        <div :class="!retryEnabled && 'opacity-40 pointer-events-none'" class="space-y-6 transition-opacity">
+
+            <!-- B. Retry Attempts Table -->
+            <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-4">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <h3 class="font-outfit font-bold text-lg text-slate-100 flex items-center gap-2">
+                        <svg class="w-5 h-5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18.2M7 9a1 1 0 11-2 0 1 1 0 012 0zm0 0H5m16 0a1 1 0 11-2 0 1 1 0 012 0zm0 0H19"></path></svg>
+                        Retry Attempts
+                    </h3>
+                    <div class="flex items-center gap-2">
+                        <label for="max_attempts" class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Max Attempts</label>
+                        <select id="max_attempts" name="max_attempts" x-model.number="maxAttempts" @change="syncRowCount()" :disabled="!retryEnabled"
+                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                            <option value="1" {% if max_attempts == 1 %}selected{% endif %}>1</option>
+                            <option value="2" {% if max_attempts == 2 %}selected{% endif %}>2</option>
+                            <option value="3" {% if max_attempts == 3 %}selected{% endif %}>3</option>
+                            <option value="4" {% if max_attempts == 4 %}selected{% endif %}>4</option>
+                            <option value="5" {% if max_attempts == 5 %}selected{% endif %}>5</option>
+
+
+                        </select>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                                <th class="py-2 pr-4">Attempt</th>
+                                <th class="py-2 pr-4">Delay After Previous Call</th>
+                                <th class="py-2 pr-4">Retry On</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="(row, idx) in rows" :key="row.attempt_no">
+                                <tr class="border-b border-slate-800/50">
+                                    <td class="py-3 pr-4 font-semibold text-slate-200" x-text="'Retry ' + row.attempt_no"></td>
+                                    <td class="py-3 pr-4">
+                                        <div class="flex items-center gap-2">
+                                            <input type="number" min="1" step="1" :name="'delay_value_' + row.attempt_no"
+                                                   x-model.number="row.delay_value" @input="recalcPreview()" :disabled="!retryEnabled"
+                                                   placeholder="e.g. 15" required
+                                                   class="w-24 bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                            <select :name="'delay_unit_' + row.attempt_no" x-model="row.delay_unit" @change="recalcPreview()" :disabled="!retryEnabled"
+                                                    class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                                <option value="minutes">Minutes</option>
+                                                <option value="hours">Hours</option>
+                                                <option value="days">Days</option>
+                                            </select>
+                                        </div>
+                                        <template x-if="!row.delay_value || row.delay_value <= 0">
+                                            <p class="text-[11px] text-rose-400 mt-1">Delay is required and must be positive.</p>
+                                        </template>
+                                    </td>
+                                    <td class="py-3 pr-4">
+                                        <div class="flex flex-wrap gap-3">
+                                            <template x-for="opt in retryOnOptions" :key="opt">
+                                                <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                                    <input type="checkbox" :name="'retry_on_' + row.attempt_no" :value="opt"
+                                                           :checked="row.retry_on.includes(opt)" :disabled="!retryEnabled"
+                                                           @change="toggleRetryOn(row, opt, $event.target.checked)"
+                                                           class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                                    <span x-text="opt === 'no_answer' ? 'No Answer' : 'Busy'"></span>
+                                                </label>
+                                            </template>
+                                        </div>
+                                        <template x-if="!row.retry_on.length">
+                                            <p class="text-[11px] text-rose-400 mt-1">Select at least one condition.</p>
+                                        </template>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- C. Do Not Disturb Window -->
+            <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6 space-y-4">
+                <h3 class="font-outfit font-bold text-lg text-slate-100 flex items-center gap-2">
+                    <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+                    Do Not Disturb (DND) Window
+                </h3>
+                <p class="text-xs text-slate-400 leading-relaxed">
+                    Calls will not be placed between these hours. A retry due during DND is automatically pushed to just after the window ends.
+                </p>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2">
+                    <div>
+                        <label for="dnd_start" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Start</label>
+                        <input type="time" name="dnd_start" id="dnd_start" x-model="dndStart" @change="recalcPreview()" required
+                               class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none">
+                    </div>
+                    <div>
+                        <label for="dnd_end" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">End</label>
+                        <input type="time" name="dnd_end" id="dnd_end" x-model="dndEnd" @change="recalcPreview()" required
+                               class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Timezone</label>
+                        <div class="w-full bg-slate-950/40 border border-slate-800/60 rounded-xl px-4 py-3 text-slate-400 text-sm">
+                            Asia/Dhaka (UTC+6) <span class="text-[10px] text-slate-600">— fixed in MVP</span>
+                        </div>
+                    </div>
+                </div>
+                <template x-if="dndStart === dndEnd">
+                    <p class="text-xs text-red-400">DND start and end times must be different.</p>
+                </template>
+            </div>
+
+            <!-- D. Preview -->
+            <div class="bg-slate-900/40 border border-teal-800/40 rounded-2xl p-6 space-y-2">
+                <h3 class="font-outfit font-bold text-sm text-teal-300 uppercase tracking-wider">Live Preview</h3>
+                <p class="text-sm text-slate-300 leading-relaxed" x-text="previewText"></p>
+            </div>
+        </div>
+
+        <!-- Save -->
+        <button type="submit"
+                class="w-full py-3.5 px-4 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-bold rounded-xl text-sm transition-all shadow-lg hover:shadow-teal-500/20 active:scale-[0.98]">
+            Save Settings & DND Rules
+        </button>
+    </form>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+function retrySettings(config) {
+    return {
+        maxAttempts: config.maxAttempts,
+        maxAttemptsCap: config.maxAttemptsCap,
+        dndStart: config.dndStart,
+        dndEnd: config.dndEnd,
+        retryEnabled: config.retryEnabled,
+        retryOnOptions: config.retryOnOptions,
+        rows: [],
+        previewText: '',
+        clientErrors: [],
+
+        init() {
+            const byAttempt = {};
+            (config.rules || []).forEach(r => { byAttempt[r.attempt_no] = r; });
+            this.rows = [];
+            for (let i = 1; i <= this.maxAttempts; i++) {
+                const existing = byAttempt[i];
+                this.rows.push({
+                    attempt_no: i,
+                    delay_value: existing ? existing.delay_value : 15,
+                    delay_unit: existing ? existing.delay_unit : 'minutes',
+                    retry_on: existing ? existing.retry_on : ['no_answer', 'busy'],
+                });
+            }
+            this.recalcPreview();
+        },
+
+        toggleRetryOn(row, opt, checked) {
+            if (checked) {
+                if (!row.retry_on.includes(opt)) row.retry_on.push(opt);
+            } else {
+                row.retry_on = row.retry_on.filter(v => v !== opt);
+            }
+        },
+
+        syncRowCount() {
+            while (this.rows.length < this.maxAttempts) {
+                const n = this.rows.length + 1;
+                this.rows.push({ attempt_no: n, delay_value: 15, delay_unit: 'minutes', retry_on: ['no_answer', 'busy'] });
+            }
+            while (this.rows.length > this.maxAttempts) {
+                this.rows.pop();
+            }
+            this.recalcPreview();
+        },
+
+        delayToMinutes(row) {
+            const mult = { minutes: 1, hours: 60, days: 1440 }[row.delay_unit] || 1;
+            return (Number(row.delay_value) || 0) * mult;
+        },
+
+        validate(event) {
+            this.clientErrors = [];
+            if (!this.retryEnabled) return true; // section disabled, nothing to validate
+            for (const row of this.rows) {
+                if (!row.delay_value || Number(row.delay_value) <= 0) {
+                    this.clientErrors.push(`Retry ${row.attempt_no}: delay is required and must be a positive number.`);
+                }
+                if (!row.retry_on.length) {
+                    this.clientErrors.push(`Retry ${row.attempt_no}: select at least one retry condition.`);
+                }
+            }
+            if (this.dndStart === this.dndEnd) {
+                this.clientErrors.push('DND start and end times must be different.');
+            }
+            if (this.clientErrors.length) {
+                event && event.preventDefault();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+                return false;
+            }
+            return true;
+        },
+
+        // Mirrors app/services/retry_service._apply_dnd in JS for the live
+        // preview — same overnight-window logic, minute-resolution.
+        applyDnd(minutesOfDay, dndStartMin, dndEndMin) {
+            let inDnd;
+            if (dndStartMin > dndEndMin) {
+                inDnd = minutesOfDay >= dndStartMin || minutesOfDay < dndEndMin;
+            } else {
+                inDnd = minutesOfDay >= dndStartMin && minutesOfDay < dndEndMin;
+            }
+            if (!inDnd) return minutesOfDay;
+            // Push to dnd_end (+5 min), rolling past midnight if needed.
+            let wake = dndEndMin + 5;
+            if (minutesOfDay >= dndStartMin && dndStartMin > dndEndMin) {
+                wake += 24 * 60; // evening side of an overnight window -> tomorrow
+            }
+            return wake;
+        },
+
+        timeToMinutes(t) {
+            const [h, m] = t.split(':').map(Number);
+            return h * 60 + m;
+        },
+
+        formatMinutes(totalMinutes) {
+            const days = Math.floor(totalMinutes / (24 * 60));
+            const rem = totalMinutes % (24 * 60);
+            const h = Math.floor(rem / 60) % 24;
+            const m = rem % 60;
+            const ampm = h >= 12 ? 'PM' : 'AM';
+            const h12 = h % 12 === 0 ? 12 : h % 12;
+            const label = `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+            return days > 0 ? `Tomorrow ${label}` : label;
+        },
+
+        recalcPreview() {
+            if (!this.dndStart || !this.dndEnd) { this.previewText = ''; return; }
+            const dndStartMin = this.timeToMinutes(this.dndStart);
+            const dndEndMin = this.timeToMinutes(this.dndEnd);
+
+            let cursor = this.timeToMinutes('14:00'); // example: attempt 1 fails at 2:00 PM
+            const parts = [`If attempt 1 fails at 2:00 PM:`];
+            for (let i = 0; i < this.rows.length; i++) {
+                const minutes = this.delayToMinutes(this.rows[i]) || 30;
+                cursor = cursor + minutes;
+                cursor = this.applyDnd(cursor, dndStartMin, dndEndMin);
+                parts.push(`Attempt ${i + 2}: ${this.formatMinutes(cursor)}`);
+            }
+            this.previewText = parts.join(' | ');
+        },
+    };
+}
+</script>
+{% endblock %}

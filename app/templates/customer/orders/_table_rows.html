@@ -1,0 +1,57 @@
+<div id="orders-table-container" class="space-y-4">
+    <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm text-slate-300">
+                <thead class="bg-slate-950/60 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-6 py-4">Order ID</th>
+                        <th class="px-6 py-4">Customer</th>
+                        <th class="px-6 py-4 font-outfit">COD Amount</th>
+                        <th class="px-6 py-4">Status</th>
+                        <th class="px-6 py-4">Attempts</th>
+                        <th class="px-6 py-4">Last Call</th>
+                        <th class="px-6 py-4">Next Retry / Status Details</th>
+                        <th class="px-6 py-4 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/50">
+                    {% include "customer/orders/_tr_rows.html" %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="px-6 py-4 bg-slate-950/30 border-t border-slate-800/80 flex items-center justify-between">
+            <span class="text-xs text-slate-400">
+                Showing {{ start_idx }}–{{ end_idx }} of {{ total }} orders
+            </span>
+            <div class="flex items-center gap-1.5">
+                {% if has_prev %}
+                <button hx-get="{{ url_for('customer.api_orders', status=status or '', search=search or '', date_from=date_from or '', date_to=date_to or '', limit=limit, before=prev_cursor, offset=offset - limit) }}"
+                        hx-target="#orders-table-container"
+                        hx-swap="outerHTML"
+                        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">
+                    &larr; Previous
+                </button>
+                {% else %}
+                <button class="px-3 py-1.5 bg-slate-900 text-slate-600 rounded-lg text-xs font-bold cursor-not-allowed" disabled>
+                    &larr; Previous
+                </button>
+                {% endif %}
+
+                {% if has_next %}
+                <button hx-get="{{ url_for('customer.api_orders', status=status or '', search=search or '', date_from=date_from or '', date_to=date_to or '', limit=limit, after=next_cursor, offset=offset + limit) }}"
+                        hx-target="#orders-table-container"
+                        hx-swap="outerHTML"
+                        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">
+                    Next &rarr;
+                </button>
+                {% else %}
+                <button class="px-3 py-1.5 bg-slate-900 text-slate-600 rounded-lg text-xs font-bold cursor-not-allowed" disabled>
+                    Next &rarr;
+                </button>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,195 @@
+{% extends "admin/base_admin.html" %}
+
+{% block title %}Platform CDR Logs — C-Call Console{% endblock %}
+
+{% block admin_content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Platform Call Records (CDR)</h1>
+            <p class="text-slate-400 text-sm mt-1">Monitor, filter, and trace outbound call attempts across all merchant tenants</p>
+        </div>
+        <a href="{{ url_for('admin.cdr_export_csv', tenant_id=selected_tenant or '') }}"
+           class="py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-sm">Export CSV</a>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        {% for category, message in messages %}
+        <div class="p-4 rounded-2xl text-xs font-semibold {{ 'bg-emerald-500/10 border border-emerald-500/20 text-emerald-400' if category == 'success' else 'bg-rose-500/10 border border-rose-500/20 text-rose-400' }}">
+            {{ message }}
+        </div>
+        {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <!-- Filters & Search -->
+    <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-5" x-data="{ tenantQuery: '' }">
+        <form method="GET" action="{{ url_for('admin.cdr_logs') }}" class="flex flex-col md:flex-row gap-4 items-end">
+            <!-- Tenant Filter (searchable) -->
+            <div class="flex-1 w-full">
+                <label for="tenant_search" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Filter by Merchant</label>
+                <input type="text" id="tenant_search" x-model="tenantQuery" placeholder="Type to filter the list below..."
+                       class="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-sm mb-2 focus:outline-none">
+                <select name="tenant_id" id="tenant_id" aria-label="Filter by merchant"
+                        class="w-full bg-slate-950/80 border border-slate-800 focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none">
+                    <option value="">All Registered Merchants</option>
+                    {% for tenant in tenants %}
+                        <option value="{{ tenant.id }}" x-show="'{{ tenant.business_name|lower }}'.includes(tenantQuery.toLowerCase())" {% if selected_tenant == tenant.id|string %}selected{% endif %}>{{ tenant.business_name }} (#{{ tenant.id }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex gap-2 w-full md:w-auto">
+                <button type="submit"
+                        class="flex-1 md:flex-none py-3 px-6 bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold rounded-xl text-sm transition-all">
+                    Filter Logs
+                </button>
+                <a href="{{ url_for('admin.cdr_logs') }}"
+                   class="flex-1 md:flex-none py-3 px-6 bg-slate-950/40 border border-slate-800 hover:bg-slate-900/60 text-slate-400 hover:text-slate-200 font-bold rounded-xl text-sm transition-all text-center">
+                    Reset
+                </a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Calls List -->
+    <form method="POST" action="{{ url_for('admin.cdr_backfill_billing') }}" id="backfill-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="flex items-center justify-end mb-3">
+            <button type="submit"
+                    onclick="return confirm('Backfill billing for selected completed unbilled calls? This deducts wallet balance for each.');"
+                    class="py-2 px-4 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-400 font-bold rounded-xl text-xs transition-all">
+                Backfill billing for selected completed unbilled calls
+            </button>
+        </div>
+    <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm text-slate-300">
+                <thead class="bg-slate-950/60 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    <tr>
+                        <th class="px-4 py-4"><input type="checkbox" onclick="document.querySelectorAll('.backfill-cb').forEach(cb => cb.checked = this.checked)"></th>
+                        <th class="px-6 py-4">Call ID</th>
+                        <th class="px-6 py-4">Merchant Tenant</th>
+                        <th class="px-6 py-4">Order Ref</th>
+                        <th class="px-6 py-4">Customer Phone</th>
+                        <th class="px-6 py-4">Status</th>
+                        <th class="px-6 py-4 font-outfit">Talk/Ring</th>
+                        <th class="px-6 py-4 font-mono text-center">SIP</th>
+                        <th class="px-6 py-4 text-right">Charge</th>
+                        <th class="px-6 py-4">Started At</th>
+                        <th class="px-6 py-4">Ended At</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/50">
+                    {% for call in calls %}
+                    <tr class="hover:bg-slate-900/20 transition-colors">
+                        <td class="px-4 py-4">
+                            {% if call.status == 'completed' and (call.wallet_transaction_id is none) and (call.talk_seconds or 0) > 0 %}
+                            <input type="checkbox" name="call_ids" value="{{ call.id }}" class="backfill-cb">
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 font-mono text-xs text-slate-400">{{ call.id }}</td>
+                        <td class="px-6 py-4 font-semibold text-slate-200">
+                            <a href="{{ url_for('admin.customer_detail', tenant_id=call.tenant_id) }}" class="hover:text-indigo-400 hover:underline">
+                                {{ call.business_name }} (#{{ call.tenant_id }})
+                            </a>
+                        </td>
+                        <td class="px-6 py-4 text-slate-300 font-medium">{{ call.external_order_id or '—' }}</td>
+                        <td class="px-6 py-4 font-mono text-xs">
+                            <!-- PII Masking: show masked phone in admin console -->
+                            {% set raw_phone = call.number %}
+                            {% if raw_phone|length >= 11 %}
+                                {{ raw_phone[:3] }}****{{ raw_phone[-4:] }}
+                            {% else %}
+                                {{ raw_phone }}
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4">
+                            {% if call.status == 'answered' %}
+                                <span class="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                                    Answered
+                                </span>
+                            {% elif call.status == 'no_answer' %}
+                                <span class="flex items-center gap-1.5 text-xs text-amber-400 font-semibold">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                    No Answer
+                                </span>
+                            {% elif call.status == 'busy' %}
+                                <span class="flex items-center gap-1.5 text-xs text-amber-400 font-semibold">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                    Busy
+                                </span>
+                            {% elif call.status == 'ringing' %}
+                                <span class="flex items-center gap-1.5 text-xs text-indigo-400 font-semibold animate-pulse">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+                                    Ringing
+                                </span>
+                            {% else %}
+                                <span class="flex items-center gap-1.5 text-xs text-slate-400 font-semibold">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
+                                    {{ call.status }}
+                                </span>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 font-medium">
+                            <span class="text-slate-200">{{ call.talk_seconds }}s</span>
+                            <span class="text-slate-500">/</span>
+                            <span class="text-slate-400 text-xs">{{ call.ring_seconds }}s</span>
+                        </td>
+                        <td class="px-6 py-4 font-mono text-xs text-slate-500 text-center">{{ call.sip_final_status or '—' }}</td>
+                        <td class="px-6 py-4 text-right">
+                            <span class="font-semibold text-teal-400">৳{{ "%.2f"|format(call.charge or 0) }}</span>
+                            {% if call.status == 'completed' and (call.wallet_transaction_id is none) and (call.talk_seconds or 0) > 0 and (call.charge or 0) == 0 %}
+                            <div><span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">Unbilled historical call</span></div>
+                            {% endif %}
+                        </td>
+                        <td class="px-6 py-4 text-xs text-slate-400">{{ call.started_at.strftime('%Y-%m-%d %H:%M:%S') if call.started_at }}</td>
+                        <td class="px-6 py-4 text-xs text-slate-400">{{ call.ended_at.strftime('%Y-%m-%d %H:%M:%S') if call.ended_at else '—' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="11" class="px-6 py-10 text-center text-slate-500 font-medium">
+                            No call records (CDR) found.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if pages > 1 %}
+        <div class="px-6 py-4 bg-slate-950/30 border-t border-slate-800/80 flex items-center justify-between">
+            <span class="text-xs text-slate-400">Showing page {{ page }} of {{ pages }} (Total {{ total }} calls)</span>
+            <div class="flex items-center gap-1.5">
+                {% if page > 1 %}
+                <a href="{{ url_for('admin.cdr_logs', page=page-1, tenant_id=selected_tenant or '') }}"
+                   class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">&larr; Prev</a>
+                {% endif %}
+                
+                {% for p in range(1, pages + 1) %}
+                    {% if p == page %}
+                    <span class="px-3 py-1.5 bg-indigo-500 text-slate-950 rounded-lg text-xs font-bold">{{ p }}</span>
+                    {% elif p <= 3 or p >= pages - 2 or (p >= page - 1 and p <= page + 1) %}
+                    <a href="{{ url_for('admin.cdr_logs', page=p, tenant_id=selected_tenant or '') }}"
+                       class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">{{ p }}</a>
+                    {% elif p == 4 or p == pages - 3 %}
+                    <span class="text-slate-600 text-xs px-1">...</span>
+                    {% endif %}
+                {% endfor %}
+
+                {% if page < pages %}
+                <a href="{{ url_for('admin.cdr_logs', page=page+1, tenant_id=selected_tenant or '') }}"
+                   class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold transition-all text-slate-200">Next &rarr;</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    </form>
+</div>
+{% endblock %}

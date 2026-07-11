@@ -1,0 +1,446 @@
+{% extends "admin/base_admin.html" %}
+
+{% block title %}SIP CLI Pool — C-Call Console{% endblock %}
+
+{% block admin_content %}
+<div class="space-y-8" x-data="{ 
+    showAssignModal: false,
+    showEditModal: false,
+    showImportModal: false,
+    selectedNumberId: null,
+    selectedNumberStr: '',
+    searchTenantQuery: '',
+    selectedTenantId: '',
+    numberType: 'dedicated',
+    addNumberType: 'shared',
+    editType: 'shared',
+    editProviderId: ''
+}">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">SIP CLI Pool Manager</h1>
+            <p class="text-slate-400 text-sm mt-1">Manage outbound caller ID numbers, assign dedicated CLI channels, and configure monthly lease costs</p>
+        </div>
+
+        <div class="flex gap-2 w-full md:w-auto">
+            <button type="button" @click="showImportModal = true"
+                    class="py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-xs transition-colors">
+                Bulk Import CSV
+            </button>
+            <!-- Search bar -->
+            <form method="GET" action="{{ url_for('admin.numbers_panel') }}" class="w-full md:w-auto flex gap-2">
+                <input type="hidden" name="status" value="{{ current_status }}">
+                <input type="hidden" name="number_type" value="{{ current_type }}">
+                <input type="text" name="search" value="{{ search_query }}" placeholder="Search number or tenant..."
+                       class="bg-slate-900 border border-slate-800 focus:border-indigo-500 rounded-xl px-4 py-2 text-slate-100 placeholder-slate-500 text-xs focus:outline-none w-full md:w-64">
+                <button type="submit" class="py-2 px-4 bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-bold rounded-xl text-xs transition-colors">
+                    Search
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- A. Stats Row -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-semibold uppercase tracking-wider">Total</p>
+            <span class="text-2xl font-outfit font-bold text-slate-200">{{ stats.total }}</span>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-semibold uppercase tracking-wider">Active</p>
+            <span class="text-2xl font-outfit font-bold text-emerald-400">{{ stats.active }}</span>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-semibold uppercase tracking-wider">Dedicated</p>
+            <span class="text-2xl font-outfit font-bold text-indigo-400">{{ stats.dedicated }}</span>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-semibold uppercase tracking-wider">Shared</p>
+            <span class="text-2xl font-outfit font-bold text-slate-200">{{ stats.shared }}</span>
+        </div>
+        <div class="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4">
+            <p class="text-slate-400 text-[10px] font-semibold uppercase tracking-wider">Unassigned</p>
+            <span class="text-2xl font-outfit font-bold text-amber-400">{{ stats.unassigned }}</span>
+        </div>
+    </div>
+
+    <!-- Forms Row -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <!-- Add Number Form (Left column, full details) -->
+        <div class="lg:col-span-1 bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+            <h3 class="font-outfit font-bold text-lg text-slate-100 mb-4">Add Outbound Phone Number</h3>
+            
+            <form method="POST" action="{{ url_for('admin.numbers_panel') }}" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="action" value="add">
+                
+                <!-- Number -->
+                <div>
+                    <label for="number" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Phone Number (BD or E.164)</label>
+                    <input type="text" name="number" id="number" placeholder="01712345678, 09602111380 (virtual/PBX), or +88017..." required
+                           class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 placeholder-slate-500 text-xs focus:outline-none">
+                </div>
+
+                <!-- Provider -->
+                <div>
+                    <label for="provider_id" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">SIP Gateway Trunk</label>
+                    <select name="provider_id" id="provider_id" required
+                            class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                        {% for p in providers %}
+                            <option value="{{ p.id }}">{{ p.name }} ({{ p.sip_domain }})</option>
+                        {% else %}
+                            <option value="">No SIP providers configured</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Type -->
+                    <div>
+                        <label for="number_type" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">CLI Mode</label>
+                        <select name="number_type" id="number_type" x-model="addNumberType" required
+                                class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                            <option value="shared">SHARED</option>
+                            <option value="dedicated">DEDICATED</option>
+                        </select>
+                    </div>
+
+                    <!-- Cost -->
+                    <div>
+                        <label for="monthly_cost" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Lease Cost (৳)</label>
+                        <input type="number" name="monthly_cost" id="monthly_cost" min="0" step="0.01" value="0.00" required
+                               class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                    </div>
+                </div>
+
+                <!-- Tenant Selector (only visible for Dedicated CLI) -->
+                <div x-show="addNumberType === 'dedicated'" x-transition class="space-y-1.5" style="display: none;">
+                    <label for="tenant_id" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Assign Merchant Business</label>
+                    <select name="tenant_id" id="tenant_id" :required="addNumberType === 'dedicated'"
+                            class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                        <option value="">-- Choose Tenant --</option>
+                        {% for t in tenants %}
+                            <option value="{{ t.id }}">{{ t.business_name }} (#{{ t.id }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <button type="submit" 
+                        class="w-full py-2.5 px-4 bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-bold rounded-xl text-xs transition-all shadow-md active:scale-95">
+                    Add CLI Phone Number
+                </button>
+            </form>
+        </div>
+
+        <!-- Filter tabs & Catalog list (Right column) -->
+        <div class="lg:col-span-2 space-y-4">
+            <!-- Filter Tabs -->
+            <div class="flex border-b border-slate-800 bg-slate-900/40 p-1 rounded-xl backdrop-blur-md gap-1">
+                <a href="{{ url_for('admin.numbers_panel', status='all', number_type=current_type, search=search_query) }}" 
+                   class="flex-1 py-2 text-center text-xs font-semibold rounded-lg transition-all {% if current_status == 'all' %}bg-indigo-500 text-slate-950 shadow{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40{% endif %}">
+                    All
+                </a>
+                <a href="{{ url_for('admin.numbers_panel', status='active', number_type=current_type, search=search_query) }}" 
+                   class="flex-1 py-2 text-center text-xs font-semibold rounded-lg transition-all {% if current_status == 'active' %}bg-indigo-500 text-slate-950 shadow{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40{% endif %}">
+                    Active
+                </a>
+                <a href="{{ url_for('admin.numbers_panel', status='inactive', number_type=current_type, search=search_query) }}" 
+                   class="flex-1 py-2 text-center text-xs font-semibold rounded-lg transition-all {% if current_status == 'inactive' %}bg-indigo-500 text-slate-950 shadow{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40{% endif %}">
+                    Inactive
+                </a>
+                <a href="{{ url_for('admin.numbers_panel', status='unassigned', number_type=current_type, search=search_query) }}"
+                   class="flex-1 py-2 text-center text-xs font-semibold rounded-lg transition-all {% if current_status == 'unassigned' %}bg-indigo-500 text-slate-950 shadow{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40{% endif %}">
+                    Unassigned
+                </a>
+                <a href="{{ url_for('admin.numbers_panel', status=current_status, number_type='shared', search=search_query) }}"
+                   class="flex-1 py-2 text-center text-xs font-semibold rounded-lg transition-all {% if current_type == 'shared' %}bg-indigo-500 text-slate-950 shadow{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40{% endif %}">
+                    Shared
+                </a>
+                <a href="{{ url_for('admin.numbers_panel', status=current_status, number_type='dedicated', search=search_query) }}"
+                   class="flex-1 py-2 text-center text-xs font-semibold rounded-lg transition-all {% if current_type == 'dedicated' %}bg-indigo-500 text-slate-950 shadow{% else %}text-slate-400 hover:text-slate-200 hover:bg-slate-800/40{% endif %}">
+                    Dedicated
+                </a>
+            </div>
+
+            <!-- Numbers List -->
+            <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-300">
+                        <thead class="bg-slate-950/60 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                            <tr>
+                                <th class="px-6 py-4">Phone Number</th>
+                                <th class="px-6 py-4">Type</th>
+                                <th class="px-6 py-4">Assigned Tenant</th>
+                                <th class="px-6 py-4">SIP Gateway</th>
+                                <th class="px-6 py-4">Calls Today</th>
+                                <th class="px-6 py-4">Monthly Cost</th>
+                                <th class="px-6 py-4">Status</th>
+                                <th class="px-6 py-4 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-800/50">
+                            {% for n in numbers %}
+                            <tr class="hover:bg-slate-900/20 transition-colors">
+                                <td class="px-6 py-4 font-mono font-bold text-slate-200">{{ n.number }}</td>
+                                <td class="px-6 py-4">
+                                    {% if n.number_type == 'dedicated' %}
+                                        <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/15">DEDICATED</span>
+                                    {% else %}
+                                        <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 border border-slate-700">SHARED</span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-6 py-4">
+                                    {% if n.number_type == 'shared' %}
+                                        <span class="text-slate-500 italic text-xs">Shared Pool</span>
+                                    {% elif n.number_type == 'dedicated' %}
+                                        {% if n.tenant_id %}
+                                            <div class="flex items-center gap-1.5">
+                                                <span class="text-slate-300 font-medium">{{ n.business_name }}</span>
+                                                {% if n.is_primary %}
+                                                    <span class="px-1.5 py-0.2 rounded text-[8px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/15">PRIMARY</span>
+                                                {% endif %}
+                                            </div>
+                                        {% else %}
+                                            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/15">Dedicated but unassigned</span>
+                                        {% endif %}
+                                    {% endif %}
+                                </td>
+                                <td class="px-6 py-4 text-slate-400 text-xs">{{ n.provider_name or 'N/A' }}</td>
+                                <td class="px-6 py-4 font-mono font-semibold text-slate-300 text-xs">{{ n.call_count_today or 0 }}</td>
+                                <td class="px-6 py-4 font-mono text-xs text-slate-400">৳{{ "%.2f"|format(n.monthly_cost or 0) }}</td>
+                                <td class="px-6 py-4">
+                                    {% if n.status == 'active' %}
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">ACTIVE</span>
+                                    {% else %}
+                                        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/15 font-mono">INACTIVE</span>
+                                    {% endif %}
+                                </td>
+                                <td class="px-6 py-4 text-right">
+                                    <div class="flex items-center justify-end gap-2">
+                                        <!-- Toggle status -->
+                                        <form method="POST" action="{{ url_for('admin.update_number_details', number_id=n.id) }}" class="inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="_method" value="PUT">
+                                            <input type="hidden" name="status" value="{% if n.status == 'active' %}inactive{% else %}active{% endif %}">
+                                            <button type="submit" class="py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg transition-colors">
+                                                {% if n.status == 'active' %}Disable{% else %}Enable{% endif %}
+                                            </button>
+                                        </form>
+
+                                        <!-- Assign dedication trigger -->
+                                        {% if n.number_type == 'dedicated' and not n.tenant_id and n.status == 'active' %}
+                                        <button type="button" 
+                                                @click="showAssignModal = true; selectedNumberId = {{ n.id }}; selectedNumberStr = '{{ n.number }}'; numberType = '{{ n.number_type }}';"
+                                                class="py-1 px-2.5 bg-indigo-500 hover:bg-indigo-400 text-slate-950 text-[10px] font-bold rounded-lg transition-all">
+                                            Assign
+                                        </button>
+                                        {% endif %}
+                                        
+                                        <!-- Unassign dedicated -->
+                                        {% if n.tenant_id %}
+                                        <form method="POST" action="{{ url_for('admin.assign_or_unassign_number', number_id=n.id) }}" class="inline">
+                                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                            <input type="hidden" name="_method" value="DELETE">
+                                            <input type="hidden" name="tenant_id" value="{{ n.tenant_id }}">
+                                            <button type="submit" class="py-1 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 text-[10px] font-bold rounded-lg transition-colors">
+                                                Release
+                                            </button>
+                                        </form>
+                                        {% endif %}
+
+                                        <!-- Edit (type / provider) -->
+                                        <button type="button"
+                                                @click="showEditModal = true; selectedNumberId = {{ n.id }}; selectedNumberStr = '{{ n.number }}'; editType = '{{ n.number_type }}'; editProviderId = '{{ n.provider_id }}';"
+                                                class="py-1 px-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold rounded-lg transition-colors">
+                                            Edit
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="8" class="px-6 py-10 text-center text-slate-500 font-medium">No caller ID phone numbers found matching filters.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination footer -->
+                {% if pages > 1 %}
+                <div class="p-4 border-t border-slate-800/80 flex items-center justify-between bg-slate-950/20">
+                    <span class="text-xs text-slate-400">Page {{ page }} of {{ pages }} ({{ total }} total numbers)</span>
+                    <div class="flex gap-2">
+                        {% if page > 1 %}
+                        <a href="{{ url_for('admin.numbers_panel', page=page-1, status=current_status, number_type=current_type, search=search_query) }}"
+                           class="py-1 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition-colors">
+                            Prev
+                        </a>
+                        {% endif %}
+                        {% if page < pages %}
+                        <a href="{{ url_for('admin.numbers_panel', page=page+1, status=current_status, number_type=current_type, search=search_query) }}"
+                           class="py-1 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg transition-colors">
+                            Next
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Alpine.js Assign Modal Backdrop -->
+    <div x-show="showAssignModal" 
+         class="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm"
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         style="display: none;">
+        
+        <!-- Modal Card -->
+        <div @click.away="showAssignModal = false"
+             class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative"
+             x-transition:enter="transition ease-out duration-300 transform"
+             x-transition:enter-start="opacity-0 scale-95"
+             x-transition:enter-end="opacity-100 scale-100"
+             x-transition:leave="transition ease-in duration-200 transform"
+             x-transition:leave-start="opacity-100 scale-100"
+             x-transition:leave-end="opacity-0 scale-95">
+            
+            <h3 class="font-outfit font-extrabold text-xl text-slate-100 mb-2">Assign CLI Channel</h3>
+            <p class="text-xs text-slate-400 mb-6">Allocate number <span class="font-mono font-bold text-indigo-400 text-sm" x-text="selectedNumberStr"></span> to a specific merchant account.</p>
+
+            <form method="POST" :action="'/admin/numbers/' + selectedNumberId + '/assign'" class="space-y-4">
+                                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                                <input type="hidden" name="number_type" value="dedicated">
+                                
+                                                <!-- Tenant Search & Selection -->
+                                                <div>
+                                                    <label class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Select Merchant Business</label>
+                                                    <!-- Instant client-side search -->
+                                                    <input type="text" x-model="searchTenantQuery" placeholder="Type to filter businesses..."
+                                                           class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2 text-slate-100 placeholder-slate-500 text-xs focus:outline-none mb-2">
+                                                    
+                                                    <select name="tenant_id" x-model="selectedTenantId" required
+                                                            class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                                                        <option value="">-- Choose Tenant --</option>
+                                                        {% for t in tenants %}
+                                                            <option value="{{ t.id }}" 
+                                                                    x-show="'{{ t.business_name|lower }}'.includes(searchTenantQuery.toLowerCase())"
+                                                                    >{{ t.business_name }} (#{{ t.id }})</option>
+                                                        {% endfor %}
+                                                    </select>
+                                                </div>
+
+                <!-- Buttons -->
+                <div class="flex justify-end gap-2 pt-4 border-t border-slate-800/60">
+                    <button type="button" @click="showAssignModal = false"
+                            class="py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-colors">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                            class="py-2 px-4 bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-bold rounded-xl text-xs transition-colors shadow-md active:scale-95">
+                        Assign CLI Number
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div x-show="showEditModal" class="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm" style="display: none;">
+        <div @click.away="showEditModal = false" class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl relative">
+            <h3 class="font-outfit font-extrabold text-xl text-slate-100 mb-2">Edit CLI Number</h3>
+            <p class="text-xs text-slate-400 mb-6">Editing <span class="font-mono font-bold text-indigo-400 text-sm" x-text="selectedNumberStr"></span></p>
+            <form method="POST" :action="'/admin/numbers/' + selectedNumberId" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="_method" value="PUT">
+                <div>
+                    <label for="edit_number_type" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">Type</label>
+                    <select name="number_type" id="edit_number_type" x-model="editType" required
+                            class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                        <option value="shared">SHARED</option>
+                        <option value="dedicated">DEDICATED</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="edit_provider_id" class="block text-slate-400 text-[10px] font-semibold uppercase tracking-wider mb-1.5">SIP Gateway</label>
+                    <select name="provider_id" id="edit_provider_id" x-model="editProviderId" required
+                            class="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500/80 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+                        {% for p in providers %}
+                        <option value="{{ p.id }}">{{ p.name }} ({{ p.sip_domain }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="flex justify-end gap-2 pt-4 border-t border-slate-800/60">
+                    <button type="button" @click="showEditModal = false" class="py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-colors">Cancel</button>
+                    <button type="submit" class="py-2 px-4 bg-indigo-500 hover:bg-indigo-400 text-slate-950 font-bold rounded-xl text-xs transition-colors">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Bulk Import Modal -->
+    <div x-show="showImportModal" x-data="{ previewRows: [], fileName: '' }"
+         class="fixed inset-0 z-50 overflow-y-auto flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm" style="display: none;">
+        <div @click.away="showImportModal = false" class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl relative">
+            <h3 class="font-outfit font-extrabold text-xl text-slate-100 mb-2">Bulk Import Numbers (CSV)</h3>
+            <p class="text-xs text-slate-400 mb-4">CSV columns: <code class="text-indigo-400">number, provider_id, number_type, monthly_cost</code></p>
+            <form method="POST" action="{{ url_for('admin.numbers_bulk_import') }}" enctype="multipart/form-data" class="space-y-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="file" name="csv_file" accept=".csv" required
+                       @change="
+                           fileName = $event.target.files[0]?.name || '';
+                           const reader = new FileReader();
+                           reader.onload = (e) => {
+                               const lines = e.target.result.split(/\r?\n/).filter(l => l.trim());
+                               const headers = lines[0].split(',').map(h => h.trim());
+                               previewRows = lines.slice(1, 11).map(line => {
+                                   const cells = line.split(',');
+                                   return headers.reduce((obj, h, i) => { obj[h] = (cells[i] || '').trim(); return obj; }, {});
+                               });
+                           };
+                           reader.readAsText($event.target.files[0]);
+                       "
+                       class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-100 text-xs focus:outline-none">
+
+                <template x-if="previewRows.length">
+                    <div class="border border-slate-800/80 rounded-xl overflow-hidden">
+                        <p class="text-[10px] text-slate-500 px-3 py-2 bg-slate-950/60">Preview (first 10 rows) — <span x-text="fileName"></span></p>
+                        <div class="overflow-x-auto max-h-48">
+                            <table class="w-full text-left text-[10px] text-slate-300">
+                                <thead class="bg-slate-950/40 text-slate-500 uppercase">
+                                    <tr><th class="px-3 py-1.5">Number</th><th class="px-3 py-1.5">Provider</th><th class="px-3 py-1.5">Type</th><th class="px-3 py-1.5">Cost</th></tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-800/50">
+                                    <template x-for="(row, idx) in previewRows" :key="idx">
+                                        <tr>
+                                            <td class="px-3 py-1.5 font-mono" x-text="row.number"></td>
+                                            <td class="px-3 py-1.5" x-text="row.provider_id"></td>
+                                            <td class="px-3 py-1.5" x-text="row.number_type"></td>
+                                            <td class="px-3 py-1.5" x-text="row.monthly_cost"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </template>
+
+                <div class="flex justify-end gap-2 pt-2">
+                    <button type="button" @click="showImportModal = false" class="py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-colors">Cancel</button>
+                    <button type="submit" :disabled="!previewRows.length"
+                            class="py-2 px-4 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold rounded-xl text-xs transition-colors">
+                        Confirm Import
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
