@@ -1,0 +1,183 @@
+{% extends "admin/base_admin.html" %}
+{% block title %}Platform TTS Credentials — Admin{% endblock %}
+
+{% block content %}
+<div class="max-w-5xl mx-auto px-4 py-8">
+  <h1 class="text-2xl font-bold text-white mb-2">Platform TTS Credentials</h1>
+  <p class="text-sm text-slate-400 mb-6">
+    These API keys are used when tenants are in <strong class="text-slate-300">platform-managed</strong> TTS mode.
+    Keys are stored encrypted. They are never displayed in full after saving.
+  </p>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="mb-4 px-4 py-3 rounded-lg text-sm font-medium
+        {{ 'bg-green-900/40 text-green-200 border border-green-700' if cat == 'success'
+        else 'bg-red-900/40 text-red-200 border border-red-700' if cat == 'error'
+        else 'bg-yellow-900/40 text-yellow-200 border border-yellow-700' }}">
+        {{ msg }}
+      </div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="space-y-6">
+    {% for provider in providers %}
+    {% set meta = secrets_meta[provider] %}
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden" x-data="{ showSaveForm: false, showDisableForm: false }">
+      <!-- Provider header -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700/50">
+        <div class="flex items-center gap-3">
+          <span class="text-lg font-bold text-white capitalize">{{ provider }}</span>
+          {% if meta %}
+            {% if meta.status == 'active' %}
+              <span class="px-2 py-0.5 bg-green-900/50 text-green-300 rounded text-xs font-medium">Active</span>
+            {% elif meta.status == 'disabled' %}
+              <span class="px-2 py-0.5 bg-red-900/50 text-red-300 rounded text-xs font-medium">Disabled</span>
+            {% elif meta.status == 'invalid' %}
+              <span class="px-2 py-0.5 bg-orange-900/50 text-orange-300 rounded text-xs font-medium">Invalid</span>
+            {% endif %}
+          {% else %}
+            <span class="px-2 py-0.5 bg-slate-700 text-slate-400 rounded text-xs font-medium">Not configured</span>
+          {% endif %}
+        </div>
+        <div class="flex items-center gap-2">
+          {% if meta and meta.status != 'disabled' %}
+          <!-- Test button -->
+          <form method="post" action="{{ url_for('admin.platform_tts_test', provider=provider) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit"
+                    class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-xs font-medium transition">
+              Test
+            </button>
+          </form>
+          <!-- Disable button trigger -->
+          <button @click="showDisableForm = !showDisableForm"
+                  class="px-3 py-1.5 bg-red-900/40 hover:bg-red-800/60 text-red-300 rounded text-xs font-medium transition">
+            Disable
+          </button>
+          {% endif %}
+          <!-- Configure/Replace button trigger -->
+          <button @click="showSaveForm = !showSaveForm"
+                  class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-medium transition">
+            {{ 'Replace Key' if meta else 'Configure' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Metadata row -->
+      {% if meta %}
+      <div class="px-6 py-3 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs text-slate-400 border-b border-slate-700/30">
+        <div>
+          <span class="text-slate-500">Last four:</span>
+          <span class="text-slate-200 font-mono ml-1">****{{ meta.last_four or '????' }}</span>
+        </div>
+        <div>
+          <span class="text-slate-500">Last tested:</span>
+          <span class="text-slate-300 ml-1">{{ meta.last_tested_at.strftime('%Y-%m-%d %H:%M') if meta.last_tested_at else 'Never' }}</span>
+        </div>
+        <div>
+          <span class="text-slate-500">Test result:</span>
+          <span class="ml-1 {{ 'text-green-300' if meta.last_test_status == 'ok' else 'text-red-300' if meta.last_test_status == 'failed' else 'text-slate-400' }}">
+            {{ meta.last_test_status or '—' }}
+          </span>
+        </div>
+        <div>
+          <span class="text-slate-500">This month:</span>
+          <span class="text-slate-300 ml-1">
+            {% set u = usage_totals.get(provider, {}) %}
+            {{ u.get('total_chars', 0) | int | format_number if u else '0' }} chars
+          </span>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Plans using this provider -->
+      {% set pusing = plans_using[provider] %}
+      {% if pusing %}
+      <div class="px-6 py-2 text-xs text-slate-500 border-b border-slate-700/20">
+        Used by plans:
+        {% for p in pusing %}
+          <a href="{{ url_for('admin.plan_edit', plan_id=p.id) }}" class="text-indigo-400 hover:text-indigo-300 ml-1">{{ p.name }}</a>{% if not loop.last %},{% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <!-- Save form (hidden by default) -->
+      <div x-show="showSaveForm" x-cloak class="px-6 py-4 bg-slate-900/50 border-t border-slate-700/50">
+        <h3 class="text-sm font-semibold text-slate-300 mb-3">{{ 'Replace' if meta else 'Configure' }} {{ provider | title }} API Key</h3>
+        <div class="bg-yellow-900/20 border border-yellow-800 rounded-lg px-3 py-2 text-xs text-yellow-300 mb-3">
+          The key you enter will be encrypted and stored. It will not be displayed again in full.
+          Only the last 4 characters are shown after saving.
+        </div>
+        <form method="post" action="{{ url_for('admin.platform_tts_save', provider=provider) }}" autocomplete="off">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1">API Key <span class="text-red-400">*</span></label>
+              <input type="password" name="api_key" required autocomplete="new-password"
+                     placeholder="Paste key here — will not be echoed back"
+                     class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1">Reason (optional)</label>
+              <input type="text" name="reason" maxlength="200"
+                     placeholder="e.g. key rotation, initial setup"
+                     class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" name="confirm_save" value="1" required class="mt-0.5 rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500">
+              <span class="text-xs text-slate-400">
+                I confirm this key is correct{% if meta %} and I intend to replace the existing credential{% endif %}.
+              </span>
+            </label>
+            <div class="flex gap-2">
+              <button type="submit"
+                      class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition">
+                Save Encrypted Key
+              </button>
+              <button type="button" @click="showSaveForm = false"
+                      class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold rounded-lg transition">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <!-- Disable form (hidden by default) -->
+      {% if meta and meta.status != 'disabled' %}
+      <div x-show="showDisableForm" x-cloak class="px-6 py-4 bg-red-950/20 border-t border-red-900/40">
+        <h3 class="text-sm font-semibold text-red-300 mb-3">Disable {{ provider | title }} Credential</h3>
+        <p class="text-xs text-red-300/80 mb-3">
+          This will mark the credential as disabled. Tenants in platform-managed mode on plans that use {{ provider }}
+          will have TTS generation denied until the credential is re-configured or they switch to BYOK.
+          BYOK tenants are unaffected.
+        </p>
+        <form method="post" action="{{ url_for('admin.platform_tts_disable', provider=provider) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1">Reason <span class="text-red-400">*</span></label>
+              <input type="text" name="reason" required maxlength="200"
+                     placeholder="Required: explain why this credential is being disabled"
+                     class="w-full px-3 py-2 bg-slate-900 border border-red-800/50 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-red-500">
+            </div>
+            <div class="flex gap-2">
+              <button type="submit"
+                      class="px-4 py-2 bg-red-700 hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition">
+                Disable Credential
+              </button>
+              <button type="button" @click="showDisableForm = false"
+                      class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold rounded-lg transition">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

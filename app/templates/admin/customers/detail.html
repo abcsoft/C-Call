@@ -183,7 +183,51 @@
         </div>
     </div>
 
-    <!-- F. Impersonate confirm modal -->
+    <!-- F. TTS Mode Override -->
+    <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
+        <h3 class="font-outfit font-bold text-lg text-slate-100 mb-1">TTS Configuration</h3>
+        <p class="text-xs text-slate-500 mb-4">Current mode applies to all TTS generation for this tenant.</p>
+        <div class="flex flex-wrap items-center gap-6 mb-4">
+            <div>
+                <span class="text-xs text-slate-400">Current mode:</span>
+                <span class="ml-2 px-2 py-0.5 rounded text-xs font-semibold
+                    {{ 'bg-indigo-900/50 text-indigo-200' if tenant.tts_credential_mode == 'platform_managed' else 'bg-slate-700 text-slate-300' }}">
+                    {{ tenant.tts_credential_mode or 'byok' }}
+                </span>
+            </div>
+            {% if tenant.plan_id %}
+            <div>
+                <span class="text-xs text-slate-400">Plan policy:</span>
+                <span class="ml-2 text-xs text-slate-300">{{ tts_policy.credential_policy if tts_policy else '—' }}</span>
+            </div>
+            {% endif %}
+        </div>
+        <form method="POST" action="{{ url_for('admin.tenant_tts_mode_override', tenant_id=tenant.id) }}"
+              class="flex flex-wrap gap-3 items-end">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">New Mode</label>
+                <select name="tts_credential_mode"
+                        class="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <option value="byok" {{ 'selected' if (tenant.tts_credential_mode or 'byok') == 'byok' }}>byok</option>
+                    <option value="platform_managed" {{ 'selected' if tenant.tts_credential_mode == 'platform_managed' }}>platform_managed</option>
+                </select>
+            </div>
+            <div class="flex-1 min-w-48">
+                <label class="block text-xs text-slate-400 mb-1">Reason <span class="text-red-400">*</span></label>
+                <input type="text" name="reason" required maxlength="200"
+                       placeholder="Required — shown in audit log"
+                       class="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            </div>
+            <button type="submit"
+                    class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition"
+                    onclick="return confirm('Change TTS mode for this tenant?')">
+                Apply
+            </button>
+        </form>
+    </div>
+
+    <!-- G. Impersonate confirm modal -->
     <div x-show="showImpersonateModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center p-4" style="display:none;">
         <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm" @click="showImpersonateModal = false"></div>
         <form method="POST" action="{{ url_for('admin.impersonate', tenant_id=tenant.id) }}"

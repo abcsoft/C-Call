@@ -9,3 +9,4 @@ admin_bp = Blueprint("admin", __name__, template_folder="../../templates/admin")
 
 from app.blueprints.admin import routes  # noqa: E402,F401
 from app.blueprints.admin import routes_numbers  # noqa: E402,F401
+from app.blueprints.admin import routes_tts  # noqa: E402,F401

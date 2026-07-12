@@ -1,0 +1,189 @@
+{% extends "admin/base_admin.html" %}
+{% block title %}{{ 'Edit Plan' if plan else 'Create Plan' }} — Admin{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-8">
+  <div class="flex items-center gap-3 mb-6">
+    <a href="{{ url_for('admin.plans_list') }}" class="text-slate-400 hover:text-slate-200 transition">
+      <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+      </svg>
+    </a>
+    <h1 class="text-2xl font-bold text-white">{{ 'Edit Plan: ' + plan.name if plan else 'Create New Plan' }}</h1>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="mb-4 px-4 py-3 rounded-lg text-sm font-medium
+        {{ 'bg-green-900/40 text-green-200 border border-green-700' if cat == 'success'
+        else 'bg-red-900/40 text-red-200 border border-red-700' if cat == 'error'
+        else 'bg-yellow-900/40 text-yellow-200 border border-yellow-700' }}">
+        {{ msg }}
+      </div>
+    {% endfor %}
+  {% endwith %}
+
+  {% if affected_count is defined and affected_count > 0 %}
+  <div class="mb-4 px-4 py-3 rounded-lg bg-yellow-900/40 text-yellow-200 border border-yellow-700 text-sm">
+    <strong>Downgrade warning:</strong> {{ affected_count }} tenant(s) currently use platform-managed TTS on this plan.
+    Changing to byok_only will block their TTS generation.
+  </div>
+  {% endif %}
+
+  <form method="post" class="space-y-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    <!-- Basic info -->
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-6 space-y-4">
+      <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Plan Details</h2>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Plan Name <span class="text-red-400">*</span></label>
+        <input type="text" name="name" required maxlength="80"
+               value="{{ form_values.get('name', plan.name if plan else '') }}"
+               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Monthly Price (BDT) <span class="text-red-400">*</span></label>
+          <input type="number" name="price_monthly" min="0" step="0.01" required
+                 value="{{ form_values.get('price_monthly', plan.price_monthly if plan else '0') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Included Minutes</label>
+          <input type="number" name="included_minutes" min="0"
+                 value="{{ form_values.get('included_minutes', plan.included_minutes if plan else '0') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Max Flows</label>
+          <input type="number" name="max_flows" min="0"
+                 value="{{ form_values.get('max_flows', plan.max_flows if plan else '0') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Max Users</label>
+          <input type="number" name="max_users" min="0"
+                 value="{{ form_values.get('max_users', plan.max_users if plan else '0') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+    </div>
+
+    <!-- TTS Policy -->
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-6 space-y-4">
+      <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">TTS Policy</h2>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Credential Policy <span class="text-red-400">*</span></label>
+        <select name="credential_policy"
+                class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          {% set cur_policy = form_values.get('credential_policy', policy.credential_policy if policy else 'byok_only') %}
+          {% for cp in credential_policies %}
+          <option value="{{ cp }}" {{ 'selected' if cur_policy == cp }}>{{ cp }}</option>
+          {% endfor %}
+        </select>
+        <p class="mt-1 text-xs text-slate-500">
+          byok_only: tenants must supply their own API keys.
+          platform_managed: platform keys used.
+          hybrid: tenant chooses.
+        </p>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Allowed Providers</label>
+        <input type="text" name="allowed_providers" placeholder="e.g. edge,gtts,gemini"
+               value="{{ form_values.get('allowed_providers', (policy.allowed_providers | join(',') if policy and policy.allowed_providers else '')) }}"
+               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        <p class="mt-1 text-xs text-slate-500">Comma-separated. Valid: {{ canonical_providers | join(', ') }}</p>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">BYOK Providers <span class="text-xs text-slate-500">(subset of allowed)</span></label>
+        <input type="text" name="byok_providers" placeholder="e.g. gemini,elevenlabs"
+               value="{{ form_values.get('byok_providers', (policy.byok_providers | join(',') if policy and policy.byok_providers else '')) }}"
+               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Platform-Managed Providers <span class="text-xs text-slate-500">(subset of allowed)</span></label>
+        <input type="text" name="platform_managed_providers" placeholder="e.g. gemini"
+               value="{{ form_values.get('platform_managed_providers', (policy.platform_managed_providers | join(',') if policy and policy.platform_managed_providers else '')) }}"
+               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Monthly Character Quota</label>
+          <input type="number" name="monthly_character_quota" min="0" placeholder="blank = unlimited"
+                 value="{{ form_values.get('monthly_character_quota', policy.monthly_character_quota if policy and policy.monthly_character_quota is not none else '') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Monthly Audio Quota (seconds)</label>
+          <input type="number" name="monthly_audio_seconds_quota" min="0" placeholder="blank = unlimited"
+                 value="{{ form_values.get('monthly_audio_seconds_quota', policy.monthly_audio_seconds_quota if policy and policy.get('monthly_audio_seconds_quota') is not none else '') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Daily Preview Limit</label>
+          <input type="number" name="daily_preview_limit" min="0"
+                 value="{{ form_values.get('daily_preview_limit', policy.daily_preview_limit if policy else 10) }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Max Concurrent TTS</label>
+          <input type="number" name="max_concurrent_tts" min="1"
+                 value="{{ form_values.get('max_concurrent_tts', policy.max_concurrent_tts if policy else 1) }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      <div>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" name="premium_voices_enabled" value="1"
+                 {{ 'checked' if form_values.get('premium_voices_enabled') or (policy and policy.premium_voices_enabled) }}
+                 class="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500">
+          <span class="text-sm text-slate-300">Premium voices enabled</span>
+        </label>
+      </div>
+
+      <div class="bg-slate-700/40 rounded-lg px-3 py-2 text-xs text-slate-400">
+        Over-quota policy: <strong class="text-slate-300">block</strong> (requests denied when quota exhausted — no wallet charges).
+      </div>
+    </div>
+
+    {% if affected_count is defined and affected_count > 0 %}
+    <div class="bg-yellow-900/30 border border-yellow-700 rounded-xl p-4">
+      <label class="flex items-start gap-3 cursor-pointer">
+        <input type="checkbox" name="confirm_downgrade" value="1" class="mt-0.5 rounded border-yellow-600 bg-slate-900 text-yellow-500 focus:ring-yellow-500">
+        <span class="text-sm text-yellow-200">
+          I understand {{ affected_count }} tenant(s) currently use platform-managed TTS.
+          Changing to <em>byok_only</em> will deny TTS generation until they add their own keys.
+          I confirm this downgrade.
+        </span>
+      </label>
+    </div>
+    {% endif %}
+
+    <div class="flex items-center gap-3">
+      <button type="submit"
+              class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg transition">
+        {{ 'Update Plan' if plan else 'Create Plan' }}
+      </button>
+      <a href="{{ url_for('admin.plans_list') }}"
+         class="px-6 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-semibold rounded-lg transition">
+        Cancel
+      </a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -14,16 +14,25 @@ TEST_DATABASE_URL = os.environ.get(
 
 
 def _schema_is_current(conn) -> bool:
-    """Return True if ccall_test already has the latest migration tables."""
+    """Return True if ccall_test already has all migration tables including migration 016."""
     with conn.cursor() as cur:
-        # Check for migration 015 table (newest migration) as a proxy for up-to-date schema
+        # Check for migration 015 tables
         cur.execute("""
             SELECT COUNT(*) FROM information_schema.tables
             WHERE table_schema = 'public'
             AND table_name IN ('plan_tts_policies', 'platform_secrets', 'tenant_tts_usage', 'tenants', 'orders')
         """)
         count = cur.fetchone()[0]
-        return count >= 5
+        if count < 5:
+            return False
+        # Check for migration 016 column
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = 'public'
+            AND table_name = 'plans'
+            AND column_name = 'archived_at'
+        """)
+        return cur.fetchone()[0] >= 1
 
 
 @pytest.fixture(scope="session", autouse=True)

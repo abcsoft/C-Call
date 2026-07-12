@@ -239,6 +239,9 @@ def customer_detail(tenant_id: int):
     )
     has_assigned_numbers = int(has_assigned_numbers_query["count"]) > 0 if has_assigned_numbers_query else False
 
+    from app.models.plan_tts_policy import get_plan_tts_policy
+    tts_policy = get_plan_tts_policy(tenant.get("plan_id")) if tenant.get("plan_id") else None
+
     return render_template(
         "admin/customers/detail.html",
         tenant=tenant,
@@ -250,6 +253,7 @@ def customer_detail(tenant_id: int):
         usage=usage,
         recent_orders=recent_orders,
         has_assigned_numbers=has_assigned_numbers,
+        tts_policy=tts_policy,
     )
 
 

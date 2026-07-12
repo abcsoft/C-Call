@@ -1,0 +1,123 @@
+{% extends "admin/base_admin.html" %}
+{% block title %}Plans — Admin{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold text-white">Plans</h1>
+    <a href="{{ url_for('admin.plan_create') }}"
+       class="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg transition">
+      <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+      </svg>
+      New Plan
+    </a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="mb-4 px-4 py-3 rounded-lg text-sm font-medium
+        {{ 'bg-green-900/40 text-green-200 border border-green-700' if cat == 'success'
+        else 'bg-red-900/40 text-red-200 border border-red-700' if cat == 'error'
+        else 'bg-yellow-900/40 text-yellow-200 border border-yellow-700' }}">
+        {{ msg }}
+      </div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="overflow-x-auto rounded-xl border border-slate-700">
+    <table class="w-full text-sm text-slate-200">
+      <thead class="bg-slate-800 text-slate-400 uppercase text-xs">
+        <tr>
+          <th class="px-4 py-3 text-left">Plan</th>
+          <th class="px-4 py-3 text-left">Price</th>
+          <th class="px-4 py-3 text-left">Credential Policy</th>
+          <th class="px-4 py-3 text-left">Allowed Providers</th>
+          <th class="px-4 py-3 text-left">Platform Providers</th>
+          <th class="px-4 py-3 text-right">Tenants</th>
+          <th class="px-4 py-3 text-left">Status</th>
+          <th class="px-4 py-3 text-center">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-700/50">
+        {% for plan in plans %}
+        <tr class="hover:bg-slate-800/30 {{ 'opacity-50' if plan.archived_at }}">
+          <td class="px-4 py-3 font-semibold">
+            {{ plan.name }}
+            <div class="text-xs text-slate-500 mt-0.5">ID {{ plan.id }}</div>
+          </td>
+          <td class="px-4 py-3">৳{{ plan.price_monthly }}</td>
+          <td class="px-4 py-3">
+            {% if plan.credential_policy == 'byok_only' %}
+              <span class="px-2 py-0.5 bg-slate-700 text-slate-300 rounded text-xs">BYOK only</span>
+            {% elif plan.credential_policy == 'platform_managed' %}
+              <span class="px-2 py-0.5 bg-indigo-900 text-indigo-200 rounded text-xs">Platform managed</span>
+            {% elif plan.credential_policy == 'hybrid' %}
+              <span class="px-2 py-0.5 bg-teal-900 text-teal-200 rounded text-xs">Hybrid</span>
+            {% else %}
+              <span class="text-slate-500">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3">
+            {% if plan.allowed_providers %}
+              <div class="flex flex-wrap gap-1">
+                {% for p in plan.allowed_providers %}
+                  <span class="px-1.5 py-0.5 bg-slate-700 rounded text-xs">{{ p }}</span>
+                {% endfor %}
+              </div>
+            {% else %}
+              <span class="text-slate-500">none</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3">
+            {% if plan.platform_managed_providers %}
+              <div class="flex flex-wrap gap-1">
+                {% for p in plan.platform_managed_providers %}
+                  <span class="px-1.5 py-0.5 bg-indigo-900/50 text-indigo-300 rounded text-xs">{{ p }}</span>
+                {% endfor %}
+              </div>
+            {% else %}
+              <span class="text-slate-500">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right">{{ plan.tenant_count }}</td>
+          <td class="px-4 py-3">
+            {% if plan.archived_at %}
+              <span class="px-2 py-0.5 bg-red-900/40 text-red-300 rounded text-xs">Archived</span>
+            {% else %}
+              <span class="px-2 py-0.5 bg-green-900/40 text-green-300 rounded text-xs">Active</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-center">
+            <div class="flex items-center justify-center gap-2">
+              {% if not plan.archived_at %}
+              <a href="{{ url_for('admin.plan_edit', plan_id=plan.id) }}"
+                 class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-xs font-medium transition">Edit</a>
+              {% if plan.tenant_count == 0 %}
+              <form method="post" action="{{ url_for('admin.plan_archive', plan_id=plan.id) }}"
+                    onsubmit="return confirm('Archive plan {{ plan.name | e }}? This cannot be undone.')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="px-3 py-1.5 bg-red-900/40 hover:bg-red-800/60 text-red-300 rounded text-xs font-medium transition">
+                  Archive
+                </button>
+              </form>
+              {% else %}
+              <span class="text-xs text-slate-500" title="Reassign tenants first">Archive</span>
+              {% endif %}
+              {% else %}
+              <span class="text-xs text-slate-600 italic">Archived {{ plan.archived_at.strftime('%Y-%m-%d') if plan.archived_at }}</span>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" class="px-4 py-8 text-center text-slate-500">No plans yet. Create one.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

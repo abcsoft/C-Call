@@ -98,8 +98,8 @@
 </a>
 
 <!-- System Settings -->
-<a href="{{ url_for('admin.settings') }}" 
-   class="group flex items-center px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200 
+<a href="{{ url_for('admin.settings') }}"
+   class="group flex items-center px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200
    {% if request.endpoint == 'admin.settings' %}
      bg-gradient-to-r from-indigo-500/15 to-purple-500/10 text-indigo-300 border-l-4 border-indigo-500 pl-3
    {% else %}
@@ -110,4 +110,46 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
     </svg>
     System Settings
+</a>
+
+<!-- Plans -->
+<a href="{{ url_for('admin.plans_list') }}"
+   class="group flex items-center px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200
+   {% if request.endpoint in ('admin.plans_list', 'admin.plan_create', 'admin.plan_edit', 'admin.plan_archive') %}
+     bg-gradient-to-r from-indigo-500/15 to-purple-500/10 text-indigo-300 border-l-4 border-indigo-500 pl-3
+   {% else %}
+     text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border-l-4 border-transparent
+   {% endif %}">
+    <svg class="mr-3 h-5 w-5 shrink-0 transition-colors {% if request.endpoint in ('admin.plans_list', 'admin.plan_create', 'admin.plan_edit', 'admin.plan_archive') %}text-indigo-400{% else %}text-slate-400 group-hover:text-slate-300{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
+    </svg>
+    Plans
+</a>
+
+<!-- Platform TTS -->
+<a href="{{ url_for('admin.platform_tts_page') }}"
+   class="group flex items-center px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200
+   {% if request.endpoint in ('admin.platform_tts_page', 'admin.platform_tts_save', 'admin.platform_tts_test', 'admin.platform_tts_disable') %}
+     bg-gradient-to-r from-indigo-500/15 to-purple-500/10 text-indigo-300 border-l-4 border-indigo-500 pl-3
+   {% else %}
+     text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border-l-4 border-transparent
+   {% endif %}">
+    <svg class="mr-3 h-5 w-5 shrink-0 transition-colors {% if request.endpoint in ('admin.platform_tts_page', 'admin.platform_tts_save', 'admin.platform_tts_test', 'admin.platform_tts_disable') %}text-indigo-400{% else %}text-slate-400 group-hover:text-slate-300{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path>
+    </svg>
+    Platform TTS
+</a>
+
+<!-- TTS Usage -->
+<a href="{{ url_for('admin.tts_usage_page') }}"
+   class="group flex items-center px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200
+   {% if request.endpoint == 'admin.tts_usage_page' %}
+     bg-gradient-to-r from-indigo-500/15 to-purple-500/10 text-indigo-300 border-l-4 border-indigo-500 pl-3
+   {% else %}
+     text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border-l-4 border-transparent
+   {% endif %}">
+    <svg class="mr-3 h-5 w-5 shrink-0 transition-colors {% if request.endpoint == 'admin.tts_usage_page' %}text-indigo-400{% else %}text-slate-400 group-hover:text-slate-300{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+    </svg>
+    TTS Usage
 </a>
