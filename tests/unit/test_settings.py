@@ -125,13 +125,13 @@ def test_script_editor_loading_and_saving(auth_client, create_tenant, app):
         assert res.status_code == 200
         assert "Voice Script Configurator" in res.get_data(as_text=True)
 
-        # 2. Save script settings
+        # 2. Save script settings — use "edge" provider which is in the safe default policy
         post_data = {
             "voice_script": "হ্যালো {{customer_name}}, আপনার অর্ডার {{amount}} টাকা।",
-            "tts_provider": "gemini",
-            "gemini_voice_name": "Zephyr",
+            "tts_provider": "edge",
+            "edge_tts_voice": "bn-BD-NabanitaNeural",
             "speaking_rate": "fast",
-            "language": "Mixed"
+            "language": "Bangla"
         }
         res_save = client.post("/api/settings/script", data=post_data)
         assert res_save.status_code == 302 # Redirect
@@ -140,10 +140,9 @@ def test_script_editor_loading_and_saving(auth_client, create_tenant, app):
         tenant_data = get_tenant_by_id(tenant_id)
         settings = json.loads(tenant_data["settings"]) if isinstance(tenant_data["settings"], str) else tenant_data["settings"]
         assert settings.get("voice_script") == "হ্যালো {{customer_name}}, আপনার অর্ডার {{amount}} টাকা।"
-        assert settings.get("tts_provider") == "gemini"
-        assert settings.get("gemini_voice_name") == "Zephyr"
+        assert settings.get("tts_provider") == "edge"
         assert settings.get("speaking_rate") == "fast"
-        assert settings.get("language") == "Mixed"
+        assert settings.get("language") == "Bangla"
 
 def test_api_settings_voices_endpoint(auth_client, create_tenant, app):
     with app.app_context():

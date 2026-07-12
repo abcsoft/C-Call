@@ -13,6 +13,64 @@ TEST_DATABASE_URL = os.environ.get(
 )
 
 
+class MockRedis:
+    """In-memory Redis mock matching redis-py's API for both redis_ext._client and SESSION_REDIS.
+
+    Flask-Session calls set(name=..., value=..., ex=...) and get(name=...) using keyword args.
+    App code calls incr/get/set/delete/setex/expire/ping with positional args.
+    Using a module-level class avoids creating 100+ real Redis ConnectionPool objects across
+    the test suite, which caused session-Redis lookup hangs on test #97+ in combined runs.
+    """
+
+    def __init__(self):
+        self.data: dict = {}
+
+    # redis-py uses `name` as the key parameter (not `key`)
+    def incr(self, name, amount=1):
+        self.data[name] = self.data.get(name, 0) + amount
+        return self.data[name]
+
+    def get(self, name):
+        return self.data.get(name)
+
+    def set(self, name, value, ex=None, px=None, nx=False, xx=False, keepttl=False, get=False, exat=None, pxat=None):
+        if nx and name in self.data:
+            return None
+        if xx and name not in self.data:
+            return None
+        self.data[name] = value
+        return True
+
+    def delete(self, *names):
+        count = 0
+        for name in names:
+            if name in self.data:
+                del self.data[name]
+                count += 1
+        return count
+
+    def setex(self, name, time, value):
+        self.data[name] = value
+        return True
+
+    def expire(self, name, time, nx=False, xx=False, gt=False, lt=False):
+        return True
+
+    def exists(self, *names):
+        return sum(1 for n in names if n in self.data)
+
+    def ping(self):
+        return True
+
+    def keys(self, pattern="*"):
+        return list(self.data.keys())
+
+    def scan_iter(self, match=None, count=None):
+        for key in self.data:
+            if match is None or key.startswith(match.rstrip("*")):
+                yield key
+
+
 def _schema_is_current(conn) -> bool:
     """Return True if ccall_test already has all migration tables including migration 016."""
     with conn.cursor() as cur:
@@ -79,9 +137,26 @@ def app():
         "PLATFORM_SECRET_ENCRYPTION_KEY",
         "kf5PjsX2XFRAHr4o5KMstpKlovTExW7PLCg-y6Hqa88="  # test-only Fernet key
     )
+    # Inject MockRedis BEFORE create_app so that init_app picks it up as SESSION_REDIS.
+    # This prevents real Redis ConnectionPool accumulation across 100+ tests, which caused
+    # session-lookup hangs during CSRF validation on combined test runs.
+    from app.extensions import redis_ext
+    mock_redis_instance = MockRedis()
+    redis_ext._client = mock_redis_instance
+
     flask_app = create_app("testing")
+    # Patch Flask-Session's internal client reference to the mock.
+    # init_app creates a real Redis client and stores it in session_interface.client;
+    # our config patch is too late. Replacing the attribute on the already-created
+    # RedisSessionInterface avoids creating real ConnectionPools per test.
+    try:
+        flask_app.session_interface.client = mock_redis_instance
+    except AttributeError:
+        pass
+    flask_app.config["SESSION_REDIS"] = mock_redis_instance
     flask_app.config["PROPAGATE_EXCEPTIONS"] = True
     yield flask_app
+    # Close DB pool
     from app.extensions import db_pool
     if db_pool._pool:
         try:
@@ -89,6 +164,8 @@ def app():
         except Exception:
             pass
         db_pool._pool = None
+    # Reset redis_ext._client so next test's init_app starts clean
+    redis_ext._client = None
 
 
 @pytest.fixture
@@ -140,32 +217,33 @@ def mock_tts_and_call_runner(request, monkeypatch):
         )
     monkeypatch.setattr(call_runner, "start_call", mock_start_call)
 
-    # Mock Redis client
+    # Patch redis_ext._client with a fresh per-test MockRedis (isolated counters).
+    # Also update the session interface so Flask-Session uses the same mock, not real Redis.
     from app.extensions import redis_ext
-    class MockRedis:
-        def __init__(self):
-            self.data = {}
-        def incr(self, key):
-            self.data[key] = self.data.get(key, 0) + 1
-            return self.data[key]
-        def get(self, key):
-            return self.data.get(key)
-        def set(self, key, value):
-            self.data[key] = value
-        def delete(self, key):
-            if key in self.data:
-                del self.data[key]
-                return 1
-            return 0
-        def setex(self, name, time, value):
-            self.data[name] = value
-            return True
-        def expire(self, key, time):
-            return True
-        def ping(self):
-            return True
-            
-    monkeypatch.setattr(redis_ext, "_client", MockRedis())
+    flask_app = request.getfixturevalue("app")
+    per_test_mock = MockRedis()
+    monkeypatch.setattr(redis_ext, "_client", per_test_mock)
+    try:
+        flask_app.session_interface.client = per_test_mock
+    except AttributeError:
+        pass
+
+    # Patch _dispatch_pool.submit to run work synchronously.
+    # prevent_background_threads patches threading.Thread.start to run targets inline;
+    # but ThreadPoolExecutor._worker is an infinite loop — running it inline hangs forever.
+    # Replacing submit avoids starting any executor worker threads at all.
+    import concurrent.futures
+    from app.services import order_service
+
+    def _sync_submit(fn, *args, **kwargs):
+        f = concurrent.futures.Future()
+        try:
+            f.set_result(fn(*args, **kwargs))
+        except Exception as exc:
+            f.set_exception(exc)
+        return f
+
+    monkeypatch.setattr(order_service._dispatch_pool, "submit", _sync_submit)
 
 
 @pytest.fixture(autouse=True)
