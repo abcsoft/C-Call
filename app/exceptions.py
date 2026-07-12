@@ -50,3 +50,33 @@ class MaxRetriesReachedError(Exception):
         if message is None:
             message = f"Order {order_id} has reached the maximum number of retry attempts."
         super().__init__(message)
+
+
+class TTSProviderNotAllowedError(Exception):
+    """Raised when the tenant's plan does not allow the requested TTS provider."""
+    def __init__(self, provider: str, tenant_id: int | None = None, message: str | None = None):
+        self.provider = provider
+        self.tenant_id = tenant_id
+        if message is None:
+            message = f"TTS provider '{provider}' is not available on your current plan."
+        super().__init__(message)
+
+
+class TTSQuotaExceededError(Exception):
+    """Raised when the tenant's monthly platform TTS quota is exhausted."""
+    def __init__(self, tenant_id: int | None = None, provider: str | None = None, message: str | None = None):
+        self.tenant_id = tenant_id
+        self.provider = provider
+        if message is None:
+            message = "Monthly TTS character quota has been reached. Quota resets on the 1st of next month."
+        super().__init__(message)
+
+
+class TTSCredentialModeError(Exception):
+    """Raised when the tenant attempts a credential mode not allowed by their plan."""
+    def __init__(self, mode: str, tenant_id: int | None = None, message: str | None = None):
+        self.mode = mode
+        self.tenant_id = tenant_id
+        if message is None:
+            message = f"Credential mode '{mode}' is not allowed on your current plan."
+        super().__init__(message)

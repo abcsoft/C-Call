@@ -13,19 +13,45 @@ TEST_DATABASE_URL = os.environ.get(
 )
 
 
+def _schema_is_current(conn) -> bool:
+    """Return True if ccall_test already has the latest migration tables."""
+    with conn.cursor() as cur:
+        # Check for migration 015 table (newest migration) as a proxy for up-to-date schema
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name IN ('plan_tts_policies', 'platform_secrets', 'tenant_tts_usage', 'tenants', 'orders')
+        """)
+        count = cur.fetchone()[0]
+        return count >= 5
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
-    """Drop and recreate public schema, and run migrations in order."""
+    """Drop and recreate public schema, and run migrations in order.
+    Skips rebuild if schema is already up to date (speeds up re-runs).
+    Pass --force-rebuild to always rebuild.
+    """
+    import glob
     with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as conn:
+        if _schema_is_current(conn):
+            return  # schema already up to date — skip rebuild
+
         with conn.cursor() as cur:
+            # Terminate any open connections to the test DB so DROP SCHEMA doesn't block
+            cur.execute("""
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND pid <> pg_backend_pid()
+            """)
             cur.execute("""
                 DROP SCHEMA IF EXISTS public CASCADE;
                 CREATE SCHEMA public;
                 GRANT ALL ON SCHEMA public TO public;
             """)
-            
+
         migrations_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "migrations"))
-        import glob
         for path in sorted(glob.glob(os.path.join(migrations_dir, "*.sql"))):
             with open(path, "r", encoding="utf-8") as f:
                 sql = f.read()
@@ -39,6 +65,11 @@ def app():
     os.environ["FLASK_ENV"] = "testing"
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     os.environ.setdefault("FLASK_SECRET_KEY", "test-secret-key-that-is-long-enough-for-tests-32x")
+    # Fernet key for platform_secrets — test only, never use in prod
+    os.environ.setdefault(
+        "PLATFORM_SECRET_ENCRYPTION_KEY",
+        "kf5PjsX2XFRAHr4o5KMstpKlovTExW7PLCg-y6Hqa88="  # test-only Fernet key
+    )
     flask_app = create_app("testing")
     flask_app.config["PROPAGATE_EXCEPTIONS"] = True
     yield flask_app
@@ -77,8 +108,12 @@ def prevent_background_threads(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def mock_tts_and_call_runner(monkeypatch):
+def mock_tts_and_call_runner(request, monkeypatch):
     """Globally mock TTS audio generation, call starting, and Redis to avoid external dependencies."""
+    # Skip for pure unit tests that don't use the app fixture
+    if "app" not in request.fixturenames:
+        return
+    request.getfixturevalue("app")
     from app.db import db
     from call_engine import call_runner
     
@@ -125,11 +160,19 @@ def mock_tts_and_call_runner(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def db_conn(request, app):
-    """Intercept all psycopg pool checkouts to run each test in a transaction that rolls back at teardown."""
+def db_conn(request):
+    """Intercept all psycopg pool checkouts to run each test in a transaction that rolls back at teardown.
+    Skipped automatically for tests that don't use the app fixture (pure unit tests with mocks).
+    """
     if "real_db" in request.keywords:
         yield
         return
+    # Only wrap in a transaction if the test actually needs the app (and thus the DB pool)
+    if "app" not in request.fixturenames:
+        yield
+        return
+    # Ensure app fixture has run so the pool is initialized
+    request.getfixturevalue("app")
     from app.db import db
     import psycopg
     pool = db.get_pool()

@@ -537,6 +537,24 @@ def save_script_settings():
 
     order_call_flow_id = request.form.get("order_call_flow_id", "").strip()
 
+    # ── Server-side plan enforcement on provider ──────────────────────────────
+    from app.models.plan_tts_policy import get_plan_tts_policy
+    from app.models.tenant import get_tenant_by_id as _get_tenant_for_plan
+    _t = _get_tenant_for_plan(tenant_id) or {}
+    _policy = get_plan_tts_policy(_t.get("plan_id"))
+    if tts_provider not in _policy["allowed_providers"]:
+        flash(f"Provider '{tts_provider}' is not available on your current plan.", "error")
+        return redirect(url_for("customer.voice_script"))
+
+    # Reject platform_managed mode if plan is byok_only
+    _requested_mode = request.form.get("tts_credential_mode", "").strip()
+    if _requested_mode and _requested_mode not in ("byok", "platform_managed"):
+        flash("Invalid credential mode.", "error")
+        return redirect(url_for("customer.voice_script"))
+    if _requested_mode == "platform_managed" and _policy["credential_policy"] == "byok_only":
+        flash("Platform-managed TTS is not available on your current plan.", "error")
+        return redirect(url_for("customer.voice_script"))
+
     # Update non-secret settings
     update_dict = {
         "voice_script": voice_script,
@@ -632,7 +650,8 @@ def api_tts_preview():
         "edge_tts_voice": edge_tts_voice,
         "gemini_voice_name": gemini_voice_name,
         "elevenlabs_voice_id": elevenlabs_voice_id,
-        "tts_lang": tts_lang
+        "tts_lang": tts_lang,
+        "_purpose": "preview",  # signals entitlement resolver this is a preview
     }
     if elevenlabs_model:
         settings_override["elevenlabs_model"] = elevenlabs_model
@@ -710,17 +729,26 @@ def api_tts_preview():
         )
 
     except TTSCredentialMissingError as exc:
-        # Missing API key for selected BYOK provider — clear error, no fallback
         provider_label = {"elevenlabs": "ElevenLabs", "gemini": "Gemini"}.get(exc.provider, exc.provider)
         logger.warning("TTS preview credential missing: provider=%s tenant=%s", exc.provider, tenant_id)
         return (
             f"<div class='text-amber-400 text-xs font-semibold space-y-1'>"
-            f"<p>⚠ {provider_label} API key not configured for this account.</p>"
+            f"<p>&#9888; {provider_label} API key not configured for this account.</p>"
             f"<p class='text-slate-400 font-normal'>Save your {provider_label} API key above, then try again.</p>"
             f"</div>",
             422,
         )
     except Exception as exc:
+        from app.exceptions import TTSProviderNotAllowedError, TTSCredentialModeError, TTSQuotaExceededError
+        if isinstance(exc, TTSProviderNotAllowedError):
+            logger.warning("TTS preview provider not allowed: provider=%s tenant=%s", tts_provider, tenant_id)
+            return f"<span class='text-rose-400 text-xs font-semibold'>Provider '{tts_provider}' is not available on your plan.</span>", 403
+        if isinstance(exc, TTSCredentialModeError):
+            logger.warning("TTS preview mode not allowed: mode=%s tenant=%s", exc.mode, tenant_id)
+            return f"<span class='text-rose-400 text-xs font-semibold'>Credential mode '{exc.mode}' is not allowed on your plan.</span>", 403
+        if isinstance(exc, TTSQuotaExceededError):
+            logger.warning("TTS preview quota exceeded: tenant=%s provider=%s", tenant_id, tts_provider)
+            return "<span class='text-rose-400 text-xs font-semibold'>Monthly TTS quota exhausted. Quota resets on the 1st of next month.</span>", 402
         logger.error("TTS Preview failed: %s", exc, exc_info=True)
         safe_msg = str(exc)[:120].replace("<", "&lt;").replace(">", "&gt;")
         return f"<span class='text-rose-400 text-xs font-semibold'>TTS Preview failed: {safe_msg}</span>", 422

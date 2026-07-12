@@ -320,7 +320,7 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
     # [SAAS STEP 6] TTS script generated
     logger.info(f"[SAAS STEP 6] TTS script generated: {text}")
 
-    # Extract tenant settings or fall back to system defaults / env vars
+    # Extract tenant settings
     provider = settings.get("tts_provider", "edge")
     lang = settings.get("tts_lang", "bn")
     voice_name = settings.get("gemini_voice_name", "Puck")
@@ -330,79 +330,113 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
     edge_voice = settings.get("edge_tts_voice", "bn-BD-NabanitaNeural")
     openvoice_voice = settings.get("openvoice_voice", "")
 
-    # Cache key includes tenant_id + model so that changing the ElevenLabs/Gemini
-    # model busts the cache and generates fresh audio instead of reusing old audio
-    # from a different model. audio.py's tts_cache_hash() only covers
-    # text+provider+voice \u2014 model is not in that hash, so we embed it here.
+    # Cache key: embed tenant_id + model so per-tenant and per-model cache is distinct.
     model_tag = ""
     if provider == "elevenlabs" and elevenlabs_model:
-        model_tag = f"\u200c{elevenlabs_model}"
+        model_tag = "‌" + elevenlabs_model
     elif provider == "gemini" and gemini_model:
-        model_tag = f"\u200c{gemini_model}"
-    text_with_tenant = text + ("\u200b" * tenant_id) + model_tag
+        model_tag = "‌" + gemini_model
+    text_with_tenant = text + ("​" * tenant_id) + model_tag
 
-    # Resolve tenant-owned API keys.
-    # settings_override may carry an unsaved key typed live in the preview form —
-    # that path is BYOK too, just not yet persisted.
-    # Never fall back to os.environ so one tenant's key cannot bleed into another.
-    from app.models.tenant_secrets import get_secret_plaintext
-    elevenlabs_api_key = (
-        settings_override.get("elevenlabs_api_key", "").strip() if settings_override else ""
-    ) or get_secret_plaintext(tenant_id, "elevenlabs_api_key") or ""
-    gemini_api_key = (
-        settings_override.get("gemini_api_key", "").strip() if settings_override else ""
-    ) or get_secret_plaintext(tenant_id, "gemini_api_key") or ""
+    # ── Entitlement check via central resolver ────────────────────────────────
+    # settings_override BYOK path: unsaved key typed live in preview form takes priority.
+    from app.services.tts_entitlement_service import (
+        resolve_tts_entitlement,
+        resolve_internal_tts_credential,
+        TENANT_CREDENTIAL_MISSING,
+        PROVIDER_NOT_ALLOWED,
+        CREDENTIAL_MODE_NOT_ALLOWED,
+        MONTHLY_TTS_QUOTA_EXCEEDED,
+    )
+    from app.exceptions import (
+        TTSProviderNotAllowedError,
+        TTSCredentialModeError,
+        TTSQuotaExceededError,
+    )
 
-    # Platform-managed mode: only when tenant explicitly opts in AND platform key configured
-    tts_credential_mode = settings.get("tts_credential_mode", "byok")
-    if tts_credential_mode == "platform_managed":
-        if provider == "elevenlabs" and not elevenlabs_api_key:
-            elevenlabs_api_key = os.environ.get("PLATFORM_ELEVENLABS_API_KEY", "")
-        if provider == "gemini" and not gemini_api_key:
-            gemini_api_key = os.environ.get("PLATFORM_GEMINI_API_KEY", "")
+    purpose = (settings_override or {}).get("_purpose", "production")
+    if purpose not in ("preview", "production"):
+        purpose = "production"
 
-    # --- Strict provider credential guard ---
-    # Raise BEFORE calling audio.py so the dispatcher never silently
-    # falls through to a different provider on missing credentials.
-    CREDENTIAL_REQUIRED = {"elevenlabs", "gemini"}
-    if provider in CREDENTIAL_REQUIRED:
-        if provider == "elevenlabs" and not elevenlabs_api_key:
-            raise TTSCredentialMissingError(
-                provider="elevenlabs",
-                message="ElevenLabs API key is not configured for this account.",
-            )
-        if provider == "gemini" and not gemini_api_key:
-            raise TTSCredentialMissingError(
-                provider="gemini",
-                message="Gemini API key is not configured for this account.",
-            )
+    entitlement = resolve_tts_entitlement(tenant_id, provider, purpose)
 
-    logger.info(f"Generating TTS for tenant {tenant_id} using provider {provider}")
+    if not entitlement.allowed:
+        code = entitlement.denial_code
+        msg = entitlement.denial_message or "TTS access denied."
+        if code == TENANT_CREDENTIAL_MISSING:
+            raise TTSCredentialMissingError(provider=provider, message=msg)
+        if code == PROVIDER_NOT_ALLOWED:
+            raise TTSProviderNotAllowedError(provider=provider, tenant_id=tenant_id, message=msg)
+        if code == CREDENTIAL_MODE_NOT_ALLOWED:
+            raise TTSCredentialModeError(mode=entitlement.credential_mode, tenant_id=tenant_id, message=msg)
+        if code == MONTHLY_TTS_QUOTA_EXCEEDED:
+            raise TTSQuotaExceededError(tenant_id=tenant_id, provider=provider, message=msg)
+        raise TTSCredentialMissingError(provider=provider, message=msg)
 
-    # Generate the audio file (audio.py handles cache lookup and disk storage)
+    # Resolve decrypted key — INTERNAL USE ONLY. Never log, return, or serialize.
+    api_key = resolve_internal_tts_credential(entitlement)
+    if settings_override:
+        override_key = settings_override.get(f"{provider}_api_key", "").strip()
+        if override_key:
+            api_key = override_key
+
+    elevenlabs_api_key = api_key if provider == "elevenlabs" else ""
+    gemini_api_key = api_key if provider == "gemini" else ""
+
+    logger.info(
+        "[SAAS STEP 6+] TTS entitlement granted: tenant=%s provider=%s mode=%s",
+        tenant_id, provider, entitlement.credential_mode,
+    )
+
     import time
     start_t = time.monotonic()
-    audio_filename = create_tts_audio(
-        text=text_with_tenant,
-        provider=provider,
-        lang=lang,
-        voice_id=voice_id,
-        voice_name=voice_name,
-        elevenlabs_api_key=elevenlabs_api_key,
-        gemini_api_key=gemini_api_key,
-        elevenlabs_model=elevenlabs_model,
-        gemini_model=gemini_model,
-        edge_voice=edge_voice,
-        openvoice_voice=openvoice_voice,
-        tenant_id=tenant_id,
-    )
+    audio_filename = None
+    try:
+        audio_filename = create_tts_audio(
+            text=text_with_tenant,
+            provider=provider,
+            lang=lang,
+            voice_id=voice_id,
+            voice_name=voice_name,
+            elevenlabs_api_key=elevenlabs_api_key,
+            gemini_api_key=gemini_api_key,
+            elevenlabs_model=elevenlabs_model,
+            gemini_model=gemini_model,
+            edge_voice=edge_voice,
+            openvoice_voice=openvoice_voice,
+            tenant_id=tenant_id,
+        )
+    except Exception:
+        if entitlement.credential_mode == "platform_managed":
+            try:
+                from app.models.tenant_tts_usage import record_failed_request
+                record_failed_request(tenant_id, provider, "platform_managed")
+            except Exception as ue:
+                logger.warning("Usage tracking failed (fail path): %s", ue)
+        raise
+
     duration = time.monotonic() - start_t
     TTS_DURATION.labels(provider=provider).observe(duration)
 
-    # [SAAS STEP 7] TTS audio generated or failed
+    # Post-success usage tracking (platform_managed only)
+    if entitlement.credential_mode == "platform_managed" and audio_filename:
+        try:
+            from app.models.tenant_tts_usage import record_production_success
+            record_production_success(
+                tenant_id=tenant_id,
+                provider=provider,
+                credential_mode="platform_managed",
+                characters=len(text),
+                audio_seconds=duration,
+            )
+        except Exception as ue:
+            logger.warning("Usage tracking failed (success path): %s", ue)
+
     if audio_filename:
-        logger.info(f"[SAAS STEP 7] TTS audio generated successfully: {audio_filename}.ulaw")
+        logger.info("[SAAS STEP 7] TTS audio generated: tenant=%s provider=%s file=%s.ulaw",
+                    tenant_id, provider, audio_filename)
     else:
-        logger.error(f"[SAAS STEP 7] TTS audio generation failed for text: {text}")
+        logger.error("[SAAS STEP 7] TTS audio generation failed: tenant=%s provider=%s",
+                     tenant_id, provider)
 
     return audio_filename
