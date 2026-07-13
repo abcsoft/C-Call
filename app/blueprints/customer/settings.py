@@ -361,12 +361,46 @@ def voice_script():
     from call_engine.audio import GEMINI_VOICES
     from app.services.tts_service import DEFAULT_VOICE_SCRIPT
     from app.models.tenant_secrets import get_secret_meta
+    from app.models.plan_tts_policy import get_plan_tts_policy
+    from app.models.tenant_tts_usage import get_total_monthly_characters
+    from app.models.platform_secrets import platform_secret_is_active
+    from app.extensions import redis_ext
+
     flows = db.query("SELECT id, name FROM flows WHERE tenant_id = %s ORDER BY name ASC", (tenant_id,))
 
     # Strip any leftover plaintext keys from settings before passing to template
     safe_settings = {k: v for k, v in settings.items() if k not in ("gemini_api_key", "elevenlabs_api_key")}
     gemini_key_meta    = get_secret_meta(tenant_id, "gemini_api_key")
     elevenlabs_key_meta = get_secret_meta(tenant_id, "elevenlabs_api_key")
+
+    # Plan policy and credential mode
+    tts_policy = get_plan_tts_policy(tenant.get("plan_id"))
+    tts_mode = tenant.get("tts_credential_mode") or "byok"
+
+    # Platform provider availability (metadata only — no keys)
+    platform_available = {
+        p: platform_secret_is_active(p)
+        for p in (tts_policy.get("platform_managed_providers") or [])
+    }
+
+    # Monthly quota tracking for platform_managed mode
+    monthly_quota = tts_policy.get("monthly_character_quota")
+    monthly_used = 0
+    if tts_mode == "platform_managed":
+        for p in (tts_policy.get("platform_managed_providers") or []):
+            monthly_used += get_total_monthly_characters(tenant_id, p, "platform_managed")
+    monthly_remaining = max(0, monthly_quota - monthly_used) if monthly_quota is not None else None
+
+    # Daily preview usage via Redis (use _client to avoid raise on None)
+    today_str = datetime.date.today().isoformat()
+    daily_key = f"daily_preview:{tenant_id}:{today_str}"
+    try:
+        _rc = redis_ext._client
+        _raw = _rc.get(daily_key) if _rc is not None else None
+        preview_today = int(_raw) if _raw else 0
+    except Exception:
+        preview_today = 0
+    daily_preview_limit = tts_policy.get("daily_preview_limit")
 
     return render_template(
         "customer/script.html",
@@ -377,6 +411,14 @@ def voice_script():
         default_voice_script=DEFAULT_VOICE_SCRIPT,
         gemini_key_meta=gemini_key_meta,
         elevenlabs_key_meta=elevenlabs_key_meta,
+        tts_policy=tts_policy,
+        tts_mode=tts_mode,
+        platform_available=platform_available,
+        monthly_quota=monthly_quota,
+        monthly_used=monthly_used,
+        monthly_remaining=monthly_remaining,
+        preview_today=preview_today,
+        daily_preview_limit=daily_preview_limit,
     )
 
 @customer_bp.route("/api/settings/voices", methods=["GET", "POST"])
@@ -555,6 +597,40 @@ def save_script_settings():
         flash("Platform-managed TTS is not available on your current plan.", "error")
         return redirect(url_for("customer.voice_script"))
 
+    # Validate BYOK key exists for providers that require it
+    _effective_mode = _requested_mode or (_t.get("tts_credential_mode") or "byok")
+    if _effective_mode == "byok" and tts_provider in ("gemini", "elevenlabs"):
+        _key_field = "gemini_api_key" if tts_provider == "gemini" else "elevenlabs_api_key"
+        _submitted_key = request.form.get(_key_field, "").strip()
+        if not _submitted_key:
+            from app.models.tenant_secrets import get_secret_meta as _gsm
+            if not _gsm(tenant_id, _key_field):
+                flash("API key is required for this provider.", "error")
+                return redirect(url_for("customer.voice_script"))
+
+    # Save credential mode to tenants table and audit-log changes
+    if _requested_mode:
+        if _requested_mode == "platform_managed":
+            _pm_providers = _policy.get("platform_managed_providers") or []
+            from app.models.platform_secrets import platform_secret_is_active as _psa
+            if not any(_psa(p) for p in _pm_providers):
+                flash("Platform-managed TTS is temporarily unavailable — no active platform credentials configured.", "error")
+                return redirect(url_for("customer.voice_script"))
+        _old_mode = _t.get("tts_credential_mode") or "byok"
+        db.execute(
+            "UPDATE tenants SET tts_credential_mode = %s WHERE id = %s",
+            (_requested_mode, tenant_id)
+        )
+        if _old_mode != _requested_mode:
+            from app.middleware.audit import audit_log
+            audit_log(
+                "tenant_tts_mode_changed",
+                current_user.id,
+                "tenant",
+                tenant_id,
+                {"old_mode": _old_mode, "new_mode": _requested_mode, "source": "customer_self_service"},
+            )
+
     # Update non-secret settings
     update_dict = {
         "voice_script": voice_script,
@@ -623,6 +699,43 @@ def save_script_settings():
     flash("Voice script settings updated successfully.", "success")
     return redirect(url_for("customer.voice_script"))
 
+@customer_bp.route("/api/settings/tts-quota", methods=["GET"])
+@require_login
+def api_tts_quota():
+    """Return current TTS quota summary as JSON for the customer quota card."""
+    tenant_id = g.tenant_id
+    from app.models.tenant import get_tenant_by_id as _get_t
+    from app.models.plan_tts_policy import get_plan_tts_policy
+    from app.services.tts_usage_service import get_tenant_tts_quota_summary
+
+    _tenant = _get_t(tenant_id) or {}
+    tts_mode = _tenant.get("tts_credential_mode") or "byok"
+
+    # Quota summary is only meaningful for platform_managed mode.
+    if tts_mode != "platform_managed":
+        return jsonify({"mode": tts_mode, "quota_applicable": False})
+
+    settings = _tenant.get("settings") or {}
+    if isinstance(settings, str):
+        import json as _json
+        try:
+            settings = _json.loads(settings)
+        except Exception:
+            settings = {}
+    provider = settings.get("tts_provider", "edge")
+
+    plan_policy = get_plan_tts_policy(_tenant.get("plan_id"))
+    summary = get_tenant_tts_quota_summary(tenant_id, provider, plan_policy)
+    summary["mode"] = tts_mode
+    summary["quota_applicable"] = True
+    # Decimal → float for JSON serialisation
+    for k, v in summary.items():
+        from decimal import Decimal as _D
+        if isinstance(v, _D):
+            summary[k] = float(v)
+    return jsonify(summary)
+
+
 @customer_bp.route("/api/settings/tts-preview", methods=["POST"])
 @require_login
 @require_role(["admin"])
@@ -630,10 +743,10 @@ def api_tts_preview():
     """Generates audio for script template preview using form parameters. Returns HTML audio tag."""
     tenant_id = g.tenant_id
     script = request.form.get("voice_script", "").strip()
-    
+
     if not script:
         return "<span class='text-red-500 text-xs font-semibold'>Script template is empty.</span>", 400
-        
+
     if len(script) > 500:
         return "<span class='text-red-500 text-xs font-semibold'>Script template exceeds 500 characters limit.</span>", 400
 
@@ -665,7 +778,6 @@ def api_tts_preview():
     if elevenlabs_api_key:
         settings_override["elevenlabs_api_key"] = elevenlabs_api_key
 
-
     # Replace variables with static values for preview using render_order_voice_script
     from app.services.tts_service import render_order_voice_script
     from app.models.tenant import get_tenant_by_id as _get_tenant
@@ -688,11 +800,58 @@ def api_tts_preview():
         }
     }
     preview_text = render_order_voice_script(script, preview_order, _tenant)
-    
+
     # Allowlist of valid provider IDs — reject arbitrary values from form
     VALID_PROVIDERS = {"edge", "gemini", "elevenlabs", "gtts", "openvoice"}
     if tts_provider not in VALID_PROVIDERS:
         return "<span class='text-rose-400 text-xs font-semibold'>Invalid TTS provider selected.</span>", 422
+
+    # ── Daily preview rate limit: INCR before generation (not after) ──────────
+    # Increment counter first so concurrent requests can't burst past the limit.
+    # DB fallback: if Redis is unavailable, load count from tts_usage_reservations.
+    from app.models.plan_tts_policy import get_plan_tts_policy
+    _plan_id = (_tenant or {}).get("plan_id")
+    _policy = get_plan_tts_policy(_plan_id)
+    daily_limit: int = _policy.get("daily_preview_limit", 10)
+
+    _preview_counter_incremented = False
+    _daily_key = f"daily_preview:{tenant_id}:{datetime.date.today().isoformat()}"
+    try:
+        from app.extensions import redis_ext
+        _redis = redis_ext._client
+        if _redis is not None:
+            _count = _redis.incr(_daily_key)
+            _redis.expire(_daily_key, 90000)  # ~25h TTL
+            _preview_counter_incremented = True
+            if _count > daily_limit:
+                _redis.decr(_daily_key)
+                _preview_counter_incremented = False
+                return (
+                    f"<span class='text-rose-400 text-xs font-semibold'>"
+                    f"Daily preview limit ({daily_limit}) reached. Resets at midnight.</span>",
+                    402,
+                )
+    except Exception as _re:
+        logger.warning("Redis daily preview counter unavailable; falling back to DB: %s", _re)
+        # DB fallback: count today's preview reservations for this tenant
+        try:
+            from app.db import db as _db
+            _today = datetime.date.today()
+            _db_row = _db.query_one(
+                "SELECT COUNT(*) AS cnt FROM tts_usage_reservations "
+                "WHERE tenant_id = %s AND purpose = 'preview' AND created_at::date = %s",
+                (tenant_id, _today),
+            )
+            _db_count = int(_db_row["cnt"]) if _db_row else 0
+            if _db_count >= daily_limit:
+                return (
+                    f"<span class='text-rose-400 text-xs font-semibold'>"
+                    f"Daily preview limit ({daily_limit}) reached. Resets at midnight.</span>",
+                    402,
+                )
+        except Exception as _dbe:
+            logger.warning("DB daily preview fallback also failed: %s", _dbe)
+            # Fail open — allow preview to proceed
 
     start_time = datetime.datetime.now()
     try:
@@ -748,7 +907,17 @@ def api_tts_preview():
             return f"<span class='text-rose-400 text-xs font-semibold'>Credential mode '{exc.mode}' is not allowed on your plan.</span>", 403
         if isinstance(exc, TTSQuotaExceededError):
             logger.warning("TTS preview quota exceeded: tenant=%s provider=%s", tenant_id, tts_provider)
+            # Quota denial is valid — do NOT release the daily counter
             return "<span class='text-rose-400 text-xs font-semibold'>Monthly TTS quota exhausted. Quota resets on the 1st of next month.</span>", 402
+        # Infrastructure failure — release the daily counter so user can retry
+        if _preview_counter_incremented:
+            try:
+                from app.extensions import redis_ext as _rex
+                _rc = _rex._client
+                if _rc is not None:
+                    _rc.decr(_daily_key)
+            except Exception:
+                pass
         logger.error("TTS Preview failed: %s", exc, exc_info=True)
         safe_msg = str(exc)[:120].replace("<", "&lt;").replace(">", "&gt;")
         return f"<span class='text-rose-400 text-xs font-semibold'>TTS Preview failed: {safe_msg}</span>", 422
@@ -823,6 +992,61 @@ def settings_page():
     return render_template(
         "customer/settings.html",
         settings=settings
+    )
+
+
+@customer_bp.route("/api/settings/tts-key/<provider>/remove", methods=["POST"])
+@require_login
+@require_role(["admin"])
+def remove_tts_key(provider: str):
+    """Remove a BYOK TTS API key for the given provider. Does not affect other settings."""
+    from app.models.plan_tts_policy import KEY_REQUIRED_PROVIDERS
+    if provider not in KEY_REQUIRED_PROVIDERS:
+        return "<span class='text-rose-400 text-xs font-semibold'>Invalid provider.</span>", 422
+    tenant_id = g.tenant_id
+    from app.models.tenant_secrets import delete_secret
+    delete_secret(tenant_id, f"{provider}_api_key")
+    from app.middleware.audit import audit_log
+    audit_log("tenant_tts_key_removed", current_user.id, "tenant", tenant_id, {"provider": provider})
+    label = {"gemini": "Gemini", "elevenlabs": "ElevenLabs"}.get(provider, provider.capitalize())
+    return f"<span class='text-emerald-400 text-xs font-semibold'>{label} API key removed successfully.</span>"
+
+
+@customer_bp.route("/settings/subscription", methods=["GET"])
+@require_login
+@require_role(["admin", "agent", "viewer"])
+def subscription_page():
+    """Read-only subscription overview — plan, TTS limits, and quota usage."""
+    tenant_id = g.tenant_id
+    tenant = get_tenant_by_id(tenant_id)
+    from app.models.plan_tts_policy import get_plan_tts_policy
+    from app.models.tenant_tts_usage import get_total_monthly_characters
+    from app.models.platform_secrets import platform_secret_is_active
+
+    plan = db.query_one("SELECT * FROM plans WHERE id = %s", (tenant.get("plan_id"),)) if tenant.get("plan_id") else None
+    tts_policy = get_plan_tts_policy(tenant.get("plan_id"))
+    tts_mode = tenant.get("tts_credential_mode") or "byok"
+
+    monthly_quota = tts_policy.get("monthly_character_quota")
+    monthly_used = 0
+    if tts_mode == "platform_managed":
+        for p in (tts_policy.get("platform_managed_providers") or []):
+            monthly_used += get_total_monthly_characters(tenant_id, p, "platform_managed")
+
+    platform_available = {
+        p: platform_secret_is_active(p)
+        for p in (tts_policy.get("platform_managed_providers") or [])
+    }
+
+    return render_template(
+        "customer/subscription.html",
+        tenant=tenant,
+        plan=plan,
+        tts_policy=tts_policy,
+        tts_mode=tts_mode,
+        monthly_quota=monthly_quota,
+        monthly_used=monthly_used,
+        platform_available=platform_available,
     )
 
 

@@ -55,7 +55,7 @@ def index():
 def dashboard():
     tenant_id = g.tenant_id
     stats = get_dashboard_stats(tenant_id)
-    
+
     wallet = get_wallet(tenant_id) or {}
     balance = stats["wallet_balance"]
     low_balance = balance < Decimal(str(wallet.get("low_balance_threshold") or 50))
@@ -66,15 +66,25 @@ def dashboard():
         (tenant_id,)
     )
     not_integrated = int(api_key_count["count"]) == 0 if api_key_count else True
-    
+
     flows = db.query("SELECT id, name FROM flows WHERE tenant_id = %s ORDER BY name ASC", (tenant_id,))
-    
+
     failed_caller_id_query = db.query_one(
         "SELECT COUNT(*) FROM orders WHERE tenant_id = %s AND order_status = 'FAILED' AND metadata->>'failure_reason' LIKE '%%caller ID%%'",
         (tenant_id,)
     )
     failed_caller_id = int(failed_caller_id_query["count"]) > 0 if failed_caller_id_query else False
-    
+
+    # TTS widget context
+    from app.models.plan_tts_policy import get_plan_tts_policy
+    from app.models.platform_secrets import platform_secret_is_active
+    _tenant = get_tenant_by_id(tenant_id) or {}
+    tts_mode = _tenant.get("tts_credential_mode") or "byok"
+    tts_policy = get_plan_tts_policy(_tenant.get("plan_id"))
+    monthly_quota = tts_policy.get("monthly_character_quota")
+    platform_managed_providers = tts_policy.get("platform_managed_providers") or []
+    platform_available = {p: platform_secret_is_active(p) for p in platform_managed_providers}
+
     return render_template(
         "customer/dashboard.html",
         stats=stats,
@@ -83,7 +93,11 @@ def dashboard():
         low_balance=low_balance,
         not_integrated=not_integrated,
         flows=flows,
-        failed_caller_id=failed_caller_id
+        failed_caller_id=failed_caller_id,
+        tts_mode=tts_mode,
+        tts_policy=tts_policy,
+        monthly_quota=monthly_quota,
+        platform_available=platform_available,
     )
 
 @customer_bp.route("/api/dashboard/stats", methods=["GET"])

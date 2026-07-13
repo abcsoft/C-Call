@@ -206,6 +206,16 @@ def create_app(config_name: str = "production") -> Flask:
             misfire_grace_time=60,
             replace_existing=True
         )
+        scheduler_ext.add_job(
+            id="expire_tts_reservations",
+            func="app.scheduler:scheduled_expire_tts_reservations",
+            trigger="interval",
+            minutes=5,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=120,
+            replace_existing=True
+        )
 
         scheduler_ext.start()
         

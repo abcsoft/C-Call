@@ -95,3 +95,11 @@ def scheduled_low_balance_alerts() -> None:
     from app.extensions import scheduler
     with scheduler.app.app_context():
         job_low_balance_alerts()
+
+
+def scheduled_expire_tts_reservations() -> None:
+    """Expire stale TTS reservations and refund wallet overage debits idempotently."""
+    from app.extensions import scheduler
+    with scheduler.app.app_context():
+        from app.services.tts_usage_service import expire_stale_tts_reservations
+        expire_stale_tts_reservations()

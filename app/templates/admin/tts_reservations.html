@@ -1,0 +1,162 @@
+{% extends "admin/base_admin.html" %}
+{% block title %}TTS Reservations — Admin{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+  <h1 class="text-2xl font-bold text-white mb-2">TTS Reservations</h1>
+  <p class="text-slate-400 text-sm mb-6">Pre-call quota reservations and wallet holds. Use for debugging billing/quota issues.</p>
+
+  <!-- Filters -->
+  <form method="get" class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-4 mb-6">
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 items-end">
+      <div>
+        <label class="block text-xs font-medium text-slate-400 mb-1">Month</label>
+        <input type="month" name="month" value="{{ filter_month }}"
+               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-400 mb-1">Tenant</label>
+        <select name="tenant_id"
+                class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm">
+          <option value="">All tenants</option>
+          {% for t in all_tenants %}
+          <option value="{{ t.id }}" {% if filter_tenant == t.id|string %}selected{% endif %}>{{ t.business_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-400 mb-1">Status</label>
+        <select name="status" class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm">
+          <option value="">All statuses</option>
+          {% for s in valid_statuses %}
+          <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-400 mb-1">Provider</label>
+        <select name="provider" class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm">
+          <option value="">All providers</option>
+          {% for p in all_providers %}
+          <option value="{{ p }}" {% if filter_provider == p %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <button type="submit"
+                class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg">
+          Filter
+        </button>
+      </div>
+    </div>
+  </form>
+
+  <!-- Status summary -->
+  {% if status_counts %}
+  <div class="flex flex-wrap gap-3 mb-6">
+    {% for sc in status_counts %}
+    {% set color = {
+      'reserved': 'bg-yellow-900/40 border-yellow-700 text-yellow-300',
+      'committed': 'bg-emerald-900/40 border-emerald-700 text-emerald-300',
+      'released': 'bg-slate-800/60 border-slate-600 text-slate-300',
+      'failed': 'bg-red-900/40 border-red-700 text-red-300',
+      'expired': 'bg-orange-900/40 border-orange-700 text-orange-300',
+    }.get(sc.status, 'bg-slate-800/60 border-slate-600 text-slate-300') %}
+    <div class="px-4 py-2 rounded-xl border {{ color }} text-xs font-semibold">
+      {{ sc.status }}: {{ sc.cnt }} rows · {{ sc.total_chars|int }} chars
+      {% if sc.total_overage and sc.total_overage != '0' %}
+        · ৳{{ "%.2f"|format(sc.total_overage|float) }} overage
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- Table -->
+  <div class="overflow-x-auto rounded-xl border border-slate-700">
+    <table class="w-full text-xs text-slate-300">
+      <thead class="bg-slate-800/80 text-slate-400">
+        <tr>
+          <th class="px-3 py-2 text-left">ID (short)</th>
+          <th class="px-3 py-2 text-left">Tenant</th>
+          <th class="px-3 py-2 text-left">Provider / Mode</th>
+          <th class="px-3 py-2 text-left">Purpose</th>
+          <th class="px-3 py-2 text-right">Reserved</th>
+          <th class="px-3 py-2 text-right">Quota / Overage</th>
+          <th class="px-3 py-2 text-right">Overage ৳</th>
+          <th class="px-3 py-2 text-left">Status</th>
+          <th class="px-3 py-2 text-left">Error</th>
+          <th class="px-3 py-2 text-left">Created</th>
+          <th class="px-3 py-2 text-left">Expires / Committed</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800">
+        {% for r in rows %}
+        {% set row_color = {
+          'reserved': 'bg-yellow-900/10',
+          'committed': 'bg-emerald-900/10',
+          'released': '',
+          'failed': 'bg-red-900/10',
+          'expired': 'bg-orange-900/10',
+        }.get(r.status, '') %}
+        <tr class="{{ row_color }} hover:bg-white/5">
+          <td class="px-3 py-2 font-mono text-slate-500" title="{{ r.id }}">{{ r.id[:8] }}…</td>
+          <td class="px-3 py-2">
+            <a href="{{ url_for('admin.tts_reservations_page', tenant_id=r.tenant_id, month=filter_month) }}"
+               class="text-indigo-400 hover:underline">{{ r.tenant_name }}</a>
+          </td>
+          <td class="px-3 py-2">
+            <span class="font-semibold">{{ r.provider }}</span>
+            <span class="text-slate-500"> / {{ r.credential_mode }}</span>
+          </td>
+          <td class="px-3 py-2">{{ r.purpose }}</td>
+          <td class="px-3 py-2 text-right font-mono">{{ r.characters_reserved }}</td>
+          <td class="px-3 py-2 text-right font-mono text-slate-400">
+            {{ r.quota_characters_reserved }}
+            {% if r.overage_characters_reserved %}
+              <span class="text-orange-400">+{{ r.overage_characters_reserved }}</span>
+            {% endif %}
+          </td>
+          <td class="px-3 py-2 text-right font-mono {% if r.estimated_overage_amount and r.estimated_overage_amount != '0.000000' %}text-orange-300{% else %}text-slate-500{% endif %}">
+            {% if r.estimated_overage_amount and r.estimated_overage_amount|float > 0 %}
+              ৳{{ "%.4f"|format(r.estimated_overage_amount|float) }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="px-3 py-2">
+            {% set sc = r.status %}
+            {% if sc == 'reserved' %}<span class="px-2 py-0.5 bg-yellow-700/40 text-yellow-300 rounded-full">reserved</span>
+            {% elif sc == 'committed' %}<span class="px-2 py-0.5 bg-emerald-700/40 text-emerald-300 rounded-full">committed</span>
+            {% elif sc == 'released' %}<span class="px-2 py-0.5 bg-slate-700/40 text-slate-400 rounded-full">released</span>
+            {% elif sc == 'failed' %}<span class="px-2 py-0.5 bg-red-700/40 text-red-300 rounded-full">failed</span>
+            {% elif sc == 'expired' %}<span class="px-2 py-0.5 bg-orange-700/40 text-orange-300 rounded-full">expired</span>
+            {% else %}{{ sc }}{% endif %}
+          </td>
+          <td class="px-3 py-2 text-slate-400 max-w-xs truncate" title="{{ r.error_code or '' }}">{{ r.error_code or '—' }}</td>
+          <td class="px-3 py-2 text-slate-500 whitespace-nowrap">{{ r.created_at.strftime('%m-%d %H:%M') if r.created_at else '—' }}</td>
+          <td class="px-3 py-2 text-slate-500 whitespace-nowrap">
+            {% if r.committed_at %}✓ {{ r.committed_at.strftime('%H:%M') }}
+            {% elif r.released_at %}↩ {{ r.released_at.strftime('%H:%M') }}
+            {% elif r.expires_at %}exp {{ r.expires_at.strftime('%H:%M') }}
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="11" class="px-4 py-6 text-center text-slate-500">No reservations found for the selected filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  {% if pages > 1 %}
+  <div class="flex gap-2 justify-center mt-6">
+    {% for p in range(1, pages + 1) %}
+    <a href="?page={{ p }}&month={{ filter_month }}&tenant_id={{ filter_tenant }}&status={{ filter_status }}&provider={{ filter_provider }}"
+       class="px-3 py-1 rounded text-sm {% if p == page %}bg-indigo-600 text-white{% else %}bg-slate-800 text-slate-400 hover:bg-slate-700{% endif %}">
+      {{ p }}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

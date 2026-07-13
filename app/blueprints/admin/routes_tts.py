@@ -908,6 +908,128 @@ def tts_usage_page():
     )
 
 
+# ── TTS Reservation status ────────────────────────────────────────────────────
+
+@admin_bp.route("/tts-reservations", methods=["GET"])
+@require_super_admin
+def tts_reservations_page():
+    """Admin view: inspect tts_usage_reservations for debugging quota/billing issues."""
+    today = date.today()
+    default_month = today.replace(day=1).strftime("%Y-%m")
+
+    filter_month = request.args.get("month", default_month).strip()
+    try:
+        billing_month = datetime.strptime(filter_month, "%Y-%m").date().replace(day=1)
+    except ValueError:
+        billing_month = today.replace(day=1)
+        filter_month = billing_month.strftime("%Y-%m")
+
+    filter_tenant = request.args.get("tenant_id", "").strip()
+    filter_status = request.args.get("status", "").strip()
+    filter_provider = request.args.get("provider", "").strip()
+
+    tenant_id_int = None
+    if filter_tenant:
+        try:
+            tenant_id_int = int(filter_tenant)
+        except ValueError:
+            filter_tenant = ""
+
+    VALID_STATUSES = {"reserved", "committed", "released", "failed", "expired"}
+    if filter_status and filter_status not in VALID_STATUSES:
+        filter_status = ""
+    if filter_provider and filter_provider not in VALID_PROVIDERS:
+        filter_provider = ""
+
+    where_clauses = ["r.billing_month = %s"]
+    params: list[Any] = [billing_month]
+    if tenant_id_int:
+        where_clauses.append("r.tenant_id = %s")
+        params.append(tenant_id_int)
+    if filter_status:
+        where_clauses.append("r.status = %s")
+        params.append(filter_status)
+    if filter_provider:
+        where_clauses.append("r.provider = %s")
+        params.append(filter_provider)
+
+    where_sql = " AND ".join(where_clauses)
+
+    page = max(1, int(request.args.get("page", 1) or 1))
+    per_page = 100
+    offset = (page - 1) * per_page
+
+    total_row = db.query_one(
+        f"SELECT COUNT(*) AS cnt FROM tts_usage_reservations r WHERE {where_sql}",
+        params,
+    )
+    total = int(total_row["cnt"]) if total_row else 0
+
+    rows = db.query(
+        f"""
+        SELECT
+            r.id,
+            r.tenant_id,
+            t.business_name AS tenant_name,
+            r.provider,
+            r.credential_mode,
+            r.purpose,
+            r.billing_month,
+            r.characters_reserved,
+            r.quota_characters_reserved,
+            r.overage_characters_reserved,
+            r.estimated_overage_amount,
+            r.actual_characters,
+            r.actual_overage_amount,
+            r.status,
+            r.error_code,
+            r.wallet_transaction_id,
+            r.created_at,
+            r.committed_at,
+            r.released_at,
+            r.expires_at
+        FROM tts_usage_reservations r
+        JOIN tenants t ON t.id = r.tenant_id
+        WHERE {where_sql}
+        ORDER BY r.created_at DESC
+        LIMIT %s OFFSET %s
+        """,
+        params + [per_page, offset],
+    )
+
+    status_counts = db.query(
+        f"""
+        SELECT status, COUNT(*) AS cnt,
+               COALESCE(SUM(characters_reserved), 0) AS total_chars,
+               COALESCE(SUM(estimated_overage_amount), 0) AS total_overage
+        FROM tts_usage_reservations r
+        WHERE {where_sql}
+        GROUP BY status ORDER BY status
+        """,
+        params,
+    )
+
+    all_tenants = db.query("SELECT id, business_name FROM tenants ORDER BY business_name")
+    all_providers = sorted(VALID_PROVIDERS)
+
+    return render_template(
+        "admin/tts_reservations.html",
+        rows=[dict(r) for r in rows],
+        status_counts=[dict(r) for r in status_counts],
+        total=total,
+        page=page,
+        per_page=per_page,
+        pages=max(1, -(-total // per_page)),
+        filter_month=filter_month,
+        filter_tenant=filter_tenant,
+        filter_status=filter_status,
+        filter_provider=filter_provider,
+        all_tenants=[dict(r) for r in all_tenants],
+        all_providers=all_providers,
+        valid_statuses=sorted(VALID_STATUSES),
+    )
+
+
 # ── Tenant TTS mode override ──────────────────────────────────────────────────
 
 @admin_bp.route("/customers/<int:tenant_id>/tts-mode", methods=["POST"])

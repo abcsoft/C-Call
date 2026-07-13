@@ -30,6 +30,10 @@ class MockRedis:
         self.data[name] = self.data.get(name, 0) + amount
         return self.data[name]
 
+    def decr(self, name, amount=1):
+        self.data[name] = self.data.get(name, 0) - amount
+        return self.data[name]
+
     def get(self, name):
         return self.data.get(name)
 
@@ -72,7 +76,7 @@ class MockRedis:
 
 
 def _schema_is_current(conn) -> bool:
-    """Return True if ccall_test already has all migration tables including migration 016."""
+    """Return True if ccall_test already has all migration tables including migration 017."""
     with conn.cursor() as cur:
         # Check for migration 015 tables
         cur.execute("""
@@ -89,6 +93,14 @@ def _schema_is_current(conn) -> bool:
             WHERE table_schema = 'public'
             AND table_name = 'plans'
             AND column_name = 'archived_at'
+        """)
+        if cur.fetchone()[0] < 1:
+            return False
+        # Check for migration 017 table
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name = 'tts_usage_reservations'
         """)
         return cur.fetchone()[0] >= 1
 
@@ -186,10 +198,36 @@ def prevent_background_threads(request, monkeypatch):
     if not hasattr(threading.Thread, "_original_start"):
         threading.Thread._original_start = threading.Thread.start
         
+    _real_start = threading.Thread._original_start
+
+    _LIBRARY_MODULES = (
+        "psycopg_pool",
+        "psycopg.",
+        "asyncio",
+        "apscheduler",
+        "concurrent.futures",
+        "threading",
+        "multiprocessing",
+    )
+
     def mock_start(self):
+        # Let library threads run as real threads (infinite-loop workers/schedulers).
+        # For all other threads: start as a real thread but join immediately to force
+        # sequential execution (no concurrent access to the shared mock DB connection).
+        # Joining inside mock_start means th.join() calls in test code are instant no-ops.
+        target_module = getattr(self._target, "__module__", "") or ""
+        is_library = any(target_module.startswith(m) for m in _LIBRARY_MODULES)
+        if is_library:
+            _real_start(self)
+            return
         if self._target:
-            self._target(*self._args, **self._kwargs)
-            
+            _real_start(self)
+            if not self.daemon:
+                # Join non-daemon threads to enforce sequential execution and prevent
+                # concurrent access to the shared mock DB connection.
+                # Daemon threads (infinite-loop monitors) are left to run in background.
+                self.join()
+
     monkeypatch.setattr(threading.Thread, "start", mock_start)
 
 

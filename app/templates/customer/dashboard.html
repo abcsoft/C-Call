@@ -285,4 +285,28 @@
             });
     });
 </script>
+
+{# TTS Widget — shown when platform_managed or when quota is set #}
+{% if tts_mode == 'platform_managed' or monthly_quota %}
+<div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-4 mt-6">
+    <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-bold uppercase tracking-wider text-slate-400">TTS Status</span>
+        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold
+            {% if tts_mode == 'platform_managed' %}bg-teal-900/60 text-teal-300 border border-teal-700/50
+            {% else %}bg-slate-800 text-slate-300 border border-slate-700/50{% endif %}">
+            {% if tts_mode == 'platform_managed' %}Platform Managed{% else %}BYOK{% endif %}
+        </span>
+    </div>
+    {% if tts_mode == 'platform_managed' %}
+        {% set any_available = platform_available.values() | list | select | list | length > 0 %}
+        {% if not any_available %}
+        <p class="text-xs text-amber-400 font-semibold">Unavailable — no active platform credentials.</p>
+        {% endif %}
+    {% endif %}
+    {% if monthly_quota %}
+    <div class="text-xs text-slate-400 mt-1">Quota: {{ "{:,}".format(monthly_quota) }} chars/month</div>
+    {% endif %}
+    <a href="{{ url_for('customer.voice_script') }}" class="text-xs text-teal-400 hover:underline mt-2 inline-block">Configure TTS →</a>
+</div>
+{% endif %}
 {% endblock %}

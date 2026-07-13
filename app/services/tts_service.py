@@ -388,6 +388,54 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
         tenant_id, provider, entitlement.credential_mode,
     )
 
+    # ── Pre-call quota reservation ────────────────────────────────────────────
+    from app.services.tts_usage_service import (
+        calculate_tts_billable_characters,
+        reserve_tts_usage,
+        commit_tts_usage,
+        release_tts_usage,
+        make_production_idempotency_key,
+        make_preview_idempotency_key,
+    )
+    from app.models.plan_tts_policy import get_plan_tts_policy
+
+    billable_chars = calculate_tts_billable_characters(text, provider)
+    plan_policy = get_plan_tts_policy(entitlement.plan_id)
+
+    if purpose == "preview":
+        idem_key = make_preview_idempotency_key()
+    else:
+        order_id_str = ""
+        attempt_no = 1
+        if isinstance(order_data, dict):
+            order_id_str = str(order_data.get("external_order_id") or order_data.get("id") or "")
+            attempt_no = int(order_data.get("attempt_no") or 1)
+        script_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+        idem_key = make_production_idempotency_key(
+            tenant_id, order_id_str, script_hash, provider, purpose, attempt_no
+        )
+
+    reservation_id: str | None = None
+    try:
+        reservation = reserve_tts_usage(
+            tenant_id=tenant_id,
+            provider=provider,
+            credential_mode=entitlement.credential_mode,
+            purpose=purpose,
+            idempotency_key=idem_key,
+            characters=billable_chars,
+            plan_policy=plan_policy,
+        )
+        reservation_id = str(reservation["id"])
+    except Exception as res_exc:
+        # TTSQuotaExceededError and InsufficientBalanceError bubble up directly.
+        # Unexpected reservation errors are logged but do not block generation —
+        # we fail open on the reservation step to avoid silently dropping calls.
+        from app.exceptions import InsufficientBalanceError
+        if isinstance(res_exc, (TTSQuotaExceededError, InsufficientBalanceError)):
+            raise
+        logger.error("TTS reservation failed (non-blocking): %s", res_exc)
+
     import time
     start_t = time.monotonic()
     audio_filename = None
@@ -406,8 +454,13 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
             openvoice_voice=openvoice_voice,
             tenant_id=tenant_id,
         )
-    except Exception:
-        if entitlement.credential_mode == "platform_managed":
+    except Exception as gen_exc:
+        if reservation_id:
+            try:
+                release_tts_usage(reservation_id, tenant_id, error_code=type(gen_exc).__name__)
+            except Exception as re:
+                logger.warning("release_tts_usage failed: %s", re)
+        elif entitlement.credential_mode == "platform_managed":
             try:
                 from app.models.tenant_tts_usage import record_failed_request
                 record_failed_request(tenant_id, provider, "platform_managed")
@@ -418,8 +471,18 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
     duration = time.monotonic() - start_t
     TTS_DURATION.labels(provider=provider).observe(duration)
 
-    # Post-success usage tracking (platform_managed only)
-    if entitlement.credential_mode == "platform_managed" and audio_filename:
+    if reservation_id and audio_filename:
+        try:
+            commit_tts_usage(
+                reservation_id,
+                tenant_id,
+                actual_characters=billable_chars,
+                actual_audio_seconds=duration,
+            )
+        except Exception as cu:
+            logger.warning("commit_tts_usage failed (non-blocking): %s", cu)
+    elif audio_filename and entitlement.credential_mode == "platform_managed":
+        # Reservation was skipped due to non-blocking error — fall back to direct tracking
         try:
             from app.models.tenant_tts_usage import record_production_success
             record_production_success(

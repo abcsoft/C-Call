@@ -1,0 +1,52 @@
+{# TTS Quota Card — loaded via HTMX or inline in script.html #}
+{# Variables: quota (dict from /api/settings/tts-quota) or None #}
+{% if quota and quota.get('quota_applicable') %}
+{% set monthly_quota = quota.get('monthly_quota') %}
+{% set committed = quota.get('committed_characters', 0) %}
+{% set reserved = quota.get('reserved_characters', 0) %}
+{% set remaining = quota.get('remaining_characters') %}
+{% set overage_chars = quota.get('overage_characters_committed', 0) %}
+{% set overage_billed = quota.get('overage_amount_billed', 0) %}
+{% set policy = quota.get('extra_usage_policy', 'block') %}
+<div class="bg-slate-800/50 border border-slate-700 rounded-xl px-5 py-4 text-sm">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-white font-semibold">TTS Quota — {{ quota.get('billing_month', '') }}</h3>
+    <span class="text-xs px-2 py-0.5 rounded-full {% if policy == 'charge_wallet' %}bg-amber-700/30 text-amber-300{% else %}bg-slate-700 text-slate-400{% endif %}">
+      Policy: {{ policy }}
+    </span>
+  </div>
+  {% if monthly_quota %}
+  {% set used_pct = ((committed + reserved) / monthly_quota * 100) | round(1) %}
+  <div class="mb-2">
+    <div class="flex justify-between text-xs text-slate-400 mb-1">
+      <span>Used: {{ committed | int }} chars</span>
+      {% if reserved > 0 %}<span class="text-yellow-400">Reserved: {{ reserved | int }}</span>{% endif %}
+      <span>Quota: {{ monthly_quota | int }}</span>
+    </div>
+    <div class="w-full bg-slate-700 rounded-full h-2">
+      <div class="h-2 rounded-full {% if used_pct >= 100 %}bg-red-500{% elif used_pct >= 80 %}bg-orange-400{% else %}bg-emerald-500{% endif %}"
+           style="width: {{ [used_pct, 100] | min }}%"></div>
+    </div>
+    <div class="text-xs text-slate-500 mt-1">
+      {% if remaining is not none %}
+        <span class="{% if remaining <= 0 %}text-red-400 font-semibold{% elif remaining < monthly_quota * 0.1 %}text-orange-400{% else %}text-emerald-400{% endif %}">
+          {{ remaining | int }} remaining
+        </span>
+      {% endif %}
+      ({{ used_pct }}% used)
+    </div>
+  </div>
+  {% else %}
+  <p class="text-slate-400 text-xs mb-2">Unlimited quota on this plan.</p>
+  {% endif %}
+  {% if overage_chars > 0 %}
+  <div class="mt-2 p-2.5 bg-orange-900/20 border border-orange-700/40 rounded-lg text-xs">
+    <span class="text-orange-300 font-semibold">Overage this month:</span>
+    <span class="text-orange-200"> {{ overage_chars | int }} chars</span>
+    {% if overage_billed and overage_billed|float > 0 %}
+    <span class="text-slate-400"> · ৳{{ "%.4f"|format(overage_billed|float) }} charged</span>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}

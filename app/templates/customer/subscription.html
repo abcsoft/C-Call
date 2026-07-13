@@ -1,0 +1,87 @@
+{% extends "customer/base_customer.html" %}
+{% block title %}Subscription — C-Call IVR{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto px-4 py-8">
+  <h1 class="text-2xl font-bold text-white mb-2">Subscription</h1>
+  <p class="text-slate-400 text-sm mb-6">Your current plan, TTS quota, and usage overview.</p>
+
+  <!-- Plan Card -->
+  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5 mb-6">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-bold text-white">Plan Details</h2>
+      {% if plan %}
+      <span class="px-3 py-1 bg-teal-700/30 text-teal-300 text-xs font-bold rounded-full uppercase">{{ plan.name }}</span>
+      {% else %}
+      <span class="px-3 py-1 bg-slate-700 text-slate-400 text-xs font-bold rounded-full uppercase">No plan assigned</span>
+      {% endif %}
+    </div>
+    {% if plan %}
+    <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+      <div>
+        <dt class="text-slate-400 text-xs">Credential Mode</dt>
+        <dd class="text-white font-medium mt-0.5">{{ tts_mode }}</dd>
+      </div>
+      {% if tts_policy.get('monthly_character_quota') %}
+      <div>
+        <dt class="text-slate-400 text-xs">Monthly TTS Quota</dt>
+        <dd class="text-white font-medium mt-0.5">{{ "{:,}".format(tts_policy['monthly_character_quota']) }} chars</dd>
+      </div>
+      {% endif %}
+      <div>
+        <dt class="text-slate-400 text-xs">Allowed Providers</dt>
+        <dd class="text-white font-medium mt-0.5">
+          {% for p in tts_policy.get('allowed_providers', []) %}
+          <span class="inline-block px-1.5 py-0.5 bg-slate-700 rounded text-xs mr-1">{{ p }}</span>
+          {% else %}—{% endfor %}
+        </dd>
+      </div>
+      <div>
+        <dt class="text-slate-400 text-xs">Daily Preview Limit</dt>
+        <dd class="text-white font-medium mt-0.5">{{ tts_policy.get('daily_preview_limit', 10) }} previews/day</dd>
+      </div>
+    </dl>
+    {% else %}
+    <p class="text-slate-400 text-sm">No plan assigned. Contact support to get a plan assigned to your account.</p>
+    {% endif %}
+  </div>
+
+  <!-- Quota Usage Card (platform_managed only) -->
+  {% if tts_mode == 'platform_managed' and monthly_quota %}
+  {% set used_pct = ((monthly_used / monthly_quota) * 100) | round(1) if monthly_quota > 0 else 0 %}
+  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5 mb-6">
+    <h2 class="text-lg font-bold text-white mb-4">This Month's TTS Usage</h2>
+    <div class="flex justify-between text-xs text-slate-400 mb-1">
+      <span>Used: {{ "{:,}".format(monthly_used) }}</span>
+      <span>Quota: {{ "{:,}".format(monthly_quota) }}</span>
+    </div>
+    <div class="w-full bg-slate-700 rounded-full h-3 mb-2">
+      <div class="h-3 rounded-full {% if used_pct >= 100 %}bg-red-500{% elif used_pct >= 80 %}bg-orange-400{% else %}bg-teal-500{% endif %}"
+           style="width: {{ [used_pct, 100] | min }}%"></div>
+    </div>
+    <p class="text-xs text-slate-400">
+      {{ "{:,}".format(monthly_used) }} / {{ "{:,}".format(monthly_quota) }} characters used ({{ used_pct }}%)
+    </p>
+  </div>
+  {% endif %}
+
+  <!-- Platform Provider Availability -->
+  {% if platform_available %}
+  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5">
+    <h2 class="text-lg font-bold text-white mb-4">Platform TTS Availability</h2>
+    <div class="space-y-2">
+      {% for provider, active in platform_available.items() %}
+      <div class="flex items-center justify-between text-sm">
+        <span class="text-slate-300 font-medium capitalize">{{ provider }}</span>
+        {% if active %}
+        <span class="px-2 py-0.5 bg-emerald-700/30 text-emerald-300 text-xs rounded-full">Available</span>
+        {% else %}
+        <span class="px-2 py-0.5 bg-slate-700 text-slate-400 text-xs rounded-full">Unavailable</span>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
