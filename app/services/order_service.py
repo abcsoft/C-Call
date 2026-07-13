@@ -35,6 +35,7 @@ from app.models.order import (
 from app.models.tenant import get_tenant_by_id
 from app.services.rate_service import estimate_charge
 from app.services.wallet_service import check_balance
+from app.exceptions import InsufficientBalanceError
 from app.services.number_service import select_caller_id
 from app.services.tts_service import generate_order_audio
 from app.services.webhook_service import deliver_async
@@ -161,17 +162,23 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
-FLASK_ENV = os.environ.get("FLASK_ENV", "production")
+_FLASK_ENV = os.environ.get("FLASK_ENV", "production")
+# Explicit opt-in for private/loopback webhook URLs. Same flag as webhook_service.
+# Production startup rejects this flag being true (see config.py).
+_ALLOW_PRIVATE_WEBHOOKS = (
+    os.environ.get("ALLOW_PRIVATE_WEBHOOKS_FOR_DEV", "false").lower() == "true"
+    and _FLASK_ENV in ("development", "testing")
+)
 
 def _is_private_host(hostname: str) -> bool:
     try:
         ip_str = socket.gethostbyname(hostname)
         ip = ipaddress.ip_address(ip_str)
-        return ip.is_private or ip.is_loopback
+        return ip.is_private or ip.is_loopback or ip.is_link_local
     except Exception:
         try:
             ip = ipaddress.ip_address(hostname)
-            return ip.is_private or ip.is_loopback
+            return ip.is_private or ip.is_loopback or ip.is_link_local
         except Exception:
             return False
 
@@ -179,7 +186,8 @@ def _validate_webhook_url(url: str) -> bool:
     if not url:
         return True
     parsed = urlparse(url)
-    if FLASK_ENV in ("development", "testing"):
+    if _ALLOW_PRIVATE_WEBHOOKS:
+        # Dev-only: allow http/https with any host (including localhost/private IPs)
         return parsed.scheme in ("http", "https") and bool(parsed.netloc)
     if parsed.scheme != "https" or not parsed.netloc:
         return False
@@ -720,6 +728,17 @@ def update_status_from_call(
     if not order:
         return
 
+    # Guard: never overwrite a terminal status with a late/duplicate call result.
+    # CONFIRMED, CANCELLED, UNREACHABLE are final — a retry or duplicate delivery
+    # must not reopen them.
+    _TERMINAL = {"CONFIRMED", "CANCELLED", "UNREACHABLE"}
+    if order.get("order_status") in _TERMINAL:
+        logger.info(
+            "update_status_from_call: order %s already terminal (%s) — skipping late/duplicate result %s",
+            order_id, order["order_status"], call_result,
+        )
+        return
+
     # Inferred call_id if not provided
     if not call_id:
         row = db.query_one(
@@ -829,11 +848,36 @@ def manual_recall(order_id: int, tenant_id: int) -> int:
     if order.get("order_status") in terminal_statuses:
         raise ValueError(f"Cannot recall order with status {order['order_status']}.")
 
-    balance_ok = check_balance(tenant_id, estimate_charge(tenant_id))
+    min_charge = estimate_charge(tenant_id)
+    balance_ok = check_balance(tenant_id, min_charge)
     if not balance_ok:
-        raise ValueError("Insufficient wallet balance for recall.")
+        from app.services.wallet_service import get_balance
+        raise InsufficientBalanceError(get_balance(tenant_id), min_charge)
 
     update_order_status_system(order_id, "CALL_QUEUED")
     call_id = queue_confirmation_call(order_id, tenant_id)
     increment_order_attempts(tenant_id, order_id)
     return call_id
+
+
+def list_orders(tenant_id: int, filters: dict | None = None, page: int = 1, per_page: int = 20) -> dict:
+    """Paginated order list for API. Returns {data, total}."""
+    f = filters or {}
+    offset = (page - 1) * per_page
+    orders = get_orders(
+        tenant_id,
+        status=f.get("status"),
+        search=f.get("search"),
+        date_from=f.get("date_from"),
+        date_to=f.get("date_to"),
+        limit=per_page,
+        offset=offset,
+    )
+    total = get_orders_count(
+        tenant_id,
+        status=f.get("status"),
+        search=f.get("search"),
+        date_from=f.get("date_from"),
+        date_to=f.get("date_to"),
+    )
+    return {"data": orders, "total": total}

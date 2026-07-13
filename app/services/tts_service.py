@@ -27,8 +27,7 @@ DEFAULT_VOICE_SCRIPT = (
     "আপনি {product_name} অর্ডার করেছেন। "
     "{product_name}-এর মূল্য {price} টাকা এবং ডেলিভারি চার্জ {delivery_charge} টাকা। "
     "সর্বমোট পরিশোধযোগ্য মূল্য {grand_total} টাকা। "
-    "আপনার অর্ডারটি নিশ্চিত করতে ১ চাপুন অথবা কাস্টমার কেয়ার "
-    "প্রতিনিধির সাথে কথা বলতে ২ চাপুন।"
+    "আপনার অর্ডারটি নিশ্চিত করতে ১ চাপুন অথবা বাতিল করতে ২ চাপুন।"
 )
 
 # All supported template variables with their resolution paths

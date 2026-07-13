@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 import urllib.request
@@ -17,6 +18,12 @@ from app.models.tenant import get_tenant_by_id
 
 
 logger = logging.getLogger("ccall")
+_FLASK_ENV = os.environ.get("FLASK_ENV", "production")
+# Explicit opt-in for local dev only. Production startup rejects true (see config.py).
+_ALLOW_PRIVATE_WEBHOOKS = (
+    os.environ.get("ALLOW_PRIVATE_WEBHOOKS_FOR_DEV", "false").lower() == "true"
+    and _FLASK_ENV in ("development", "testing")
+)
 
 
 def mask_phone(phone: str) -> str:
@@ -217,17 +224,18 @@ def deliver_webhook(order_id: int, attempt_no: int = 1) -> bool:
         import socket, ipaddress, urllib.parse as _up
         _parsed = _up.urlparse(webhook_url)
         _hostname = _parsed.hostname or ""
-        try:
-            _resolved = socket.gethostbyname(_hostname)
-            _ip = ipaddress.ip_address(_resolved)
-            if _ip.is_private or _ip.is_loopback:
-                logger.warning(
-                    "Webhook delivery blocked — %s resolved to private IP %s (DNS rebinding guard)",
-                    _hostname, _resolved,
-                )
-                return False
-        except Exception:
-            pass  # DNS failure or literal IP that passed the parse step above
+        if not _ALLOW_PRIVATE_WEBHOOKS:
+            try:
+                _resolved = socket.gethostbyname(_hostname)
+                _ip = ipaddress.ip_address(_resolved)
+                if _ip.is_private or _ip.is_loopback or _ip.is_link_local:
+                    logger.warning(
+                        "Webhook delivery blocked — %s resolved to private/loopback/link-local IP %s (SSRF guard)",
+                        _hostname, _resolved,
+                    )
+                    return False
+            except Exception:
+                pass  # DNS failure or literal IP — pass through to HTTP attempt
 
         # Enforce 10s connection timeout
         import ssl

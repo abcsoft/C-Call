@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify, render_template, g
 from flask_limiter.util import get_remote_address
 from flask_babel import Babel
 
-from app.config import config
+from app.config import config as _config_map
 from app.db import db
 from app.extensions import (
     limiter,
@@ -129,7 +129,7 @@ def create_app(config_name: str = "production") -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="../static")
     
     # Load configuration
-    app.config.from_object(config[config_name])
+    app.config.from_object(_config_map[config_name])
 
     # Sentry DSN init
     sentry_dsn = app.config.get("SENTRY_DSN")

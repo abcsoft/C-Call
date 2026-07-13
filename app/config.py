@@ -18,6 +18,13 @@ class BaseConfig:
     # config.py previously read SECRET_KEY (wrong var name) so the fallback placeholder
     # was always used silently.
     SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", _PLACEHOLDER)
+
+    # SSRF / webhook delivery: private/loopback IPs are blocked by default in all
+    # environments. Set to true ONLY in development/testing to reach local services
+    # (e.g. XAMPP WooCommerce on localhost). Production startup rejects true at boot.
+    ALLOW_PRIVATE_WEBHOOKS_FOR_DEV: bool = (
+        os.environ.get("ALLOW_PRIVATE_WEBHOOKS_FOR_DEV", "false").lower() == "true"
+    )
     DATABASE_URL = os.environ.get("DATABASE_URL")
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
@@ -69,6 +76,8 @@ class ProductionConfig(BaseConfig):
     SESSION_COOKIE_SECURE = os.environ.get("APP_URL", "http://127.0.0.1:5000").startswith("https")
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
+    # In production the flag is always false regardless of env var — see startup check below.
+    ALLOW_PRIVATE_WEBHOOKS_FOR_DEV: bool = False
 
 
 class TestingConfig(BaseConfig):
@@ -110,5 +119,12 @@ if _flask_env == "production":
             "FLASK_SECRET_KEY is not set or too weak. "
             "Set a 64-char random hex string in .env (FLASK_SECRET_KEY=...). "
             "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    # Fail hard if someone accidentally enabled private webhook delivery in production —
+    # this flag bypasses SSRF protection and must never be true in production.
+    if os.environ.get("ALLOW_PRIVATE_WEBHOOKS_FOR_DEV", "false").lower() == "true":
+        raise RuntimeError(
+            "ALLOW_PRIVATE_WEBHOOKS_FOR_DEV=true is not permitted in FLASK_ENV=production. "
+            "This flag disables SSRF protection. Remove it from the production environment."
         )
 

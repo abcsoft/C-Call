@@ -101,3 +101,31 @@ def test_api_key_last_used_at_updated_on_use(client, app, create_tenant):
         now = datetime.datetime.now(datetime.timezone.utc)
         diff = now - key["last_used_at"].replace(tzinfo=datetime.timezone.utc)
         assert diff.total_seconds() < 10
+
+
+def test_api_key_never_logged_in_plaintext(client, app, create_tenant, caplog):
+    """Regression: API key must not appear in plaintext in any log record.
+
+    Masks plaintext using first 4 + '...' + last 4 format only.
+    Verifies both valid and invalid key paths.
+    """
+    import logging
+
+    RAW_KEY = "cc_live_regression_redact_test_key"
+    tenant, _ = create_tenant("Redact Test Tenant", "redact@store.com")
+    _create_api_key(tenant["id"], key_str=RAW_KEY)
+
+    with caplog.at_level(logging.DEBUG):
+        # Valid key — triggers success log path
+        client.get("/api/v1/orders", headers={"X-API-Key": RAW_KEY})
+        # Invalid key — triggers failure log path
+        client.get("/api/v1/orders", headers={"X-API-Key": "cc_live_invalid_should_fail_xyz"})
+
+    for record in caplog.records:
+        msg = record.getMessage()
+        assert RAW_KEY not in msg, (
+            f"Raw API key leaked in log record from {record.name}:{record.lineno}: {msg[:200]}"
+        )
+        assert "cc_live_invalid_should_fail_xyz" not in msg, (
+            f"Raw invalid API key leaked in log: {msg[:200]}"
+        )
