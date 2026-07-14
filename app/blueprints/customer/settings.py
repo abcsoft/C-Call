@@ -1080,6 +1080,128 @@ def subscription_cancel():
     return redirect(url_for("customer.subscription_page"))
 
 
+@customer_bp.route("/subscription/renew", methods=["POST"])
+@require_login
+@require_role(["admin"])
+def subscription_renew():
+    """Customer self-service subscription renewal using wallet balance.
+
+    Flow:
+    1. Resolve plan price from DB (never trust client-supplied amount).
+    2. Check wallet balance atomically.
+    3. If sufficient: deduct wallet, call renew_subscription(), record payment.
+    4. If insufficient: redirect to recharge page with required amount pre-filled.
+    5. Suspended tenants blocked — must go through admin reactivation.
+    """
+    from decimal import Decimal, ROUND_UP
+    from app.services.subscription_lifecycle_service import (
+        renew_subscription, _get_plan, _compute_period_end, _payment_idempotency_key,
+    )
+    from app.services import wallet_service as _ws
+    from app.models.subscription import get_current_subscription, create_subscription_payment, get_subscription_payment_by_idempotency
+    from app.models.wallet import create_payment_intent, update_payment_intent_status
+
+    tenant_id = g.tenant_id
+
+    tenant = get_tenant_by_id(tenant_id)
+    if not tenant:
+        flash("Tenant not found.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    if tenant["status"] == "suspended":
+        flash("Account is suspended. Contact support to reactivate.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    sub = get_current_subscription(tenant_id)
+    plan_id = (sub["plan_id"] if sub else None) or tenant.get("plan_id")
+    if not plan_id:
+        flash("No plan configured. Contact support.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    billing_cycle = (sub["billing_cycle"] if sub else None) or "monthly"
+
+    # Load price from DB — never accept client-supplied amount
+    plan = _get_plan(plan_id)
+    if plan.get("archived_at") is not None:
+        flash("This plan is no longer available. Contact support to switch plans.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    price = Decimal(str(
+        plan["price_yearly"]
+        if billing_cycle == "yearly" and plan.get("price_yearly")
+        else plan["price_monthly"]
+    ))
+
+    # Idempotency: prevent double charge in same period
+    import datetime, hashlib
+    _UTC = datetime.timezone.utc
+    now = datetime.datetime.now(_UTC)
+    # Key based on tenant + plan + billing month — prevents double-charge within same calendar month
+    period_key = f"renew-wallet:{tenant_id}:{plan_id}:{now.strftime('%Y-%m')}"
+    ikey_check = get_subscription_payment_by_idempotency(period_key)
+    if ikey_check and ikey_check.get("status") == "completed":
+        flash("Subscription already renewed this period.", "info")
+        return redirect(url_for("customer.subscription_page"))
+
+    # Check wallet balance (does NOT deduct yet)
+    balance = _ws.get_balance(tenant_id)
+    if balance < price:
+        shortfall = (price - balance).quantize(Decimal("0.01"), rounding=ROUND_UP)
+        flash(
+            f"Insufficient wallet balance. Need ৳{price:.2f}, have ৳{balance:.2f}. "
+            f"Please recharge ৳{shortfall:.2f}.",
+            "error",
+        )
+        return redirect(url_for("customer.wallet_panel"))
+
+    # Create a payment intent to track this wallet-deduct renewal
+    intent_id = create_payment_intent(tenant_id, gateway="wallet", amount=price)
+
+    try:
+        # Atomic wallet deduction
+        _ws.deduct(tenant_id, price, f"Subscription renewal — {plan['name']} ({billing_cycle})")
+
+        # Mark intent completed
+        update_payment_intent_status(intent_id, "completed")
+
+        # Renew subscription (idempotent via renew_subscription's own ikey)
+        sub_id = renew_subscription(
+            tenant_id=tenant_id,
+            payment_intent_id=intent_id,
+            actor_type="customer",
+            actor_id=current_user.id,
+        )
+
+        # Record in subscription_payments with the month-level idempotency key
+        period_end = _compute_period_end(now, billing_cycle)
+        existing = get_subscription_payment_by_idempotency(period_key)
+        if not existing:
+            create_subscription_payment(
+                subscription_id=sub_id,
+                tenant_id=tenant_id,
+                amount=price,
+                billing_period_start=now,
+                billing_period_end=period_end,
+                idempotency_key=period_key,
+                payment_intent_id=intent_id,
+                status="completed",
+            )
+
+        flash(f"Subscription renewed! Next billing date: {period_end.strftime('%Y-%m-%d')}.", "success")
+
+    except Exception as exc:
+        # Refund on failure
+        try:
+            _ws.credit(tenant_id, price, f"Renewal reversal — {exc}")
+        except Exception:
+            pass
+        update_payment_intent_status(intent_id, "failed")
+        logger.error("subscription_renew failed for tenant %s: %s", tenant_id, exc)
+        flash(f"Renewal failed: {exc}", "error")
+
+    return redirect(url_for("customer.subscription_page"))
+
+
 @customer_bp.route("/api/settings/test-sms", methods=["POST"])
 @require_login
 @require_role(["admin"])

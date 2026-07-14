@@ -102,6 +102,23 @@ def _schema_is_current(conn) -> bool:
             WHERE table_schema = 'public'
             AND table_name = 'tts_usage_reservations'
         """)
+        if cur.fetchone()[0] < 1:
+            return False
+        # Check for migration 018 tables (subscriptions, subscription_events)
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name IN ('subscriptions', 'subscription_events', 'subscription_payments')
+        """)
+        if cur.fetchone()[0] < 3:
+            return False
+        # Check for migration 019 column (past_due_ends_at on subscriptions)
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.columns
+            WHERE table_schema = 'public'
+            AND table_name = 'subscriptions'
+            AND column_name = 'past_due_ends_at'
+        """)
         return cur.fetchone()[0] >= 1
 
 

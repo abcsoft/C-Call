@@ -304,7 +304,9 @@ def payment_callback(gateway: str):
     # Accept params from POST body or GET query arguments
     data = request.form.to_dict() if request.method == "POST" else request.args.to_dict()
     
-    logger.info(f"Payment callback received for gateway {gateway}: {data}")
+    # Log callback — never log raw signature or store_password
+    safe_log = {k: v for k, v in data.items() if k not in ("store_passwd", "verify_sign", "signature")}
+    logger.info("Payment callback received for gateway %s: %s", gateway, safe_log)
     
     # 1. SSLCommerz callback flow
     if gateway == "sslcommerz":
@@ -345,8 +347,9 @@ def payment_callback(gateway: str):
                 flash(f"Recharge already completed! ৳{float(intent['amount']):.2f} credited.", "success")
                 return redirect(url_for("customer.wallet_panel"))
                 
-            amount = Decimal(amount_str) if amount_str else intent["amount"]
-            
+            # Always use DB-stored amount — never trust client-supplied amount
+            amount = Decimal(str(intent["amount"]))
+
             # Atomic update + wallet credit in transaction block
             with db.transaction() as conn:
                 # Update intent status
