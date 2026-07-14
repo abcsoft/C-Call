@@ -674,8 +674,8 @@ def subscription_reactivate(tenant_id: int):
     days = int(request.form.get("days", "30") or "30")
 
     try:
-        from app.services.subscription_lifecycle_service import admin_extend_subscription
-        admin_extend_subscription(tenant_id, days, reason or "Admin reactivation", actor_id=current_user.id)
+        from app.services.subscription_lifecycle_service import admin_reactivate_subscription
+        admin_reactivate_subscription(tenant_id, reason or "Admin reactivation", actor_id=current_user.id, extend_days=days)
         from app.middleware.audit import audit_log
         audit_log("subscription_admin_reactivate", current_user.id, "tenant", tenant_id,
                   {"days": days, "reason": reason})
@@ -683,6 +683,31 @@ def subscription_reactivate(tenant_id: int):
     except Exception as exc:
         logger.error("subscription_reactivate failed for tenant %s: %s", tenant_id, exc)
         flash(f"Reactivation failed: {exc}", "error")
+
+    return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+
+
+@admin_bp.route("/customers/<int:tenant_id>/subscription/suspend", methods=["POST"])
+@require_super_admin
+def subscription_suspend(tenant_id: int):
+    """Admin: suspend a tenant for security/compliance/billing reasons."""
+    reason = request.form.get("reason", "").strip()
+    suspension_type = request.form.get("suspension_type", "security").strip()
+
+    if not reason:
+        flash("Suspension reason is required.", "error")
+        return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+
+    try:
+        from app.services.subscription_lifecycle_service import suspend_subscription
+        suspend_subscription(tenant_id, reason=reason, actor_id=current_user.id, suspension_type=suspension_type)
+        from app.middleware.audit import audit_log
+        audit_log("subscription_admin_suspend", current_user.id, "tenant", tenant_id,
+                  {"reason": reason, "suspension_type": suspension_type})
+        flash("Tenant suspended.", "warning")
+    except Exception as exc:
+        logger.error("subscription_suspend failed for tenant %s: %s", tenant_id, exc)
+        flash(f"Suspension failed: {exc}", "error")
 
     return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
 
