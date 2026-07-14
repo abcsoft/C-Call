@@ -49,6 +49,10 @@ class BaseConfig:
     APP_URL = os.environ.get("APP_URL", "http://127.0.0.1:5000")
     ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@ccall.com.bd")
 
+    # Subscription lifecycle defaults (overridable per plan.trial_days in DB)
+    TRIAL_DAYS = int(os.environ.get("TRIAL_DAYS", "14"))
+    GRACE_PERIOD_DAYS = int(os.environ.get("GRACE_PERIOD_DAYS", "7"))
+
     # Call behaviour
     CALL_MAX_DURATION_SECONDS = int(os.environ.get("CALL_MAX_DURATION_SECONDS", "120"))
     SIP_PROCESS_TIMEOUT_SECONDS = int(os.environ.get("SIP_PROCESS_TIMEOUT_SECONDS", "90"))

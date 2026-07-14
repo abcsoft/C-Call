@@ -216,6 +216,16 @@ def create_app(config_name: str = "production") -> Flask:
             misfire_grace_time=120,
             replace_existing=True
         )
+        scheduler_ext.add_job(
+            id="subscription_lifecycle",
+            func="app.scheduler:scheduled_subscription_lifecycle",
+            trigger="interval",
+            hours=1,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+            replace_existing=True
+        )
 
         scheduler_ext.start()
         

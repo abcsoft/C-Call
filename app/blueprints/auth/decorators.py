@@ -77,8 +77,8 @@ def require_api_key(f):
                 "code": "API_KEY_MISSING"
             }), 401
 
-        if g.tenant_id is None:
-            err_reason = getattr(g, "api_key_error", "Invalid Key")
+        err_reason = getattr(g, "api_key_error", None)
+        if g.tenant_id is None or (err_reason and err_reason != "SUBSCRIPTION_REQUIRED"):
             logger.warning(f"[SAAS STEP 2] API key check failed: Tenant not matched or inactive. Key: {masked_key}, Error: {err_reason}")
             if err_reason == "TENANT_INACTIVE":
                 return jsonify({
@@ -91,6 +91,18 @@ def require_api_key(f):
                 "error": "Invalid or inactive API key",
                 "code": "UNAUTHORIZED"
             }), 401
+
+        if err_reason == "SUBSCRIPTION_REQUIRED":
+            # past_due / expired: tenant_id IS set, but subscription enforcement → 402
+            from app.services.subscription_access_service import check_feature_access
+            access = check_feature_access(g.tenant_id, "api_access")
+            if not access.allowed:
+                logger.warning(f"[SUBSCRIPTION] API denied for tenant {g.tenant_id}: {access.outcome}. Key: {masked_key}")
+                return jsonify({
+                    "success": False,
+                    "error": access.message,
+                    "code": "SUBSCRIPTION_REQUIRED"
+                }), access.http_status
 
         logger.info(f"[SAAS STEP 2] API key check passed: Tenant matched to ID {g.tenant_id}. Key: {masked_key}")
         return f(*args, **kwargs)

@@ -239,6 +239,16 @@ def process_due_retries() -> int:
         order_id = order["id"]
         tenant_id = order["tenant_id"]
 
+        # Subscription enforcement: skip orders for tenants that cannot place calls
+        from app.services.subscription_access_service import check_feature_access
+        sub_access = check_feature_access(tenant_id, "process_retry")
+        if not sub_access.allowed:
+            logger.info(
+                "Skipping retry for order %s: tenant %s subscription blocked (%s)",
+                order_id, tenant_id, sub_access.outcome,
+            )
+            continue
+
         # Claim it first — a second scheduler tick (or a second worker that
         # missed the advisory lock) must not pick up the same order twice.
         # RETURNING id makes this check-and-set atomic: if some other

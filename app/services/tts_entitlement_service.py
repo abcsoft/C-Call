@@ -132,9 +132,16 @@ def resolve_tts_entitlement(
                        "Tenant not found.")
 
     tenant_status = tenant.get("status", "")
-    if tenant_status == "suspended":
+    if tenant_status in ("suspended", "cancelled"):
         return _denied(tenant_id, tenant.get("plan_id"), provider, "byok",
-                       TENANT_SUSPENDED, "Your account is suspended.")
+                       TENANT_SUSPENDED, "Your account is suspended or cancelled.")
+    # past_due and expired also block TTS generation
+    if tenant_status in ("past_due", "expired"):
+        from app.services.subscription_access_service import check_feature_access
+        _access = check_feature_access(tenant_id, "tts_generate")
+        if not _access.allowed:
+            return _denied(tenant_id, tenant.get("plan_id"), provider, "byok",
+                           TENANT_SUSPENDED, _access.message)
 
     plan_id: int | None = tenant.get("plan_id")
     tts_mode: str = tenant.get("tts_credential_mode") or "byok"

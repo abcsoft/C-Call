@@ -292,4 +292,65 @@
         </form>
     </div>
 </div>
+
+<!-- Subscription Management Section (admin only) -->
+<div class="mt-8 bg-slate-900 border border-slate-800 rounded-2xl p-6" x-data="{ showExtend: false, showCancel: false, showReactivate: false }">
+    <h2 class="font-outfit font-bold text-lg text-slate-100 mb-4">Subscription Management</h2>
+    <div class="flex flex-wrap gap-3 mb-4 text-sm">
+        <button @click="showExtend = !showExtend; showCancel = false; showReactivate = false"
+                class="px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-xl">
+            Extend Period
+        </button>
+        <button @click="showReactivate = !showReactivate; showExtend = false; showCancel = false"
+                class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl">
+            Reactivate
+        </button>
+        <button @click="showCancel = !showCancel; showExtend = false; showReactivate = false"
+                class="px-4 py-2 bg-red-700 hover:bg-red-600 text-white font-semibold rounded-xl">
+            Cancel
+        </button>
+    </div>
+
+    <div x-show="showExtend" x-cloak class="border-t border-slate-800 pt-4 mt-2">
+        <form method="POST" action="{{ url_for('admin.subscription_extend', tenant_id=tenant.id) }}" class="space-y-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Days to Extend</label>
+                <input type="number" name="days" min="1" max="365" value="30" required class="w-32 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Reason (required)</label>
+                <input type="text" name="reason" required class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 text-sm">
+            </div>
+            <button type="submit" class="px-4 py-2 bg-teal-600 text-white font-bold rounded-xl text-sm">Apply Extension</button>
+        </form>
+    </div>
+
+    <div x-show="showReactivate" x-cloak class="border-t border-slate-800 pt-4 mt-2">
+        <form method="POST" action="{{ url_for('admin.subscription_reactivate', tenant_id=tenant.id) }}" class="space-y-3">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Days to Grant</label>
+                <input type="number" name="days" min="1" max="365" value="30" required class="w-32 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Reason</label>
+                <input type="text" name="reason" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 text-sm" placeholder="Admin reactivation">
+            </div>
+            <button type="submit" class="px-4 py-2 bg-blue-600 text-white font-bold rounded-xl text-sm">Reactivate</button>
+        </form>
+    </div>
+
+    <div x-show="showCancel" x-cloak class="border-t border-slate-800 pt-4 mt-2">
+        <form method="POST" action="{{ url_for('admin.subscription_cancel', tenant_id=tenant.id) }}" class="space-y-3"
+              onsubmit="return confirm('Immediately cancel this tenant\'s subscription?')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 mb-1">Reason (required)</label>
+                <input type="text" name="reason" required class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 text-sm">
+            </div>
+            <button type="submit" class="px-4 py-2 bg-red-700 text-white font-bold rounded-xl text-sm">Cancel Immediately</button>
+        </form>
+    </div>
+</div>
 {% endblock %}

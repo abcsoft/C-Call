@@ -24,9 +24,16 @@ def require_tenant_login(f):
         if current_user.role != "super_admin":
             if current_user.tenant_id:
                 tenant = get_tenant_by_id(current_user.tenant_id)
-                if not tenant or tenant["status"] not in ("active", "trial"):
-                    flash("Your tenant account is suspended or inactive.", "error")
+                if not tenant:
+                    flash("No business account found.", "error")
                     return redirect(url_for("auth.login"))
+                status = tenant["status"]
+                # Hard block: suspended and cancelled cannot access the panel
+                if status in ("suspended", "cancelled"):
+                    flash("Your account has been suspended or cancelled. Please contact support.", "error")
+                    return redirect(url_for("auth.login"))
+                # grace_period, past_due, expired: allowed in (banner shown by dashboard)
+                # active, trial: fully allowed
             else:
                 flash("No business account associated with your user profile.", "error")
                 return redirect(url_for("auth.login"))

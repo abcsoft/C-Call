@@ -201,6 +201,12 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
     """
     logger.info(f"[SAAS STEP 1] /api/v1/orders request received. Tenant ID: {tenant_id}, Data: {data}")
 
+    # Subscription enforcement: block order intake for past_due, expired, suspended, cancelled
+    from app.services.subscription_access_service import check_feature_access
+    _access = check_feature_access(tenant_id, "order_intake")
+    if not _access.allowed:
+        raise PermissionError(_access.message)
+
     external_order_id = str(data.get("order_id") or "").strip()
     phone = str(data.get("phone") or "").strip()
     customer_name = re.sub(r"<[^>]*>", "", str(data.get("customer_name") or "")).strip() or None

@@ -104,11 +104,22 @@ def register_tenant_context(app: Flask) -> None:
             else:
                 tenant_id = int(row["tenant_id"])
                 tenant = db.query_one("SELECT status FROM tenants WHERE id = %s", (tenant_id,))
-                if not tenant or tenant["status"] not in ("active", "trial"):
-                    g.api_key_error = "TENANT_INACTIVE"  # suspended-tenant check — happens here, once
+                if not tenant:
+                    g.api_key_error = "TENANT_INACTIVE"
                 else:
-                    g.tenant_id = tenant_id
-                    db.execute("UPDATE api_keys SET last_used_at = now() WHERE key_hash = %s", (key_hash,))
+                    status = tenant["status"]
+                    # grace_period tenants retain API access; past_due/suspended/cancelled/expired → 402/403
+                    # (require_api_key + subscription_access_service enforce the exact code per endpoint)
+                    if status in ("suspended", "cancelled"):
+                        g.api_key_error = "TENANT_INACTIVE"
+                    elif status in ("past_due", "expired"):
+                        g.api_key_error = "SUBSCRIPTION_REQUIRED"
+                        g.tenant_id = tenant_id  # still set so subscription check can return 402
+                        db.execute("UPDATE api_keys SET last_used_at = now() WHERE key_hash = %s", (key_hash,))
+                    else:
+                        # active, trial, grace_period
+                        g.tenant_id = tenant_id
+                        db.execute("UPDATE api_keys SET last_used_at = now() WHERE key_hash = %s", (key_hash,))
 
         # 2. Resolve from Session (Web panel requests)
         elif current_user and current_user.is_authenticated:

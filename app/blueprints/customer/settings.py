@@ -1038,6 +1038,15 @@ def subscription_page():
         for p in (tts_policy.get("platform_managed_providers") or [])
     }
 
+    from app.models.subscription import (
+        get_current_subscription, get_subscription_events, get_tenant_subscription_history
+    )
+    from app.services.subscription_access_service import get_tenant_status_banner
+    subscription = get_current_subscription(tenant_id)
+    subscription_events = get_subscription_events(tenant_id, limit=10)
+    subscription_history = get_tenant_subscription_history(tenant_id)
+    status_banner = get_tenant_status_banner(tenant_id)
+
     return render_template(
         "customer/subscription.html",
         tenant=tenant,
@@ -1047,7 +1056,28 @@ def subscription_page():
         monthly_quota=monthly_quota,
         monthly_used=monthly_used,
         platform_available=platform_available,
+        subscription=subscription,
+        subscription_events=subscription_events,
+        subscription_history=subscription_history,
+        status_banner=status_banner,
     )
+
+
+@customer_bp.route("/subscription/cancel", methods=["POST"])
+@require_login
+@require_role(["admin"])
+def subscription_cancel():
+    """Customer self-service: cancel subscription at end of period."""
+    reason = request.form.get("reason", "").strip() or "Customer requested cancellation"
+    tenant_id = g.tenant_id
+    try:
+        from app.services.subscription_lifecycle_service import cancel_subscription
+        cancel_subscription(tenant_id, immediate=False, reason=reason,
+                            actor_type="customer", actor_id=current_user.id)
+        flash("Subscription will be cancelled at the end of the current billing period.", "success")
+    except Exception as exc:
+        flash(f"Could not cancel subscription: {exc}", "error")
+    return redirect(url_for("customer.subscription_page"))
 
 
 @customer_bp.route("/api/settings/test-sms", methods=["POST"])

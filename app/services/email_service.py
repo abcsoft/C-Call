@@ -212,10 +212,102 @@ C-Call IVR Team"""
         recipients=[email],
         body=body
     )
-    
+
     try:
         mail.send(msg)
         logger.info(f"Sent team invitation email to {email}")
     except Exception as exc:
         logger.error(f"Failed to send team invitation email to {email}: {exc}")
+
+
+# ── Subscription lifecycle email notifications ─────────────────────────────
+
+def _get_tenant_email(tenant_id: int):
+    from app.db import db
+    return db.query_one("SELECT email, business_name FROM tenants WHERE id = %s", (tenant_id,))
+
+
+def send_trial_ending_soon_email(tenant_id: int, trial_ends_at) -> None:
+    t = _get_tenant_email(tenant_id)
+    if not t:
+        return
+    import datetime
+    days_left = max(0, (trial_ends_at - datetime.datetime.now(datetime.timezone.utc)).days) if hasattr(trial_ends_at, "tzinfo") else 3
+    body = (
+        f"Dear {t['business_name']},\n\n"
+        f"Your C-Call IVR free trial ends in {days_left} day(s). "
+        f"Please subscribe from your dashboard to continue uninterrupted service.\n\n"
+        f"C-Call IVR Team"
+    )
+    try:
+        mail.send(Message(subject="[C-Call] Your trial is ending soon", recipients=[t["email"]], body=body))
+        logger.info("Sent trial_ending_soon email to tenant %s", tenant_id)
+    except Exception as exc:
+        logger.warning("trial_ending_soon email failed for tenant %s: %s", tenant_id, exc)
+
+
+def send_grace_period_email(tenant_id: int, grace_ends_at) -> None:
+    t = _get_tenant_email(tenant_id)
+    if not t:
+        return
+    body = (
+        f"Dear {t['business_name']},\n\n"
+        f"Your C-Call IVR subscription payment is overdue. "
+        f"You have a grace period until {grace_ends_at.strftime('%Y-%m-%d') if hasattr(grace_ends_at, 'strftime') else grace_ends_at} to renew "
+        f"before new orders and calls are suspended.\n\n"
+        f"Please log in and renew your subscription.\n\nC-Call IVR Team"
+    )
+    try:
+        mail.send(Message(subject="[C-Call] Action required: payment overdue", recipients=[t["email"]], body=body))
+        logger.info("Sent grace_period email to tenant %s", tenant_id)
+    except Exception as exc:
+        logger.warning("grace_period email failed for tenant %s: %s", tenant_id, exc)
+
+
+def send_past_due_email(tenant_id: int) -> None:
+    t = _get_tenant_email(tenant_id)
+    if not t:
+        return
+    body = (
+        f"Dear {t['business_name']},\n\n"
+        f"Your C-Call IVR account is now past due. New orders, calls, and retries are paused.\n\n"
+        f"Please renew your subscription to restore full service.\n\nC-Call IVR Team"
+    )
+    try:
+        mail.send(Message(subject="[C-Call] Service suspended: past due", recipients=[t["email"]], body=body))
+        logger.info("Sent past_due email to tenant %s", tenant_id)
+    except Exception as exc:
+        logger.warning("past_due email failed for tenant %s: %s", tenant_id, exc)
+
+
+def send_subscription_expired_email(tenant_id: int) -> None:
+    t = _get_tenant_email(tenant_id)
+    if not t:
+        return
+    body = (
+        f"Dear {t['business_name']},\n\n"
+        f"Your C-Call IVR subscription has expired. Service has been paused.\n\n"
+        f"Please subscribe to re-activate your account.\n\nC-Call IVR Team"
+    )
+    try:
+        mail.send(Message(subject="[C-Call] Subscription expired", recipients=[t["email"]], body=body))
+        logger.info("Sent subscription_expired email to tenant %s", tenant_id)
+    except Exception as exc:
+        logger.warning("subscription_expired email failed for tenant %s: %s", tenant_id, exc)
+
+
+def send_renewal_confirmation_email(tenant_id: int) -> None:
+    t = _get_tenant_email(tenant_id)
+    if not t:
+        return
+    body = (
+        f"Dear {t['business_name']},\n\n"
+        f"Your C-Call IVR subscription has been renewed successfully. "
+        f"Your service is now fully active.\n\nThank you!\n\nC-Call IVR Team"
+    )
+    try:
+        mail.send(Message(subject="[C-Call] Subscription renewed", recipients=[t["email"]], body=body))
+        logger.info("Sent renewal_confirmation email to tenant %s", tenant_id)
+    except Exception as exc:
+        logger.warning("renewal_confirmation email failed for tenant %s: %s", tenant_id, exc)
 

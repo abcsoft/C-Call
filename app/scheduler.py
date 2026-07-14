@@ -103,3 +103,102 @@ def scheduled_expire_tts_reservations() -> None:
     with scheduler.app.app_context():
         from app.services.tts_usage_service import expire_stale_tts_reservations
         expire_stale_tts_reservations()
+
+
+# ── Subscription lifecycle scheduler jobs ─────────────────────────────────
+
+def job_subscription_lifecycle() -> None:
+    """Hourly: expire trials, start grace periods, expire grace periods."""
+    import datetime
+    _UTC = datetime.timezone.utc
+    now = datetime.datetime.now(_UTC)
+
+    from app.services.subscription_lifecycle_service import (
+        expire_subscription, enter_grace_period, enter_past_due
+    )
+
+    # 1. Expire trials whose trial_ends_at has passed
+    expired_trials = db.query(
+        "SELECT id FROM tenants WHERE status = 'trial' AND trial_ends_at IS NOT NULL AND trial_ends_at <= %s",
+        (now,),
+    )
+    for t in expired_trials:
+        try:
+            expire_subscription(t["id"], from_status="trial")
+            logger.info("subscription_lifecycle: expired trial for tenant %s", t["id"])
+        except Exception:
+            logger.warning("subscription_lifecycle: failed to expire trial for tenant %s", t["id"], exc_info=True)
+
+    # 2. Move grace_period tenants whose grace_ends_at has passed to past_due
+    past_grace = db.query(
+        """
+        SELECT t.id FROM tenants t
+        JOIN subscriptions s ON s.id = t.current_subscription_id
+        WHERE t.status = 'grace_period'
+          AND s.grace_ends_at IS NOT NULL
+          AND s.grace_ends_at <= %s
+        """,
+        (now,),
+    )
+    for t in past_grace:
+        try:
+            enter_past_due(t["id"])
+            logger.info("subscription_lifecycle: grace period expired → past_due for tenant %s", t["id"])
+        except Exception:
+            logger.warning("subscription_lifecycle: failed to enter past_due for tenant %s", t["id"], exc_info=True)
+
+    # 3. Cancel subscriptions whose cancel_at_period_end is set and period has ended
+    eop_cancels = db.query(
+        """
+        SELECT t.id, s.id AS sub_id FROM tenants t
+        JOIN subscriptions s ON s.id = t.current_subscription_id
+        WHERE s.cancel_at_period_end = TRUE
+          AND s.current_period_end IS NOT NULL
+          AND s.current_period_end <= %s
+          AND t.status IN ('active', 'grace_period')
+        """,
+        (now,),
+    )
+    from app.services.subscription_lifecycle_service import cancel_subscription
+    for t in eop_cancels:
+        try:
+            cancel_subscription(t["id"], immediate=True, reason="End-of-period cancellation", actor_type="system")
+            logger.info("subscription_lifecycle: end-of-period cancel for tenant %s", t["id"])
+        except Exception:
+            logger.warning("subscription_lifecycle: failed to cancel EOP for tenant %s", t["id"], exc_info=True)
+
+    # 4. Send trial-ending-soon notifications (3 days before expiry)
+    _send_trial_ending_soon_notifications(now)
+
+
+def _send_trial_ending_soon_notifications(now) -> None:
+    """Email tenants whose trial ends in ≤ 3 days (once per tenant per day via Redis lock)."""
+    import datetime
+    window_end = now + datetime.timedelta(days=3)
+    tenants = db.query(
+        """
+        SELECT id, email, business_name, trial_ends_at
+        FROM tenants
+        WHERE status = 'trial'
+          AND trial_ends_at IS NOT NULL
+          AND trial_ends_at > %s
+          AND trial_ends_at <= %s
+        """,
+        (now, window_end),
+    )
+    for t in tenants:
+        try:
+            from app.extensions import redis_ext
+            lock_key = f"trial_ending_notif:{t['id']}:{now.strftime('%Y-%m-%d')}"
+            if redis_ext.client.set(lock_key, "1", ex=86400, nx=True):
+                from app.services.email_service import send_trial_ending_soon_email
+                send_trial_ending_soon_email(t["id"], t["trial_ends_at"])
+        except Exception:
+            logger.warning("trial_ending_soon: notification failed for tenant %s", t["id"], exc_info=True)
+
+
+def scheduled_subscription_lifecycle() -> None:
+    """Hourly subscription lifecycle checks — trial expiry, grace, past_due, EOP cancel."""
+    from app.extensions import scheduler
+    with scheduler.app.app_context():
+        job_subscription_lifecycle()

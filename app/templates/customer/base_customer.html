@@ -116,6 +116,18 @@
                     </form>
                 </div>
                 {% endif %}
+                {% if subscription_banner %}
+                {% set _btype = subscription_banner.type %}
+                <div class="mb-4 rounded-xl px-4 py-3 flex items-center justify-between gap-4 text-sm
+                    {% if _btype == 'danger' %}bg-red-950/60 border border-red-500/60 text-red-200
+                    {% elif _btype == 'warning' %}bg-yellow-950/60 border border-yellow-500/60 text-yellow-200
+                    {% else %}bg-teal-950/60 border border-teal-500/40 text-teal-200{% endif %}">
+                    <span>{{ subscription_banner.message }}</span>
+                    {% if _btype in ('danger', 'warning') %}
+                    <a href="{{ url_for('customer.subscription_page') }}" class="font-semibold underline hover:no-underline whitespace-nowrap">Manage Subscription →</a>
+                    {% endif %}
+                </div>
+                {% endif %}
                 {% block customer_content %}{% endblock %}
             </div>
         </main>

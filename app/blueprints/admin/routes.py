@@ -136,7 +136,11 @@ def _update_tenant_fields(tenant_id: int, form) -> None:
     status = form.get("status")
 
     if plan_id:
-        db.execute("UPDATE tenants SET plan_id = %s, updated_at = now() WHERE id = %s", (int(plan_id), tenant_id))
+        old_plan = db.query_one("SELECT plan_id FROM tenants WHERE id = %s", (tenant_id,))
+        new_plan_id = int(plan_id)
+        db.execute("UPDATE tenants SET plan_id = %s, updated_at = now() WHERE id = %s", (new_plan_id, tenant_id))
+        audit_log("tenant_plan_change", current_user.id, "tenant", tenant_id,
+                  {"old_plan_id": old_plan["plan_id"] if old_plan else None, "new_plan_id": new_plan_id})
     if status:
         db.execute("UPDATE tenants SET status = %s, updated_at = now() WHERE id = %s", (status, tenant_id))
         audit_log("tenant_status_change", current_user.id, "tenant", tenant_id, {"new_status": status})
@@ -605,4 +609,80 @@ def settings():
         smslayer_api_key=smslayer_api_key,
         sms_rate=sms_rate
     )
+
+
+# ── Subscription management admin routes ────────────────────────────────────
+
+@admin_bp.route("/customers/<int:tenant_id>/subscription/extend", methods=["POST"])
+@require_super_admin
+def subscription_extend(tenant_id: int):
+    """Admin: extend a tenant's subscription period by N days."""
+    days_str = request.form.get("days", "").strip()
+    reason = request.form.get("reason", "").strip()
+    if not days_str or not reason:
+        flash("Days and reason are required.", "error")
+        return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+    try:
+        days = int(days_str)
+        if days <= 0:
+            raise ValueError
+    except ValueError:
+        flash("Days must be a positive integer.", "error")
+        return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+
+    try:
+        from app.services.subscription_lifecycle_service import admin_extend_subscription
+        admin_extend_subscription(tenant_id, days, reason, actor_id=current_user.id)
+        from app.middleware.audit import audit_log
+        audit_log("subscription_admin_extend", current_user.id, "tenant", tenant_id,
+                  {"days": days, "reason": reason})
+        flash(f"Subscription extended by {days} day(s).", "success")
+    except Exception as exc:
+        logger.error("subscription_extend failed for tenant %s: %s", tenant_id, exc)
+        flash(f"Extension failed: {exc}", "error")
+
+    return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+
+
+@admin_bp.route("/customers/<int:tenant_id>/subscription/cancel", methods=["POST"])
+@require_super_admin
+def subscription_cancel(tenant_id: int):
+    """Admin: cancel a tenant's subscription immediately."""
+    reason = request.form.get("reason", "").strip()
+    if not reason:
+        flash("Reason is required.", "error")
+        return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+
+    try:
+        from app.services.subscription_lifecycle_service import cancel_subscription
+        cancel_subscription(tenant_id, immediate=True, reason=reason, actor_type="admin", actor_id=current_user.id)
+        from app.middleware.audit import audit_log
+        audit_log("subscription_admin_cancel", current_user.id, "tenant", tenant_id, {"reason": reason})
+        flash("Subscription cancelled.", "success")
+    except Exception as exc:
+        logger.error("subscription_cancel failed for tenant %s: %s", tenant_id, exc)
+        flash(f"Cancellation failed: {exc}", "error")
+
+    return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+
+
+@admin_bp.route("/customers/<int:tenant_id>/subscription/reactivate", methods=["POST"])
+@require_super_admin
+def subscription_reactivate(tenant_id: int):
+    """Admin: reactivate a suspended/cancelled/expired tenant's subscription (no payment required)."""
+    reason = request.form.get("reason", "").strip()
+    days = int(request.form.get("days", "30") or "30")
+
+    try:
+        from app.services.subscription_lifecycle_service import admin_extend_subscription
+        admin_extend_subscription(tenant_id, days, reason or "Admin reactivation", actor_id=current_user.id)
+        from app.middleware.audit import audit_log
+        audit_log("subscription_admin_reactivate", current_user.id, "tenant", tenant_id,
+                  {"days": days, "reason": reason})
+        flash(f"Tenant reactivated with {days}-day extension.", "success")
+    except Exception as exc:
+        logger.error("subscription_reactivate failed for tenant %s: %s", tenant_id, exc)
+        flash(f"Reactivation failed: {exc}", "error")
+
+    return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
 
