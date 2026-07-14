@@ -6,6 +6,9 @@ a no-op for files already applied. Each migration runs in its own
 transaction — a failure rolls back that file only, leaving earlier
 migrations committed.
 
+A PostgreSQL advisory lock (key 99999) prevents concurrent migration runs.
+The lock is session-scoped and released automatically on disconnect.
+
 Usage:
     python migrations/run_migrations.py [--dry-run]
 """
@@ -23,6 +26,10 @@ import psycopg
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Dedicated advisory lock key for migrations — must not collide with
+# APScheduler lock (12345) or monitor lock (54321).
+_MIGRATION_LOCK_KEY = 99999
 
 
 def _ensure_tracking_table(conn: "psycopg.Connection") -> None:
@@ -53,6 +60,31 @@ def main() -> None:
         return
 
     with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        # ── Acquire exclusive advisory lock before touching schema ────────────
+        # pg_try_advisory_lock is non-blocking: returns false immediately if
+        # another session holds the lock (e.g. parallel CI run or admin op).
+        # The lock is automatically released when the connection closes.
+        if dry_run:
+            # Dry-run inspects state without modifying schema — skip lock so
+            # operators can check pending migrations on a live system.
+            pass
+        else:
+            row = conn.execute(
+                "SELECT pg_try_advisory_lock(%s)", (_MIGRATION_LOCK_KEY,)
+            ).fetchone()
+            acquired = row[0] if row else False
+            if not acquired:
+                print(
+                    f"ERROR: Another migration process is running "
+                    f"(advisory lock {_MIGRATION_LOCK_KEY} held). "
+                    "Wait for it to finish, or check for dead sessions with:\n"
+                    "  SELECT pid, query, state FROM pg_stat_activity "
+                    "  WHERE query LIKE '%pg_advisory_lock%';"
+                )
+                sys.exit(2)
+            print(f"Acquired migration lock (key={_MIGRATION_LOCK_KEY})")
+        # ─────────────────────────────────────────────────────────────────────
+
         with conn.transaction():
             _ensure_tracking_table(conn)
 
@@ -80,9 +112,11 @@ def main() -> None:
                     )
             except Exception as exc:
                 print(f"FAILED on {path.name}: {exc}")
+                # Advisory lock released automatically on connection close.
                 sys.exit(1)
             print(f"  OK: {path.name}")
 
+    # Advisory lock released automatically when `conn` closes (context exit).
     print("All pending migrations applied.")
 
 

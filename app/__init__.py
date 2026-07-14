@@ -157,81 +157,13 @@ def create_app(config_name: str = "production") -> Flask:
     babel.init_app(app, locale_selector=lambda: "bn")
     csrf.init_app(app)
 
-    # APScheduler Configuration
-    if not app.config.get("TESTING"):
-        from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
-        db_url = app.config["DATABASE_URL"]
-        app.config["SCHEDULER_JOBSTORES"] = {
-            "default": SQLAlchemyJobStore(url=db_url.replace("postgresql://", "postgresql+psycopg://"))
-        }
-        scheduler_ext.init_app(app)
-
-        scheduler_ext.add_job(
-            id="process_due_retries",
-            func="app.scheduler:scheduled_process_retries",
-            trigger="interval",
-            seconds=30,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=60,
-            replace_existing=True
-        )
-        scheduler_ext.add_job(
-            id="retry_failed_webhooks",
-            func="app.scheduler:scheduled_retry_webhooks",
-            trigger="interval",
-            minutes=5,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=60,
-            replace_existing=True
-        )
-        scheduler_ext.add_job(
-            id="cleanup_sessions",
-            func="app.scheduler:scheduled_cleanup_sessions",
-            trigger="interval",
-            hours=1,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=60,
-            replace_existing=True
-        )
-        scheduler_ext.add_job(
-            id="low_balance_alerts",
-            func="app.scheduler:scheduled_low_balance_alerts",
-            trigger="interval",
-            hours=6,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=60,
-            replace_existing=True
-        )
-        scheduler_ext.add_job(
-            id="expire_tts_reservations",
-            func="app.scheduler:scheduled_expire_tts_reservations",
-            trigger="interval",
-            minutes=5,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=120,
-            replace_existing=True
-        )
-        scheduler_ext.add_job(
-            id="subscription_lifecycle",
-            func="app.scheduler:scheduled_subscription_lifecycle",
-            trigger="interval",
-            hours=1,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
-            replace_existing=True
-        )
-
-        scheduler_ext.start()
-        
-        # Start Call Monitor Thread
-        from app.services.order_service import start_call_monitor
-        start_call_monitor(app)
+    # APScheduler and call monitor are NOT started here.
+    # The web process has ENABLE_SCHEDULER=false and ENABLE_CALL_MONITOR=false.
+    # Dedicated service processes start their own role via:
+    #   python -m app.commands.run_scheduler
+    #   python -m app.commands.run_call_worker
+    # This ensures create_app() starts zero background threads/jobs,
+    # so pytest, migration scripts, and web workers are all side-effect-free.
 
     # --- Blueprints Registration -----------------------------------------
     from app.blueprints.admin import admin_bp

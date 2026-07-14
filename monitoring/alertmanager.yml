@@ -1,0 +1,85 @@
+---
+# C-Call IVR — Alertmanager Configuration
+# All values are REPLACE_* placeholders. Do NOT commit real credentials.
+
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: "REPLACE_SMTP_HOST:587"
+  smtp_from: "alerts@REPLACE_DOMAIN"
+  smtp_auth_username: "REPLACE_SMTP_USER"
+  smtp_auth_password: "REPLACE_SMTP_PASSWORD"
+  smtp_require_tls: true
+
+# ── Templates ────────────────────────────────────────────────────────────────
+templates:
+  - "/etc/alertmanager/templates/*.tmpl"
+
+# ── Routing ──────────────────────────────────────────────────────────────────
+route:
+  receiver: "platform-email"
+  group_by: ["alertname", "team"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts — immediate notification
+    - match:
+        severity: critical
+      receiver: "critical-pagerduty"
+      repeat_interval: 30m
+      continue: true
+
+    # Billing alerts — billing team
+    - match:
+        team: billing
+      receiver: "billing-email"
+      repeat_interval: 6h
+
+    # Warning only — platform team email
+    - match:
+        severity: warning
+      receiver: "platform-email"
+      repeat_interval: 4h
+
+# ── Inhibit rules ────────────────────────────────────────────────────────────
+inhibit_rules:
+  # If PostgreSQL is down, suppress all app-level alerts (expected cascade)
+  - source_match:
+      alertname: PostgreSQLDown
+    target_match_re:
+      alertname: ".+"
+    equal: ["instance"]
+
+  # If web is down, suppress HTTP error rate alerts
+  - source_match:
+      alertname: CCallWebDown
+    target_match:
+      alertname: HTTP5xxRateHigh
+
+# ── Receivers ────────────────────────────────────────────────────────────────
+receivers:
+  - name: "critical-pagerduty"
+    pagerduty_configs:
+      - service_key: "REPLACE_PAGERDUTY_SERVICE_KEY"
+        description: "{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}"
+        details:
+          runbook: "{{ range .Alerts }}{{ .Annotations.runbook }}{{ end }}"
+          description: "{{ range .Alerts }}{{ .Annotations.description }}{{ end }}"
+    email_configs:
+      - to: "oncall@REPLACE_DOMAIN"
+        send_resolved: true
+
+  - name: "platform-email"
+    email_configs:
+      - to: "platform@REPLACE_DOMAIN"
+        send_resolved: true
+        headers:
+          subject: "[CCall {{ .Status | toUpper }}] {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"
+
+  - name: "billing-email"
+    email_configs:
+      - to: "billing@REPLACE_DOMAIN"
+        send_resolved: true
+        headers:
+          subject: "[CCall Billing {{ .Status | toUpper }}] {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"

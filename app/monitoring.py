@@ -1,44 +1,160 @@
+"""
+Prometheus metrics — C-Call IVR SaaS.
+
+NOTE: tenant_id is intentionally NOT used as a label on any metric.
+Unbounded cardinality (one label value per tenant) causes memory growth
+and makes Prometheus OOM. Tenant-level analytics belong in the DB/CDR.
+"""
 from __future__ import annotations
 
+import os
+import hmac
+import hashlib
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
-from flask import Blueprint, Response
+from flask import Blueprint, Response, request
 from app.extensions import limiter, csrf
 from app.db import db
 
-# Metrics definitions per requirements
-CALLS_TOTAL = Counter('ccall_calls_total', 'Total calls by result', ['result', 'tenant_id'])
-CALL_DURATION = Histogram('ccall_call_duration_seconds', 'Call duration', buckets=[5, 10, 30, 60, 120, 300])
-TTS_DURATION = Histogram('ccall_tts_generation_seconds', 'TTS generation time', ['provider'])
-ACTIVE_CALLS = Gauge('ccall_active_calls', 'Currently active calls')
-WALLET_BALANCE = Gauge('ccall_wallet_balance_bdt', 'Tenant wallet balance', ['tenant_id'])
-API_REQUESTS = Counter('ccall_api_requests_total', 'API requests', ['method', 'endpoint', 'status'])
-RETRY_QUEUE_SIZE = Gauge('ccall_retry_queue_size', 'Orders pending retry')
+# ── HTTP ─────────────────────────────────────────────────────────────────────
+API_REQUESTS = Counter(
+    "ccall_api_requests_total",
+    "HTTP requests by method, endpoint (normalised), and status",
+    ["method", "endpoint", "status"],
+)
+HTTP_LATENCY = Histogram(
+    "ccall_http_duration_seconds",
+    "HTTP request latency",
+    ["method", "endpoint"],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+)
+
+# ── Orders ────────────────────────────────────────────────────────────────────
+ORDERS_ACCEPTED = Counter("ccall_orders_accepted_total", "Orders accepted")
+ORDERS_REJECTED = Counter("ccall_orders_rejected_total", "Orders rejected by subscription", ["reason"])
+ORDERS_DUPLICATE = Counter("ccall_orders_duplicate_total", "Idempotent duplicate orders")
+
+# ── Calls ─────────────────────────────────────────────────────────────────────
+# NOTE: tenant_id label retained for call_runner.py compatibility (read-only file).
+# In production with many tenants this creates high cardinality — cap tenant count
+# or switch to recording rules in Prometheus to aggregate per-result totals.
+CALLS_TOTAL = Counter("ccall_calls_total", "Calls by result", ["result", "tenant_id"])
+CALL_DURATION = Histogram(
+    "ccall_call_duration_seconds",
+    "Call duration in seconds",
+    buckets=[5, 10, 30, 60, 120, 300],
+)
+ACTIVE_CALLS = Gauge("ccall_active_calls", "Currently active SIP calls")
+
+# ── Job queue ─────────────────────────────────────────────────────────────────
+CALL_QUEUE_DEPTH = Gauge("ccall_call_queue_depth", "Call jobs queued or leased")
+CALL_QUEUE_OLDEST_SECONDS = Gauge("ccall_call_queue_oldest_seconds", "Age of oldest queued job")
+EXPIRED_LEASES_RECOVERED = Counter("ccall_expired_leases_recovered_total", "Leases recovered after expiry")
+
+# ── TTS ───────────────────────────────────────────────────────────────────────
+TTS_DURATION = Histogram(
+    "ccall_tts_generation_seconds",
+    "TTS generation latency",
+    ["provider"],
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
+)
+TTS_CACHE_HITS = Counter("ccall_tts_cache_hits_total", "TTS audio served from cache")
+TTS_FAILURES = Counter("ccall_tts_failures_total", "TTS generation failures", ["provider"])
+
+# ── Webhooks ──────────────────────────────────────────────────────────────────
+WEBHOOK_DELIVERED = Counter("ccall_webhook_delivered_total", "Webhook delivery success")
+WEBHOOK_FAILED = Counter("ccall_webhook_failed_total", "Webhook delivery failure")
+WEBHOOK_RETRY = Counter("ccall_webhook_retry_total", "Webhook retries attempted")
+
+# ── Wallet ────────────────────────────────────────────────────────────────────
+WALLET_DEBIT_SUCCESS = Counter("ccall_wallet_debit_success_total", "Successful wallet debits")
+WALLET_INSUFFICIENT = Counter("ccall_wallet_insufficient_total", "Insufficient balance events")
+WALLET_LOW_BALANCE_TENANTS = Gauge("ccall_wallet_low_balance_tenants", "Tenants with low wallet balance")
+# Platform aggregate — no per-tenant label (prevents unbounded cardinality)
+WALLET_BALANCE = Gauge("ccall_wallet_balance_bdt", "Total platform wallet balance BDT (sum across all tenants)")
+RETRY_QUEUE_SIZE = Gauge("ccall_retry_queue_size", "Orders pending retry")
+
+# ── Subscriptions ─────────────────────────────────────────────────────────────
+SUBSCRIPTION_STATUS = Gauge(
+    "ccall_subscriptions_by_status",
+    "Active tenant count by subscription status",
+    ["status"],
+)
+
 
 def update_gauge_metrics() -> None:
-    """Updates Gauge metrics from database before exposing metrics."""
-    # 1. Update wallet balances per tenant
+    """Refresh Gauge metrics from DB. Called on each /metrics scrape."""
     try:
-        wallets = db.query("SELECT tenant_id, balance FROM wallets")
-        for w in wallets:
-            if w.get("tenant_id") is not None and w.get("balance") is not None:
-                WALLET_BALANCE.labels(tenant_id=str(w["tenant_id"])).set(float(w["balance"]))
+        row = db.query_one("SELECT COUNT(*) AS n FROM orders WHERE order_status = 'RETRY_SCHEDULED'")
+        RETRY_QUEUE_SIZE.set(row["n"] if row else 0)
     except Exception:
         pass
 
-    # 2. Update orders pending retry queue size
     try:
-        row = db.query_one("SELECT COUNT(*) AS cnt FROM orders WHERE order_status = 'RETRY_SCHEDULED'")
-        if row:
-            RETRY_QUEUE_SIZE.set(row["cnt"])
+        rows = db.query("SELECT COALESCE(balance, 0) AS balance FROM wallets")
+        WALLET_BALANCE.set(sum(float(r["balance"]) for r in rows))
     except Exception:
         pass
+
+    try:
+        row = db.query_one(
+            "SELECT COUNT(*) AS n FROM call_jobs WHERE job_status IN ('queued','leased')"
+        )
+        CALL_QUEUE_DEPTH.set(row["n"] if row else 0)
+    except Exception:
+        pass
+
+    try:
+        row = db.query_one(
+            """
+            SELECT EXTRACT(EPOCH FROM (now() - MIN(created_at))) AS oldest
+            FROM call_jobs WHERE job_status = 'queued'
+            """
+        )
+        if row and row["oldest"] is not None:
+            CALL_QUEUE_OLDEST_SECONDS.set(float(row["oldest"]))
+    except Exception:
+        pass
+
+    try:
+        rows = db.query(
+            "SELECT status, COUNT(*) AS n FROM tenants WHERE status IS NOT NULL GROUP BY status"
+        )
+        for r in rows:
+            SUBSCRIPTION_STATUS.labels(status=r["status"]).set(r["n"])
+    except Exception:
+        pass
+
+    try:
+        row = db.query_one(
+            """
+            SELECT COUNT(DISTINCT w.tenant_id) AS n
+            FROM wallets w
+            JOIN tenants t ON t.id = w.tenant_id
+            WHERE t.status = 'active' AND w.balance < 50
+            """
+        )
+        WALLET_LOW_BALANCE_TENANTS.set(row["n"] if row else 0)
+    except Exception:
+        pass
+
+
+_METRICS_TOKEN = os.environ.get("METRICS_AUTH_TOKEN", "")
 
 metrics_bp = Blueprint("metrics", __name__)
 csrf.exempt(metrics_bp)
 limiter.exempt(metrics_bp)
 
+
 @metrics_bp.route("/metrics")
 def metrics():
-    """Prometheus scrape endpoint."""
+    """Prometheus scrape endpoint. Restricted by METRICS_AUTH_TOKEN or Nginx IP allow."""
+    if _METRICS_TOKEN:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return Response("Unauthorized", status=401)
+        token = auth[len("Bearer "):]
+        if not hmac.compare_digest(token, _METRICS_TOKEN):
+            return Response("Forbidden", status=403)
+
     update_gauge_metrics()
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)

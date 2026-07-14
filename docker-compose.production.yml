@@ -1,19 +1,138 @@
 version: '3.8'
+# Production compose — C-Call IVR SaaS
+# Services: nginx, web (Gunicorn), scheduler (singleton), call_worker, postgres, redis
+# Secrets are injected via .env file (NOT committed). See .env.production.example.
+#
+# Deploy order: postgres → redis → migrate → scheduler → call_worker → web → nginx
+# Do NOT run migrations from the web service. Use the one-off migrate service.
+
+x-app-base: &app-base
+  image: ghcr.io/ccall/app:${VERSION:-latest}
+  restart: unless-stopped
+  env_file: .env
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  volumes:
+    - audio_data:/app/instance
+  networks:
+    - internal
+  # ── Container hardening ────────────────────────────────────────────────────
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  # Python + Gunicorn need no special capabilities.
+  # (If a future feature needs binding :443 directly, add NET_BIND_SERVICE here.)
+  user: "1001:1001"  # ccall non-root user (matches Dockerfile)
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+    - /app/tmp:size=32m,mode=755
 
 services:
-  app:
-    image: ghcr.io/ccall/app:${VERSION:-latest}
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
     restart: unless-stopped
-    ports:
-      - "5000:5000"
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    networks:
+      - internal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ccall_prod
+      POSTGRES_USER: ccall_app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: UTC
+      PGTZ: UTC
+    # PostgreSQL is NOT published to host network.
+    # Only internal network — web/scheduler/worker reach it via service name.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
     deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccall_app -d ccall_prod"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - internal
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --save 900 1
+      --save 300 10
+      --appendonly yes
+      --appendfsync everysec
+      --protected-mode yes
+      --bind 0.0.0.0
+      --loglevel notice
+    volumes:
+      - redis_data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 300M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── One-off migration job (run manually before web/scheduler start) ────────
+  migrate:
+    <<: *app-base
+    restart: "no"
+    command: ["python", "migrations/run_migrations.py"]
+    environment:
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:-${DATABASE_URL}}
+      FLASK_ENV: production
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
+
+  # ── Web service (Gunicorn — no scheduler, no call worker) ─────────────────
+  web:
+    <<: *app-base
+    command: ["gunicorn", "--config", "gunicorn.conf.py", "run:app"]
+    environment:
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
+    ports:
+      - "127.0.0.1:5000:5000"   # Nginx on host proxies to this
+    deploy:
+      replicas: 1
       resources:
         limits:
           cpus: '1.0'
@@ -23,37 +142,83 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    volumes:
-      - postgres_prod_data:/var/lib/postgresql/data
+  # ── Scheduler (singleton — exactly one instance) ───────────────────────────
+  scheduler:
+    <<: *app-base
+    command: ["python", "-m", "app.commands.run_scheduler"]
     environment:
-      POSTGRES_DB: ccall
-      POSTGRES_USER: ccall
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      ENABLE_SCHEDULER: "true"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
     deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 1024M
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ccall -d ccall"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
-    deploy:
+      replicas: 1   # MUST be 1 — advisory locks protect per-tick, not per-instance
       resources:
         limits:
           cpus: '0.5'
           memory: 256M
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import psycopg, os; c=psycopg.connect(os.environ['DATABASE_URL']); c.execute('SELECT 1'); c.close()"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+  # ── Call worker (can scale to 2-4 instances) ───────────────────────────────
+  call_worker:
+    <<: *app-base
+    command: ["python", "-m", "app.commands.run_call_worker"]
+    environment:
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "true"
+      ENABLE_CALL_MONITOR: "true"
+    deploy:
+      replicas: 2   # Each instance leases different jobs via SKIP LOCKED
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import psycopg, os; c=psycopg.connect(os.environ['DATABASE_URL']); c.execute('SELECT 1'); c.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Backup (scheduled via cron on the host, or run manually) ─────────────
+  backup:
+    image: postgres:16-alpine
+    restart: "no"
+    networks:
+      - internal
+    volumes:
+      - backup_data:/backups
+      - ./scripts/backup.sh:/backup.sh:ro
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      BACKUP_ENCRYPTION_PASSPHRASE: ${BACKUP_ENCRYPTION_PASSPHRASE}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: "30"
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+    command: ["sh", "/backup.sh"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    profiles:
+      - backup
 
 volumes:
-  postgres_prod_data:
+  postgres_data:
+  redis_data:
+  audio_data:
+  backup_data:
+
+networks:
+  internal:
+    driver: bridge
+    internal: true   # no external network access from DB/Redis containers

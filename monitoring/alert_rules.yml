@@ -1,0 +1,271 @@
+---
+# C-Call IVR — Prometheus Alert Rules
+# Load with: --web.config.file=monitoring/web_config.yml
+# Or include in your prometheus.yml under rule_files:
+#   rule_files:
+#     - /etc/prometheus/rules/ccall_alerts.yml
+
+groups:
+  - name: ccall_critical
+    interval: 30s
+    rules:
+
+      # ── Service availability ───────────────────────────────────────────────
+      - alert: CCallWebDown
+        expr: up{job="ccall_web"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "C-Call web service is down"
+          description: "ccall_web target {{ $labels.instance }} has been down for > 1m. Check Gunicorn process and Docker container logs."
+          runbook: "RB-03"
+
+      - alert: CCallSchedulerDown
+        expr: up{job="ccall_scheduler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "C-Call scheduler service is down"
+          description: "Scheduler has been unreachable for > 2m. Retries will not process. Escalate immediately."
+          runbook: "RB-05"
+
+      - alert: CCallWorkerDown
+        expr: up{job="ccall_call_worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "All C-Call call workers are down"
+          description: "No call_worker targets alive. No SIP calls will be dispatched."
+          runbook: "RB-04"
+
+      - alert: PostgreSQLDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "Database unreachable. All application services will fail. Check disk space first."
+          runbook: "RB-14"
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Redis is down"
+          description: "Sessions, rate limiting, and monitor leadership will fail."
+          runbook: "RB-13"
+
+      # ── Duplicate call protection ──────────────────────────────────────────
+      - alert: DuplicateCallJobDetected
+        expr: increase(ccall_expired_leases_recovered_total[5m]) > 3
+        for: 0m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Multiple expired leases recovered — possible duplicate call risk"
+          description: "{{ $value }} expired leases recovered in 5m. Indicates worker crashes or lease expiry too short. Review call worker logs."
+          runbook: "RB-07"
+
+      # ── Backup integrity ───────────────────────────────────────────────────
+      - alert: BackupFailure
+        expr: time() - ccall_last_backup_success_timestamp > 90000
+        for: 0m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Production backup has not succeeded in 25+ hours"
+          description: "Last successful backup was {{ $value | humanizeDuration }} ago. Check backup cron and storage."
+          runbook: "RB-15"
+
+      # ── TLS certificate ────────────────────────────────────────────────────
+      - alert: TLSCertExpiryCritical
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox_https"} - time()) < 14 * 86400
+        for: 0m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "TLS certificate expires in < 14 days"
+          description: "Certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}. Renew immediately."
+
+      # ── Wallet ledger ──────────────────────────────────────────────────────
+      - alert: WalletLedgerMismatch
+        expr: ccall_wallet_ledger_mismatch_count > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: billing
+        annotations:
+          summary: "Wallet balance does not match transaction ledger"
+          description: "{{ $value }} tenants have wallet balance != sum of transactions. Investigate before next billing cycle."
+          runbook: "RB-09"
+
+  - name: ccall_warning
+    interval: 60s
+    rules:
+
+      # ── Call queue depth ──────────────────────────────────────────────────
+      - alert: CallQueueDepthHigh
+        expr: ccall_call_queue_depth > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Call job queue depth is high"
+          description: "{{ $value }} jobs queued/leased. Normal is < 20. Scale call_worker replicas if sustained."
+
+      - alert: CallQueueOldestJobHigh
+        expr: ccall_call_queue_oldest_seconds > 300
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Oldest call job has been waiting > 5 minutes"
+          description: "Oldest queued job is {{ $value | humanizeDuration }} old. Call workers may be stalled."
+          runbook: "RB-06"
+
+      # ── SIP failure spike ─────────────────────────────────────────────────
+      - alert: SIPFailureSpike
+        expr: |
+          rate(ccall_calls_total{result="failed"}[5m])
+          / (rate(ccall_calls_total[5m]) + 0.001) > 0.20
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "SIP call failure rate > 20%"
+          description: "{{ $value | humanizePercentage }} of calls failing in last 5m. Check SIP provider status."
+
+      # ── No-answer spike ───────────────────────────────────────────────────
+      - alert: NoAnswerRateHigh
+        expr: |
+          rate(ccall_calls_total{result="no_answer"}[30m])
+          / (rate(ccall_calls_total[30m]) + 0.001) > 0.60
+        for: 10m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "No-answer rate > 60% sustained 10m"
+          description: "Unusually high no-answer rate. Possible DND window issue or phone number formatting problem."
+
+      # ── Webhook failure ───────────────────────────────────────────────────
+      - alert: WebhookFailureRateHigh
+        expr: |
+          rate(ccall_webhook_failed_total[10m])
+          / (rate(ccall_webhook_delivered_total[10m]) + rate(ccall_webhook_failed_total[10m]) + 0.001) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Webhook delivery failure rate > 10%"
+          description: "{{ $value | humanizePercentage }} of webhooks failing. Check merchant endpoint connectivity."
+          runbook: "RB-08"
+
+      # ── TTS latency ───────────────────────────────────────────────────────
+      - alert: TTSLatencyHigh
+        expr: histogram_quantile(0.95, rate(ccall_tts_generation_seconds_bucket[10m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TTS p95 latency > 10 seconds"
+          description: "95th percentile TTS generation is {{ $value }}s. Calls may time out waiting for audio."
+
+      # ── DB pool saturation ────────────────────────────────────────────────
+      - alert: DBPoolNearSaturation
+        expr: pg_stat_activity_count{datname="ccall_prod", state="active"} > 45
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PostgreSQL active connections near max_connections limit"
+          description: "{{ $value }} active connections (limit 60). Deploy PgBouncer before connections are exhausted."
+
+      # ── Redis memory pressure ─────────────────────────────────────────────
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis memory usage > 80%"
+          description: "Redis at {{ $value | humanizePercentage }} of maxmemory. Sessions may be at risk if maxmemory-policy=noeviction."
+
+      # ── Low balance tenants ───────────────────────────────────────────────
+      - alert: LowBalanceTenantCount
+        expr: ccall_wallet_low_balance_tenants > 10
+        for: 0m
+        labels:
+          severity: warning
+          team: billing
+        annotations:
+          summary: "Many tenants have low wallet balance"
+          description: "{{ $value }} active tenants with balance < 50 BDT. May cause increased call failures."
+
+      # ── Disk usage ────────────────────────────────────────────────────────
+      - alert: DiskUsageHigh
+        expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Disk usage > 80%"
+          description: "{{ $labels.mountpoint }} at {{ $value | humanizePercentage }}. Audio files or backups may be filling disk."
+          runbook: "RB-17"
+
+      # ── Retry queue size ──────────────────────────────────────────────────
+      - alert: RetryQueueLarge
+        expr: ccall_retry_queue_size > 200
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Retry queue has > 200 orders pending retry"
+          description: "{{ $value }} orders in RETRY_SCHEDULED. Scheduler may be stalled or SIP failure causing mass no-answers."
+
+      # ── TLS certificate warning ───────────────────────────────────────────
+      - alert: TLSCertExpiryWarning
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox_https"} - time()) < 30 * 86400
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TLS certificate expires in < 30 days"
+          description: "Certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}. Renew soon."
+
+      # ── HTTP error rate ────────────────────────────────────────────────────
+      - alert: HTTP5xxRateHigh
+        expr: |
+          rate(ccall_api_requests_total{status=~"5.."}[5m])
+          / rate(ccall_api_requests_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HTTP 5xx error rate > 5%"
+          description: "{{ $value | humanizePercentage }} of API requests returning 5xx. Check application logs."

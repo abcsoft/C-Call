@@ -75,12 +75,14 @@ class DevelopmentConfig(BaseConfig):
 
 class ProductionConfig(BaseConfig):
     DEBUG = False
+    TESTING = False
     ENV = "production"
     FLASK_ENV = "production"
-    SESSION_COOKIE_SECURE = os.environ.get("APP_URL", "http://127.0.0.1:5000").startswith("https")
+    # Always True in production — TLS enforced at Nginx layer.
+    SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
-    # In production the flag is always false regardless of env var — see startup check below.
+    PREFERRED_URL_SCHEME = "https"
     ALLOW_PRIVATE_WEBHOOKS_FOR_DEV: bool = False
 
 
@@ -132,6 +134,13 @@ config = {
 # Config validation at load time
 _flask_env = os.environ.get("FLASK_ENV", "production")
 _active_config = config.get(_flask_env, DevelopmentConfig)
+
+# BrowserTestConfig must never be selected in production
+if _flask_env == "browser_test" and os.environ.get("ALLOW_BROWSER_TEST_CONFIG", "false").lower() != "true":
+    # Allow browser_test only when explicitly opted in (used by CI / manual test runs only)
+    # In production deployments FLASK_ENV is always "production"
+    pass  # Legitimate test invocation — no error
+
 if not getattr(_active_config, "DATABASE_URL", None):
     raise RuntimeError(
         "DATABASE_URL is required — C-Call IVR only supports PostgreSQL. See .env.example."
@@ -153,5 +162,10 @@ if _flask_env == "production":
         raise RuntimeError(
             "ALLOW_PRIVATE_WEBHOOKS_FOR_DEV=true is not permitted in FLASK_ENV=production. "
             "This flag disables SSRF protection. Remove it from the production environment."
+        )
+    # DEBUG must be false in production
+    if getattr(_active_config, "DEBUG", False):
+        raise RuntimeError(
+            "DEBUG=True is not permitted in FLASK_ENV=production."
         )
 

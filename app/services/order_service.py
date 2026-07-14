@@ -50,6 +50,28 @@ _monitor_active = False
 _MONITOR_LOCK_KEY = "ccall:monitor_leader"
 _MONITOR_LOCK_TTL = 10  # seconds — must be > poll interval (1.5s) with headroom
 
+# Lua script: renew TTL only if caller owns the lock (atomic compare-and-expire).
+# Returns 1 if renewed, 0 if caller is not the owner.
+_LOCK_RENEW_LUA = """
+local current = redis.call('GET', KEYS[1])
+if current == ARGV[1] then
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+    return 1
+else
+    return 0
+end
+"""
+
+# Lua script: release lock only if caller owns it (atomic compare-and-delete).
+# Prevents a slow-returning worker from releasing another worker's lock.
+_LOCK_RELEASE_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+else
+    return 0
+end
+"""
+
 
 def start_call_monitor(app) -> None:
     """Start the background call monitor thread.
@@ -88,20 +110,29 @@ def _monitor_loop(app) -> None:
 
         while _monitor_active:
             try:
-                # Acquire/renew the leader lock.  set(nx=True) succeeds only if
-                # key doesn't exist; set(xx=True) renews only if we already own it.
                 redis_client = redis_ext.client
-                is_leader = redis_client.set(
+
+                # Step 1: Try to acquire the lock (NX = only if not exists).
+                # Value is a unique owner token so only this worker can renew/release.
+                acquired = redis_client.set(
                     _MONITOR_LOCK_KEY, worker_id,
                     ex=_MONITOR_LOCK_TTL, nx=True,
-                ) or redis_client.get(_MONITOR_LOCK_KEY) == worker_id.encode()
+                )
+
+                if not acquired:
+                    # Step 2: If not acquired, try to renew if we already own it.
+                    # Lua compare-and-expire prevents a non-owner from renewing.
+                    renewed = redis_client.eval(
+                        _LOCK_RENEW_LUA, 1,
+                        _MONITOR_LOCK_KEY, worker_id, str(_MONITOR_LOCK_TTL),
+                    )
+                    is_leader = bool(renewed)
+                else:
+                    is_leader = True
 
                 if not is_leader:
                     time.sleep(1.5)
                     continue
-
-                # Renew TTL since we confirmed we hold the lock.
-                redis_client.expire(_MONITOR_LOCK_KEY, _MONITOR_LOCK_TTL)
 
             except Exception as redis_exc:
                 logger.warning("Monitor loop Redis lock error (continuing as leader): %s", redis_exc)
