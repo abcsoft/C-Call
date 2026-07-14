@@ -22,12 +22,16 @@ class User(UserMixin):
 
     @property
     def is_active(self) -> bool:
+        # Canonical policy: only suspended and cancelled block all access.
+        # grace_period, past_due, expired → login allowed (restricted dashboard).
         if self.role == "super_admin":
             return True
         if not self.tenant_id:
             return False
         tenant = get_tenant_by_id(self.tenant_id)
-        return tenant is not None and tenant["status"] in ("active", "trial")
+        if tenant is None:
+            return False
+        return tenant["status"] not in ("suspended", "cancelled")
 
     @property
     def is_super_admin(self) -> bool:

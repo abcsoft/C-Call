@@ -101,10 +101,18 @@ def login():
                 return render_template("auth/login.html", form=form)
 
             # Check tenant status (exempt super_admin)
+            # Canonical policy: suspended and cancelled block login.
+            # grace_period, past_due, expired → login allowed, restricted dashboard shown.
             if user.role != "super_admin":
                 tenant = get_tenant_by_id(user.tenant_id)
-                if not tenant or tenant["status"] not in ("active", "trial"):
-                    flash("আপনার অ্যাকাউন্টটি স্থগিত বা নিষ্ক্রিয় করা হয়েছে।", "error")
+                if not tenant:
+                    flash("অ্যাকাউন্ট পাওয়া যায়নি।", "error")
+                    return render_template("auth/login.html", form=form)
+                if tenant["status"] == "suspended":
+                    flash("আপনার অ্যাকাউন্ট স্থগিত করা হয়েছে। সহায়তার জন্য যোগাযোগ করুন।", "error")
+                    return render_template("auth/login.html", form=form)
+                if tenant["status"] == "cancelled":
+                    flash("আপনার সাবস্ক্রিপশন বাতিল করা হয়েছে। পুনরায় সাবস্ক্রাইব করতে সহায়তা দলের সাথে যোগাযোগ করুন।", "error")
                     return render_template("auth/login.html", form=form)
 
             # Clear brute force counter on success

@@ -66,6 +66,35 @@
             </div>
         </div>
         {% endif %}
+
+        {% if subscription_banner %}
+        {% set banner_colors = {
+            'info':    'bg-blue-950/60 border-blue-500/40 text-blue-200',
+            'warning': 'bg-amber-950/60 border-amber-500/40 text-amber-200',
+            'danger':  'bg-rose-950/60 border-rose-500/40 text-rose-200'
+        } %}
+        {% set color_cls = banner_colors.get(subscription_banner.type, banner_colors['warning']) %}
+        <div id="subscription-status-banner" class="{{ color_cls }} border rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 backdrop-blur-md" data-status="{{ tenant_status }}">
+            <div class="flex gap-3">
+                <div>
+                    <h4 class="font-bold text-sm">Subscription Status</h4>
+                    <p class="text-xs mt-1">{{ subscription_banner.message }}</p>
+                </div>
+            </div>
+            {% if tenant_status in ('grace_period', 'past_due', 'expired') %}
+            <a href="{{ url_for('customer.subscription_page') }}" class="py-2 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl text-xs transition-colors self-start sm:self-center shadow-md active:scale-95">
+                Renew Subscription
+            </a>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% if restricted_mode %}
+        <div id="restricted-mode-notice" class="bg-slate-900/80 border border-slate-700/60 rounded-2xl p-4 text-slate-300 backdrop-blur-md" data-restricted="true">
+            <h4 class="font-bold text-sm text-rose-400">Restricted Mode</h4>
+            <p class="text-xs mt-1">New orders, calls, and TTS are paused. Order history, wallet, and CDR remain accessible. <a href="{{ url_for('customer.subscription_page') }}" class="text-indigo-400 underline">Renew to restore full access.</a></p>
+        </div>
+        {% endif %}
     </div>
 
     <!-- KPI Cards Row (HTMX updates every 30s) -->

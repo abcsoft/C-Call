@@ -94,6 +94,7 @@ def invalidate_tenant_caches(tenant_id: int) -> None:
         redis_ext.client.delete(f"tenant:settings:{tenant_id}")
         redis_ext.client.delete(f"tenant:rate:{tenant_id}")
         redis_ext.client.delete(f"tenant:stats:{tenant_id}")
+        redis_ext.client.delete(f"wallet:{tenant_id}")
     except Exception as e:
         logger.error(f"Failed to invalidate caches for tenant {tenant_id}: {e}")
 

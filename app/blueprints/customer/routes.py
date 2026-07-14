@@ -54,6 +54,15 @@ def index():
 @require_role(["admin", "agent", "viewer"])
 def dashboard():
     tenant_id = g.tenant_id
+    from app.services.subscription_access_service import get_tenant_status_banner, check_feature_access
+    tenant_row = db.query_one("SELECT status FROM tenants WHERE id = %s", (tenant_id,))
+    tenant_status = tenant_row["status"] if tenant_row else "active"
+
+    # Restricted mode: past_due and expired block new operations in UI
+    restricted_states = ("past_due", "expired")
+    restricted_mode = tenant_status in restricted_states
+    subscription_banner = get_tenant_status_banner(tenant_id)
+
     stats = get_dashboard_stats(tenant_id)
 
     wallet = get_wallet(tenant_id) or {}
@@ -98,6 +107,9 @@ def dashboard():
         tts_policy=tts_policy,
         monthly_quota=monthly_quota,
         platform_available=platform_available,
+        subscription_banner=subscription_banner,
+        restricted_mode=restricted_mode,
+        tenant_status=tenant_status,
     )
 
 @customer_bp.route("/api/dashboard/stats", methods=["GET"])

@@ -239,10 +239,10 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
 
     logger.info(f"[SAAS STEP 3] Payload validation passed. Phone: {mask_phone(normalized_phone)}, External ID: {external_order_id}")
 
-    # 2. Check tenant active status
+    # 2. Verify tenant exists (subscription access already enforced above via check_feature_access)
     tenant = get_tenant_by_id(tenant_id)
-    if not tenant or tenant.get("status") not in ("active", "trial"):
-        raise ValueError("Tenant is inactive or suspended.")
+    if not tenant:
+        raise ValueError("Tenant not found.")
 
     # 3. Idempotency Check
     existing_order = get_order_by_external_id(tenant_id, external_order_id)

@@ -113,7 +113,13 @@ def test_suspended_tenant_cannot_login(client, app):
         "password": "Password123!"
     }, follow_redirects=True)
 
-    assert "suspended or inactive" in response.get_data(as_text=True) or "স্থগিত বা নিষ্ক্রিয়" in response.get_data(as_text=True)
+    body = response.get_data(as_text=True)
+    assert (
+        "suspended or inactive" in body
+        or "স্থগিত বা নিষ্ক্রিয়" in body
+        or "স্থগিত" in body          # new per-state message: "আপনার অ্যাকাউন্ট স্থগিত করা হয়েছে"
+        or "suspended" in body.lower()
+    )
 
 
 def test_tenant_model_helpers(app):

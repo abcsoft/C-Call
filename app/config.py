@@ -99,10 +99,33 @@ class TestingConfig(BaseConfig):
     SECRET_KEY = "test-secret-key-that-is-long-enough-for-tests-32x"
 
 
+class BrowserTestConfig(BaseConfig):
+    """Browser E2E config: runs against ccall_test (isolated from production ccall DB).
+    CSRF is ENABLED so CSRF rejection tests produce genuine 400/403 responses.
+    Rate limiting is reduced but not disabled to allow normal login flows.
+    Start server: FLASK_ENV=browser_test python run.py --port 5001
+    Run setup first: python browser_test_setup_v2.py
+    Run teardown after: python browser_test_teardown_v2.py
+    """
+    DEBUG = True
+    ENV = "browser_test"
+    FLASK_ENV = "browser_test"
+    WTF_CSRF_ENABLED = True  # required for CSRF browser tests
+    RATELIMIT_ENABLED = True
+    RATELIMIT_DEFAULT_LIMITS = ["60/minute"]  # relaxed for test logins
+    # Default to ccall_test which already has migrations; override with BROWSER_TEST_DATABASE_URL
+    DATABASE_URL = os.environ.get(
+        "BROWSER_TEST_DATABASE_URL",
+        os.environ.get("TEST_DATABASE_URL", "postgresql://ccall:password@localhost:5432/ccall_test"),
+    )
+    SCHEDULER_API_ENABLED = False
+
+
 config = {
     "development": DevelopmentConfig,
     "production": ProductionConfig,
     "testing": TestingConfig,
+    "browser_test": BrowserTestConfig,
     "default": DevelopmentConfig,
 }
 
