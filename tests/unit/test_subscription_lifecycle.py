@@ -41,8 +41,9 @@ class TestTransitionValidation:
     def test_active_to_cancelled_allowed(self):
         self._assert_allowed("active", "cancelled")
 
-    def test_active_to_suspended_blocked(self):
-        self._assert_blocked("active", "suspended")
+    def test_active_to_suspended_allowed(self):
+        # Phase 1 fix: active → suspended is valid (admin security/compliance action)
+        self._assert_allowed("active", "suspended")
 
     def test_grace_period_to_active_allowed(self):
         self._assert_allowed("grace_period", "active")
@@ -70,6 +71,23 @@ class TestTransitionValidation:
 
     def test_expired_to_trial_blocked(self):
         self._assert_blocked("expired", "trial")
+
+    def test_grace_period_to_suspended_allowed(self):
+        # Phase 1 fix: grace_period → suspended is valid (admin action)
+        self._assert_allowed("grace_period", "suspended")
+
+    def test_past_due_to_expired_allowed(self):
+        # Phase 1 fix: past_due → expired when past_due_ends_at passes
+        self._assert_allowed("past_due", "expired")
+
+    def test_suspended_to_cancelled_allowed(self):
+        self._assert_allowed("suspended", "cancelled")
+
+    def test_idempotent_same_status(self):
+        # Same-status transition must not raise (idempotent)
+        from app.services.subscription_lifecycle_service import _assert_transition
+        for s in ("trial", "active", "grace_period", "past_due", "suspended", "cancelled", "expired"):
+            _assert_transition(s, s)  # must not raise
 
 
 # ── Period end calculation ─────────────────────────────────────────────────

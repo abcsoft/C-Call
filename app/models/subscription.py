@@ -62,8 +62,9 @@ def create_subscription(
 def update_subscription(sub_id: int, **fields) -> None:
     allowed = {
         "status", "current_period_start", "current_period_end",
-        "grace_ends_at", "cancelled_at", "cancel_at_period_end",
+        "grace_ends_at", "past_due_ends_at", "cancelled_at", "cancel_at_period_end",
         "cancellation_reason", "renewal_count",
+        "suspended_at", "suspension_reason", "suspension_type",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:

@@ -147,7 +147,25 @@ def job_subscription_lifecycle() -> None:
         except Exception:
             logger.warning("subscription_lifecycle: failed to enter past_due for tenant %s", t["id"], exc_info=True)
 
-    # 3. Cancel subscriptions whose cancel_at_period_end is set and period has ended
+    # 3. Expire past_due tenants whose past_due_ends_at has passed → expired
+    past_due_expired = db.query(
+        """
+        SELECT t.id FROM tenants t
+        JOIN subscriptions s ON s.id = t.current_subscription_id
+        WHERE t.status = 'past_due'
+          AND s.past_due_ends_at IS NOT NULL
+          AND s.past_due_ends_at <= %s
+        """,
+        (now,),
+    )
+    for t in past_due_expired:
+        try:
+            expire_subscription(t["id"], from_status="past_due")
+            logger.info("subscription_lifecycle: past_due → expired for tenant %s", t["id"])
+        except Exception:
+            logger.warning("subscription_lifecycle: failed past_due expiry for tenant %s", t["id"], exc_info=True)
+
+    # 4. Cancel subscriptions whose cancel_at_period_end is set and period has ended
     eop_cancels = db.query(
         """
         SELECT t.id, s.id AS sub_id FROM tenants t
@@ -167,7 +185,7 @@ def job_subscription_lifecycle() -> None:
         except Exception:
             logger.warning("subscription_lifecycle: failed to cancel EOP for tenant %s", t["id"], exc_info=True)
 
-    # 4. Send trial-ending-soon notifications (3 days before expiry)
+    # 5. Send trial-ending-soon notifications (3 days before expiry)
     _send_trial_ending_soon_notifications(now)
 
 
@@ -197,8 +215,20 @@ def _send_trial_ending_soon_notifications(now) -> None:
             logger.warning("trial_ending_soon: notification failed for tenant %s", t["id"], exc_info=True)
 
 
+ADVISORY_LOCK_KEY_LIFECYCLE = 12346  # distinct from retry lock (12345)
+
+
 def scheduled_subscription_lifecycle() -> None:
-    """Hourly subscription lifecycle checks — trial expiry, grace, past_due, EOP cancel."""
+    """Hourly subscription lifecycle checks — trial expiry, grace, past_due, EOP cancel.
+    Advisory lock prevents duplicate execution across multiple Gunicorn workers.
+    """
     from app.extensions import scheduler
     with scheduler.app.app_context():
-        job_subscription_lifecycle()
+        row = db.query_one("SELECT pg_try_advisory_lock(%s) AS locked", (ADVISORY_LOCK_KEY_LIFECYCLE,))
+        if not row or not row["locked"]:
+            logger.debug("subscription_lifecycle: advisory lock held elsewhere, skipping tick")
+            return
+        try:
+            job_subscription_lifecycle()
+        finally:
+            db.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY_LIFECYCLE,))

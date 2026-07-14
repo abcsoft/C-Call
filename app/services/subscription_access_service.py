@@ -6,16 +6,39 @@ inspect the returned `SubscriptionAccess` namedtuple.  Do NOT inline status
 checks in route handlers — keep all logic here so the enforcement matrix is
 auditable in one place.
 
-Enforcement matrix
-──────────────────
-feature          trial  active  grace_period  past_due  suspended  cancelled  expired
-dashboard        allow  allow   warn          warn      deny       deny       warn
-order_intake     allow  allow   allow         deny      deny       deny       deny
-queue_call       allow  allow   allow         deny      deny       deny       deny
-process_retry    allow  allow   allow         deny      deny       deny       deny
-tts_generate     allow  allow   allow         deny      deny       deny       deny
-api_access       allow  allow   allow         deny_402  deny_403   deny_403   deny_402
-wallet_deduct    allow  allow   allow         allow     deny       deny       deny
+Grace Period Policy
+───────────────────
+Grace period is a short window after billing failure where the account remains
+mostly functional (dashboard, API, order intake, calls, TTS, wallet). This gives
+the tenant time to update payment without service disruption. Only new order
+acceptance is blocked from past_due onward.
+
+Enforcement matrix (15 actions × 7 statuses)
+─────────────────────────────────────────────
+feature             trial      active  grace_period  past_due   suspended  cancelled  expired
+customer_login      allow      allow   warn          warn       deny       deny       warn
+dashboard_view      warn_trial allow   warn          warn       deny       deny       warn
+api_order_create    allow      allow   allow         deny_402   deny_402   deny_402   deny_402
+api_order_list      allow      allow   allow         allow      deny_403   deny_403   allow
+woo_order_intake    allow      allow   allow         deny_402   deny_402   deny_402   deny_402
+manual_call_create  allow      allow   allow         deny       deny       deny       deny
+queue_call          allow      allow   allow         deny       deny       deny       deny
+retry_call          allow      allow   allow         deny       deny       deny       deny
+tts_generate        allow      allow   allow         deny       deny       deny       deny
+wallet_view         allow      allow   allow         allow      allow      allow      allow
+wallet_recharge     allow      allow   allow         allow      deny       allow      allow
+cdr_view            allow      allow   allow         allow      allow      allow      allow
+settings_update     allow      allow   allow         allow      deny       deny       allow
+subscription_manage allow      allow   allow         allow      deny       allow      allow
+admin_impersonation allow      allow   allow         allow      allow      allow      allow
+
+Notes:
+- admin_impersonation: admins always allowed (they manage suspended/expired accounts)
+- wallet_view / cdr_view: always readable so merchants can check balance/history
+- wallet_recharge: blocked for suspended (admin must explicitly reactivate first)
+- api_order_list (GET): allowed even past_due so merchant can check order status
+- settings_update: blocked for suspended/cancelled — must be explicitly reactivated first
+- subscription_manage: blocked for suspended — admin must reactivate, not self-service
 """
 from __future__ import annotations
 
@@ -26,23 +49,52 @@ from app.db import db
 
 logger = logging.getLogger("ccall")
 
-# Canonical allowed tenant statuses per feature:
+# Canonical allowed tenant statuses per feature.
+# Outcomes: allow | warn_trial | warn | deny | deny_402 | deny_403
 _MATRIX: dict[str, dict[str, str]] = {
-    #                 trial     active    grace_period  past_due   suspended  cancelled  expired
-    "dashboard":     {"trial": "warn_trial", "active": "allow", "grace_period": "warn",
-                      "past_due": "warn", "suspended": "deny", "cancelled": "deny", "expired": "warn"},
-    "order_intake":  {"trial": "allow", "active": "allow", "grace_period": "allow",
-                      "past_due": "deny_402", "suspended": "deny_402", "cancelled": "deny_402", "expired": "deny_402"},
-    "queue_call":    {"trial": "allow", "active": "allow", "grace_period": "allow",
-                      "past_due": "deny", "suspended": "deny", "cancelled": "deny", "expired": "deny"},
-    "process_retry": {"trial": "allow", "active": "allow", "grace_period": "allow",
-                      "past_due": "deny", "suspended": "deny", "cancelled": "deny", "expired": "deny"},
-    "tts_generate":  {"trial": "allow", "active": "allow", "grace_period": "allow",
-                      "past_due": "deny", "suspended": "deny", "cancelled": "deny", "expired": "deny"},
-    "api_access":    {"trial": "allow", "active": "allow", "grace_period": "allow",
-                      "past_due": "deny_402", "suspended": "deny_403", "cancelled": "deny_403", "expired": "deny_402"},
-    "wallet_deduct": {"trial": "allow", "active": "allow", "grace_period": "allow",
-                      "past_due": "allow", "suspended": "deny", "cancelled": "deny", "expired": "deny"},
+    #                      trial       active   grace_period  past_due    suspended  cancelled  expired
+    "customer_login":     {"trial": "allow",   "active": "allow",  "grace_period": "warn",
+                           "past_due": "warn",  "suspended": "deny",    "cancelled": "deny",   "expired": "warn"},
+    "dashboard_view":     {"trial": "warn_trial", "active": "allow", "grace_period": "warn",
+                           "past_due": "warn",  "suspended": "deny",    "cancelled": "deny",   "expired": "warn"},
+    "api_order_create":   {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny_402", "suspended": "deny_402", "cancelled": "deny_402", "expired": "deny_402"},
+    "api_order_list":     {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "deny_403", "cancelled": "deny_403", "expired": "allow"},
+    "woo_order_intake":   {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny_402", "suspended": "deny_402", "cancelled": "deny_402", "expired": "deny_402"},
+    "manual_call_create": {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny",  "suspended": "deny",    "cancelled": "deny",   "expired": "deny"},
+    "queue_call":         {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny",  "suspended": "deny",    "cancelled": "deny",   "expired": "deny"},
+    "retry_call":         {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny",  "suspended": "deny",    "cancelled": "deny",   "expired": "deny"},
+    "tts_generate":       {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny",  "suspended": "deny",    "cancelled": "deny",   "expired": "deny"},
+    "wallet_view":        {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "allow",   "cancelled": "allow",  "expired": "allow"},
+    "wallet_recharge":    {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "deny",    "cancelled": "allow",  "expired": "allow"},
+    "cdr_view":           {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "allow",   "cancelled": "allow",  "expired": "allow"},
+    "settings_update":    {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "deny",    "cancelled": "deny",   "expired": "allow"},
+    "subscription_manage":{"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "deny",    "cancelled": "allow",  "expired": "allow"},
+    "admin_impersonation":{"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "allow",   "cancelled": "allow",  "expired": "allow"},
+
+    # Legacy aliases (keep backward compat for existing call sites)
+    "order_intake":       {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny_402", "suspended": "deny_402", "cancelled": "deny_402", "expired": "deny_402"},
+    "process_retry":      {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny",  "suspended": "deny",    "cancelled": "deny",   "expired": "deny"},
+    "api_access":         {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "deny_402", "suspended": "deny_403", "cancelled": "deny_403", "expired": "deny_402"},
+    "wallet_deduct":      {"trial": "allow",   "active": "allow",  "grace_period": "allow",
+                           "past_due": "allow", "suspended": "deny",    "cancelled": "deny",   "expired": "deny"},
+    "dashboard":          {"trial": "warn_trial", "active": "allow", "grace_period": "warn",
+                           "past_due": "warn",  "suspended": "deny",    "cancelled": "deny",   "expired": "warn"},
 }
 
 _DENY_OUTCOMES = {"deny", "deny_402", "deny_403"}
