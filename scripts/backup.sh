@@ -104,3 +104,18 @@ find "$BACKUP_DIR" -name "ccall_*.sha256" -mtime "+$RETENTION_DAYS" -delete
 
 ENC_SIZE=$(du -sh "$ENC_FILE" | cut -f1)
 echo "$LOG_PREFIX Backup complete. Encrypted file: $ENC_FILE ($ENC_SIZE)"
+
+# ── Prometheus success timestamp (atomic write) ───────────────────────────────
+# Written after all checks pass. Failures before this line do not update the
+# timestamp, so the alert fires if backup.sh exits non-zero.
+METRICS_DIR="${BACKUP_METRICS_DIR:-/app/instance/metrics}"
+mkdir -p "$METRICS_DIR"
+EPOCH=$(date +%s)
+TMP_PROM="${METRICS_DIR}/.ccall_backup.prom.tmp"
+{
+    printf '# HELP ccall_last_backup_success_timestamp Unix timestamp of last successful backup\n'
+    printf '# TYPE ccall_last_backup_success_timestamp gauge\n'
+    printf 'ccall_last_backup_success_timestamp %s\n' "$EPOCH"
+} > "$TMP_PROM"
+mv "$TMP_PROM" "${METRICS_DIR}/ccall_backup.prom"
+echo "$LOG_PREFIX Wrote success timestamp: $EPOCH"

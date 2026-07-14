@@ -95,7 +95,7 @@ class TestingConfig(BaseConfig):
     RATELIMIT_ENABLED = False
     DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://ccall:password@localhost:5432/ccall_test")
     SCHEDULER_API_ENABLED = False
-    SERVER_NAME = "localhost"
+    SERVER_NAME = os.environ.get("SERVER_NAME", "localhost") or None
     # Static test key — never read env here; BaseConfig.SECRET_KEY may still be the
     # placeholder if FLASK_SECRET_KEY wasn't set before module import.
     SECRET_KEY = "test-secret-key-that-is-long-enough-for-tests-32x"

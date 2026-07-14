@@ -110,6 +110,16 @@ def main() -> None:
             misfire_grace_time=300,
             replace_existing=True,
         )
+        scheduler_ext.add_job(
+            id="wallet_reconciliation",
+            func="app.services.reconciliation_service:wallet_reconcile_job",
+            trigger="interval",
+            hours=6,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+            replace_existing=True,
+        )
 
         scheduler_ext.start()
         logger.info("Scheduler started. Jobs registered. Running until interrupted.")

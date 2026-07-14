@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import hmac
 import hashlib
+from pathlib import Path
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from flask import Blueprint, Response, request
 from app.extensions import limiter, csrf
@@ -73,6 +74,22 @@ WALLET_LOW_BALANCE_TENANTS = Gauge("ccall_wallet_low_balance_tenants", "Tenants 
 WALLET_BALANCE = Gauge("ccall_wallet_balance_bdt", "Total platform wallet balance BDT (sum across all tenants)")
 RETRY_QUEUE_SIZE = Gauge("ccall_retry_queue_size", "Orders pending retry")
 
+# ── Backup ────────────────────────────────────────────────────────────────────
+# Written by backup.sh atomically into instance/metrics/ccall_backup.prom.
+# Falls back to 0 if no successful backup has run yet.
+BACKUP_SUCCESS_TIMESTAMP = Gauge(
+    "ccall_last_backup_success_timestamp",
+    "Unix timestamp of the last successful backup",
+)
+
+# ── Ledger reconciliation ─────────────────────────────────────────────────────
+# Updated by the wallet_reconcile scheduler job every 6 hours.
+# No per-tenant label — use DB audit log for tenant-level investigation.
+WALLET_LEDGER_MISMATCH = Gauge(
+    "ccall_wallet_ledger_mismatch_count",
+    "Tenants whose wallet.balance != sum(wallet_transactions)",
+)
+
 # ── Subscriptions ─────────────────────────────────────────────────────────────
 SUBSCRIPTION_STATUS = Gauge(
     "ccall_subscriptions_by_status",
@@ -134,6 +151,42 @@ def update_gauge_metrics() -> None:
             """
         )
         WALLET_LOW_BALANCE_TENANTS.set(row["n"] if row else 0)
+    except Exception:
+        pass
+
+    # ── Backup success timestamp ───────────────────────────────────────────────
+    # Read from the atomic textfile written by backup.sh.
+    try:
+        prom_dir = os.environ.get("BACKUP_METRICS_DIR", "instance/metrics")
+        prom_file = Path(prom_dir) / "ccall_backup.prom"
+        if prom_file.exists():
+            for line in prom_file.read_text().splitlines():
+                if line.startswith("ccall_last_backup_success_timestamp "):
+                    ts = float(line.split()[-1])
+                    BACKUP_SUCCESS_TIMESTAMP.set(ts)
+                    break
+    except Exception:
+        pass
+
+    # ── Wallet ledger mismatch ────────────────────────────────────────────────
+    # The reconciliation job updates this gauge. Re-read from DB for freshness.
+    try:
+        row = db.query_one(
+            """
+            SELECT COUNT(*) AS n
+            FROM wallets w
+            WHERE w.balance IS NOT NULL
+              AND ABS(
+                w.balance - COALESCE((
+                    SELECT SUM(CASE WHEN wt.type='credit' THEN wt.amount
+                                    ELSE -wt.amount END)
+                    FROM wallet_transactions wt
+                    WHERE wt.tenant_id = w.tenant_id
+                ), 0)
+              ) > 0.001
+            """
+        )
+        WALLET_LEDGER_MISMATCH.set(row["n"] if row else 0)
     except Exception:
         pass
 

@@ -1,0 +1,95 @@
+version: '3.8'
+# Staging overlay — overrides docker-compose.production.yml for isolated staging.
+# DO NOT commit real secrets. All credential values here are sandbox/mocked.
+#
+# Usage:
+#   docker compose -f docker-compose.production.yml -f docker-compose.staging.yml \
+#     --env-file .env.staging up -d
+
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: ccall_staging
+      POSTGRES_USER: ccall_app
+      POSTGRES_PASSWORD: staging_pg_password_local_only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccall_app -d ccall_staging"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Expose on localhost only for manual DB inspection during staging
+    ports:
+      - "127.0.0.1:5433:5432"
+    networks:
+      - internal
+      - staging_debug
+
+  redis:
+    command: >
+      redis-server
+      --requirepass staging_redis_password_local_only
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+      --appendonly no
+      --protected-mode yes
+      --bind 0.0.0.0
+      --loglevel notice
+    volumes:
+      - redis_data:/data
+    # Relax cap constraints for staging — redis needs CHOWN to initialise /data
+    cap_drop: []
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    ports:
+      - "127.0.0.1:6380:6379"
+    networks:
+      - internal
+      - staging_debug
+
+  migrate:
+    env_file: .env.staging
+    environment:
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
+
+  web:
+    env_file: .env.staging
+    environment:
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
+    ports:
+      - "127.0.0.1:5001:5000"
+
+  scheduler:
+    env_file: .env.staging
+    environment:
+      ENABLE_SCHEDULER: "true"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
+
+  call_worker:
+    env_file: .env.staging
+    environment:
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "true"
+      ENABLE_CALL_MONITOR: "true"
+    deploy:
+      replicas: 2
+
+  backup:
+    environment:
+      DATABASE_URL: postgresql://ccall_app:staging_pg_password_local_only@postgres:5432/ccall_staging
+      BACKUP_ENCRYPTION_PASSPHRASE: staging_backup_passphrase_not_real
+      BACKUP_DIR: /backups/staging
+      BACKUP_RETENTION_DAYS: "1"
+      BACKUP_S3_BUCKET: ""
+      BACKUP_METRICS_DIR: /app/instance/metrics
+
+networks:
+  staging_debug:
+    driver: bridge
+    internal: false   # allows localhost port binding for debug access

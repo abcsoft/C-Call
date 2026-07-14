@@ -31,6 +31,7 @@ x-app-base: &app-base
   tmpfs:
     - /tmp:size=64m,mode=1777
     - /app/tmp:size=32m,mode=755
+    - /app/app/instance:size=64m,mode=777
 
 services:
   # ── PostgreSQL ─────────────────────────────────────────────────────────────
