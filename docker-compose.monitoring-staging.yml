@@ -1,0 +1,68 @@
+---
+# Staging-only monitoring stack.
+# Runs prometheus + alertmanager + mock_webhook_receiver.
+# All alert notifications route to mock_receiver only — no real endpoints.
+# Join ccall_internal network to reach the web container at web:5000.
+#
+# Usage:
+#   docker compose -f docker-compose.production.yml \
+#                  -f docker-compose.staging.yml \
+#                  -f docker-compose.monitoring-staging.yml \
+#                  --env-file .env.staging up -d prometheus alertmanager mock_receiver
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.4.2
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus-staging.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=1d"
+      - "--web.listen-address=0.0.0.0:9090"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./monitoring/prometheus-staging.yml:/etc/prometheus/prometheus-staging.yml:ro
+      - ./monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_staging_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - ccall_internal
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager-staging.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address=0.0.0.0:9093"
+    volumes:
+      - ./monitoring/alertmanager-staging.yml:/etc/alertmanager/alertmanager-staging.yml:ro
+      - alertmanager_staging_data:/alertmanager
+    ports:
+      - "9093:9093"
+    networks:
+      - ccall_internal
+    depends_on:
+      - mock_receiver
+
+  mock_receiver:
+    image: python:3.12-slim
+    restart: unless-stopped
+    command: python /app/mock_receiver.py
+    volumes:
+      - ./monitoring/mock_receiver.py:/app/mock_receiver.py:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - ccall_internal
+
+volumes:
+  prometheus_staging_data:
+  alertmanager_staging_data:
+
+networks:
+  ccall_internal:
+    external: true

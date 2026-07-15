@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - "alert_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: "ccall_web"
+    static_configs:
+      - targets: ["web:5000"]
+    metrics_path: /metrics
+    authorization:
+      credentials: "staging-metrics-token-local-only"
+
+  # Staging: scheduler + worker have no HTTP endpoint.
+  # Point both at web:5000 for staging acceptance tests.
+  # Stopping the web container fires all three service-down alerts simultaneously,
+  # which is sufficient to verify firing/resolution of all three alert rules.
+  - job_name: "ccall_scheduler"
+    static_configs:
+      - targets: ["web:5000"]
+    metrics_path: /metrics
+    authorization:
+      credentials: "staging-metrics-token-local-only"
+
+  - job_name: "ccall_call_worker"
+    static_configs:
+      - targets: ["web:5000"]
+    metrics_path: /metrics
+    authorization:
+      credentials: "staging-metrics-token-local-only"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

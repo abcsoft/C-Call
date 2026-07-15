@@ -171,6 +171,14 @@ def _schema_is_current(conn) -> bool:
             AND table_name = 'subscriptions'
             AND column_name = 'past_due_ends_at'
         """)
+        if cur.fetchone()[0] < 1:
+            return False
+        # Check for call_jobs table (added in later migration)
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema = 'public'
+            AND table_name = 'call_jobs'
+        """)
         return cur.fetchone()[0] >= 1
 
 
