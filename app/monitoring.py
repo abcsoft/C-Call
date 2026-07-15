@@ -127,8 +127,7 @@ def update_gauge_metrics() -> None:
             FROM call_jobs WHERE job_status = 'queued'
             """
         )
-        if row and row["oldest"] is not None:
-            CALL_QUEUE_OLDEST_SECONDS.set(float(row["oldest"]))
+        CALL_QUEUE_OLDEST_SECONDS.set(float(row["oldest"]) if row and row["oldest"] is not None else 0.0)
     except Exception:
         pass
 
