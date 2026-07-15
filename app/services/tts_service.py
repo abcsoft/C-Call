@@ -279,6 +279,10 @@ def generate_order_audio(tenant_id: int, order_data: dict[str, Any] | str, setti
     2. order.custom_text → use as literal TTS text (bypass tenant template)
     3. tenant voice_script template → render with order variables
     """
+    if os.environ.get("MOCK_TTS_PROVIDER", "").lower() in ("1", "true", "yes"):
+        logger.info("[MOCK_TTS] MOCK_TTS_PROVIDER=true — returning dummy audio filename")
+        return "mock-tts-audio-staging"
+
     tenant = get_tenant_by_id(tenant_id)
     if not tenant:
         raise ValueError(f"Tenant {tenant_id} not found")

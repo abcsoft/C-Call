@@ -583,16 +583,20 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
         from app.services.number_service import get_sip_trunk_for_caller_id, get_sip_provider_id_for_caller_id
         sip_override = get_sip_trunk_for_caller_id(caller_id)
         sip_gateway_id = get_sip_provider_id_for_caller_id(caller_id)
-        call_id = call_runner.start_call(
-            order["phone"],
-            flow_id,
-            name=order.get("customer_name") or "",
-            tenant_id=tenant_id,
-            order_id=order_id,
-            caller_id=caller_id,
-            sip_gateway_id=sip_gateway_id,
-            sip_override=sip_override
-        )
+        if os.environ.get("MOCK_SIP_PROVIDER", "").lower() in ("1", "true", "yes"):
+            call_id = None
+            logger.info("[MOCK_SIP] MOCK_SIP_PROVIDER=true — skipping real SIP call")
+        else:
+            call_id = call_runner.start_call(
+                order["phone"],
+                flow_id,
+                name=order.get("customer_name") or "",
+                tenant_id=tenant_id,
+                order_id=order_id,
+                caller_id=caller_id,
+                sip_gateway_id=sip_gateway_id,
+                sip_override=sip_override
+            )
         
         # Create attempt
         create_call_attempt(

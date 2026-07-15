@@ -13,6 +13,28 @@ TEST_DATABASE_URL = os.environ.get(
 )
 
 
+class _MockPubSub:
+    """Minimal PubSub stub for MockRedis — subscribe/unsubscribe are no-ops."""
+
+    def subscribe(self, *channels, **handlers):
+        pass
+
+    def unsubscribe(self, *channels):
+        pass
+
+    def get_message(self, ignore_subscribe_messages=False, timeout=0):
+        return None
+
+    def listen(self):
+        return iter([])
+
+    def close(self):
+        pass
+
+    def __iter__(self):
+        return iter([])
+
+
 class MockRedis:
     """In-memory Redis mock matching redis-py's API for both redis_ext._client and SESSION_REDIS.
 
@@ -73,6 +95,36 @@ class MockRedis:
         for key in self.data:
             if match is None or key.startswith(match.rstrip("*")):
                 yield key
+
+    def hset(self, name, key=None, value=None, mapping=None):
+        if name not in self.data or not isinstance(self.data[name], dict):
+            self.data[name] = {}
+        if mapping:
+            self.data[name].update(mapping)
+        elif key is not None:
+            self.data[name][key] = value
+        return 1
+
+    def hget(self, name, key):
+        return self.data.get(name, {}).get(key)
+
+    def hgetall(self, name):
+        return dict(self.data.get(name, {}))
+
+    def hdel(self, name, *keys):
+        h = self.data.get(name, {})
+        count = 0
+        for k in keys:
+            if k in h:
+                del h[k]
+                count += 1
+        return count
+
+    def pubsub(self, **kwargs):
+        return _MockPubSub()
+
+    def publish(self, channel, message):
+        return 0
 
 
 def _schema_is_current(conn) -> bool:

@@ -31,10 +31,11 @@ def patch_root_db(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def clear_registry():
+def clear_registry(monkeypatch):
     """Clear the local fallback registry between tests.
     Redis is unavailable in the test environment so active_calls falls back
     to _local_registry / _local_cancel_handlers automatically."""
+    monkeypatch.setenv("LIVE_CALLS_KEEP_COMPLETED_SECONDS", "0")
     active_calls._local_registry.clear()
     active_calls._cancel_handlers.clear()
     yield
