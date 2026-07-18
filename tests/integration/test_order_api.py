@@ -241,9 +241,9 @@ def test_api_get_and_list_orders(client, app):
     assert list_data["total"] == 1
     assert list_data["data"][0]["external_order_id"] == "WC-QUERY-1"
 
-    # List orders with filtering
+    # List orders with filtering — durable queue: order stays CALL_QUEUED until worker dispatches
     res_list_filt = client.get(
-        "/api/v1/orders?status=CALLING",
+        "/api/v1/orders?status=CALL_QUEUED",
         headers={"X-API-Key": api_key}
     )
     assert res_list_filt.status_code == 200

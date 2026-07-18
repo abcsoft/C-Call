@@ -142,6 +142,10 @@ def schedule_retry(
 
     no_rule = rule is None
     rule_disabled = bool(rule) and not rule["is_enabled"]
+    # orders.max_attempts is the per-order cap (snapshotted at order-creation time
+    # from the tenant's retry settings). The rule row also carries max_attempts but
+    # orders.max_attempts is the authoritative limit so that changing retry settings
+    # mid-flight doesn't retroactively shorten or extend in-progress orders.
     max_attempts = int(order.get("max_attempts") or 3)
     # Requirement: stop retrying once max attempts are exhausted.
     attempts_exhausted = next_attempt > max_attempts
@@ -232,14 +236,14 @@ def process_due_retries() -> int:
     if not due_orders:
         return 0
 
-    from app.services.order_service import queue_confirmation_call
+    from app.services.call_job_service import enqueue_order_call
 
     processed = 0
     for order in due_orders:
-        order_id = order["id"]
+        order_id  = order["id"]
         tenant_id = order["tenant_id"]
 
-        # Subscription enforcement: skip orders for tenants that cannot place calls
+        # Subscription enforcement: skip tenants that cannot place calls.
         from app.services.subscription_access_service import check_feature_access
         sub_access = check_feature_access(tenant_id, "process_retry")
         if not sub_access.allowed:
@@ -249,36 +253,62 @@ def process_due_retries() -> int:
             )
             continue
 
-        # Claim it first — a second scheduler tick (or a second worker that
-        # missed the advisory lock) must not pick up the same order twice.
-        # RETURNING id makes this check-and-set atomic: if some other
-        # caller already flipped this order's status between our SELECT
-        # (get_due_retry_orders) and this UPDATE, the WHERE clause matches
-        # zero rows and we get None back — that's the signal to skip it,
-        # not just race ahead and dispatch a second call anyway.
-        claimed = db.query_one(
-            "UPDATE orders SET order_status = 'CALL_QUEUED', updated_at = now() "
-            "WHERE id = %s AND order_status = 'RETRY_SCHEDULED' RETURNING id",
-            (order_id,),
-        )
-        if claimed is None:
-            logger.info("Order %s already claimed by another run — skipping to avoid a duplicate call.", order_id)
-            continue
+        # Derive the next attempt number from the order's current counter.
+        next_attempt_no = (order.get("attempt_count") or 0) + 1
 
+        # Atomically claim the order AND insert the durable job in one transaction.
+        # If the UPDATE matches zero rows (another scheduler already claimed it),
+        # the enqueue never happens and the transaction rolls back cleanly.
         try:
-            queue_confirmation_call(order_id, tenant_id)
-            increment_order_attempts(tenant_id, order_id)
-            processed += 1
-        except Exception:
-            logger.error("Failed to dispatch retry call for order %s", order_id, exc_info=True)
-            # Revert claim so order doesn't get stuck in CALL_QUEUED.
-            db.execute(
-                "UPDATE orders SET order_status = 'RETRY_SCHEDULED', updated_at = now()"
-                " WHERE id = %s AND order_status = 'CALL_QUEUED'",
-                (order_id,),
+            with db.transaction() as conn:
+                claimed = conn.execute(
+                    "UPDATE orders SET order_status = 'CALL_QUEUED', updated_at = now() "
+                    "WHERE id = %s AND order_status = 'RETRY_SCHEDULED' RETURNING id",
+                    (order_id,),
+                ).fetchone()
+
+                if claimed is None:
+                    logger.info(
+                        "Order %s already claimed by another run — skipping duplicate enqueue.",
+                        order_id,
+                    )
+                    # Raise to roll back the (empty) transaction — no changes were made.
+                    raise _SkipOrder()
+
+                # Insert durable job — idempotent if already queued for this attempt.
+                enqueue_order_call(
+                    conn,
+                    order_id=order_id,
+                    tenant_id=tenant_id,
+                    attempt_no=next_attempt_no,
+                )
+                # Increment attempt counter only after job is safely committed.
+                conn.execute(
+                    "UPDATE orders SET attempt_count = attempt_count + 1, updated_at = now() "
+                    "WHERE id = %s AND tenant_id = %s",
+                    (order_id, tenant_id),
+                )
+
+            logger.info(
+                "Retry job enqueued for order %s (tenant %s, attempt %s).",
+                order_id, tenant_id, next_attempt_no,
             )
+            processed += 1
+
+        except _SkipOrder:
+            pass  # already claimed elsewhere — normal, not an error
+        except Exception:
+            logger.error(
+                "Failed to enqueue retry call job for order %s", order_id, exc_info=True
+            )
+            # The transaction rolled back — order status remains RETRY_SCHEDULED,
+            # so the next scheduler tick will pick it up again.
 
     return processed
+
+
+class _SkipOrder(Exception):
+    """Internal sentinel — raised to abort a transaction without logging an error."""
 
 
 def cancel_pending_retries(order_id: int, tenant_id: int) -> None:

@@ -49,7 +49,11 @@ ACTIVE_CALLS = Gauge("ccall_active_calls", "Currently active SIP calls")
 # ── Job queue ─────────────────────────────────────────────────────────────────
 CALL_QUEUE_DEPTH = Gauge("ccall_call_queue_depth", "Call jobs queued or leased")
 CALL_QUEUE_OLDEST_SECONDS = Gauge("ccall_call_queue_oldest_seconds", "Age of oldest queued job")
+CALL_QUEUE_RETRY_WAIT = Gauge("ccall_call_queue_retry_wait", "Call jobs in retry_wait state")
+CALL_QUEUE_FAILED = Gauge("ccall_call_queue_failed_total_gauge", "Call jobs permanently failed (cumulative)")
 EXPIRED_LEASES_RECOVERED = Counter("ccall_expired_leases_recovered_total", "Leases recovered after expiry")
+CALL_JOB_DISPATCH_SUCCESS = Counter("ccall_call_job_dispatch_success_total", "Jobs dispatched successfully")
+CALL_JOB_DISPATCH_FAILURE = Counter("ccall_call_job_dispatch_failure_total", "Jobs that failed dispatch", ["error_code"])
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
 TTS_DURATION = Histogram(
@@ -114,7 +118,7 @@ def update_gauge_metrics() -> None:
 
     try:
         row = db.query_one(
-            "SELECT COUNT(*) AS n FROM call_jobs WHERE job_status IN ('queued','leased')"
+            "SELECT COUNT(*) AS n FROM call_jobs WHERE job_status IN ('queued','leased','retry_wait')"
         )
         CALL_QUEUE_DEPTH.set(row["n"] if row else 0)
     except Exception:
@@ -122,9 +126,26 @@ def update_gauge_metrics() -> None:
 
     try:
         row = db.query_one(
+            "SELECT COUNT(*) AS n FROM call_jobs WHERE job_status = 'retry_wait'"
+        )
+        CALL_QUEUE_RETRY_WAIT.set(row["n"] if row else 0)
+    except Exception:
+        pass
+
+    try:
+        row = db.query_one(
+            "SELECT COUNT(*) AS n FROM call_jobs WHERE job_status = 'failed'"
+        )
+        CALL_QUEUE_FAILED.set(row["n"] if row else 0)
+    except Exception:
+        pass
+
+    try:
+        row = db.query_one(
             """
-            SELECT EXTRACT(EPOCH FROM (now() - MIN(created_at))) AS oldest
-            FROM call_jobs WHERE job_status = 'queued'
+            SELECT EXTRACT(EPOCH FROM (now() - MIN(available_at))) AS oldest
+            FROM call_jobs WHERE job_status IN ('queued', 'retry_wait')
+              AND available_at <= now()
             """
         )
         CALL_QUEUE_OLDEST_SECONDS.set(float(row["oldest"]) if row and row["oldest"] is not None else 0.0)

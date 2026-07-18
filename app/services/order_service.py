@@ -6,14 +6,8 @@ import threading
 import time
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any
-from flask import current_app
-
-# Bounded executor for async call dispatch — max 10 in-flight dispatches.
-# Unlike bare daemon threads, this pool drains cleanly on interpreter shutdown.
-_dispatch_pool = ThreadPoolExecutor(max_workers=10, thread_name_prefix="ccall-dispatch")
 
 from app.db import db
 from app.services.webhook_service import mask_phone
@@ -467,41 +461,51 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
             if p.scheme == "https" and p.netloc:
                 metadata[url_key] = url_val
 
-    # 7. Save order to DB
-    order_id = db_create_order(
-        tenant_id=tenant_id,
-        external_order_id=external_order_id,
-        phone=normalized_phone,
-        customer_name=customer_name,
-        amount=amount,
-        webhook_url=webhook_url,
-        metadata=metadata if metadata else None,
-        custom_text=custom_text,
-        custom_audio_url=custom_audio_url
+    # 7. Atomically: create order, set CALL_QUEUED, insert durable call job.
+    # All three steps commit together — the worker cannot see the job until
+    # the order exists and is CALL_QUEUED, and a failed job insert rolls back
+    # the entire order creation so no orphan CALL_QUEUED order is left behind.
+    from app.services.call_job_service import enqueue_order_call
+    from psycopg.types.json import Jsonb as _Jsonb
+
+    with db.transaction() as conn:
+        # Create order row.
+        row = conn.execute(
+            """INSERT INTO orders
+                   (tenant_id, external_order_id, phone, customer_name, amount,
+                    webhook_url, max_attempts, metadata, custom_text, custom_audio_url)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (tenant_id, external_order_id) DO UPDATE
+               SET phone = EXCLUDED.phone, customer_name = EXCLUDED.customer_name,
+                   amount = EXCLUDED.amount, webhook_url = EXCLUDED.webhook_url,
+                   metadata = EXCLUDED.metadata, custom_text = EXCLUDED.custom_text,
+                   custom_audio_url = EXCLUDED.custom_audio_url,
+                   updated_at = now()
+               RETURNING id""",
+            (
+                tenant_id, external_order_id, normalized_phone, customer_name,
+                amount, webhook_url, 3,
+                _Jsonb(metadata if metadata else {}),
+                custom_text, custom_audio_url,
+            ),
+        ).fetchone()
+        order_id = int(row["id"])
+        logger.info("[SAAS STEP 4] New order saved to DB. ID: %s, External ID: %s", order_id, external_order_id)
+
+        # Set CALL_QUEUED inside the same transaction.
+        conn.execute(
+            "UPDATE orders SET order_status = 'CALL_QUEUED', updated_at = now() WHERE id = %s",
+            (order_id,),
+        )
+
+        # Insert durable call job — attempt 1, available immediately.
+        # enqueue_order_call is idempotent: returns existing job if already queued.
+        enqueue_order_call(conn, order_id, tenant_id, attempt_no=1)
+
+    logger.info(
+        "[SAAS STEP 8] Durable call job queued for order %s (tenant %s). Worker will dispatch.",
+        order_id, tenant_id,
     )
-    logger.info(f"[SAAS STEP 4] New order saved to DB. ID: {order_id}, External ID: {external_order_id}")
-    
-    # Mark CALL_QUEUED — attempt counter incremented only after successful dispatch
-    # so a dispatch failure doesn't consume an attempt or leave attempt_count ahead of reality.
-    update_order_status_system(order_id, "CALL_QUEUED")
-
-    # 8. Dispatch call asynchronously
-    app = current_app._get_current_object()
-    def run_async():
-        with app.app_context():
-            try:
-                queue_confirmation_call(order_id, tenant_id)
-                increment_order_attempts(tenant_id, order_id)
-            except Exception as exc:
-                logger.error("Async queue_confirmation_call failed for order %s: %s", order_id, exc)
-                # Revert to NEW so the order isn't stuck in CALL_QUEUED with no call dispatched.
-                try:
-                    update_order_status_system(order_id, "NEW")
-                except Exception as revert_exc:
-                    logger.error("Failed to revert order %s to NEW after dispatch failure: %s", order_id, revert_exc)
-
-    _dispatch_pool.submit(run_async)
-
     return get_order_by_id_system(order_id)
 
 def create_order_and_queue(tenant_id: int, data: dict) -> dict:
@@ -512,11 +516,47 @@ def get_order_by_external_id_service(tenant_id: int, external_order_id: str) -> 
     return get_order_by_external_id(tenant_id, external_order_id)
 
 def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
-    """Select phone number CLI, generate script audio, and launch the SIP IVR call."""
+    """Select phone number CLI, generate script audio, and launch the SIP IVR call.
+
+    This is the synchronous dispatch boundary called by the call worker.
+    Also called directly by manual_recall() for Quick Call (existing path retained).
+
+    Crash-recovery guard: if the order is already CALLING or a call already
+    exists for the current attempt_no, returns the existing call_id without
+    starting a duplicate call.
+    """
     order = get_order_by_id_system(order_id)
     tenant = get_tenant_by_id(tenant_id)
     if not order or not tenant:
         raise ValueError("Invalid order_id or tenant_id")
+
+    # Guard: skip terminal orders — they cannot be dispatched.
+    _TERMINAL = {"CONFIRMED", "CANCELLED", "UNREACHABLE", "FAILED"}
+    if order.get("order_status") in _TERMINAL:
+        logger.info(
+            "queue_confirmation_call: order %s already terminal (%s) — no-op",
+            order_id, order["order_status"],
+        )
+        return 0
+
+    # Guard: if an attempt already has a call_id for this attempt_no, the
+    # worker previously created the call but crashed before marking the job
+    # completed. Return the existing call_id to avoid a duplicate call.
+    current_attempt_no = (order.get("attempt_count") or 0)
+    existing_attempt = db.query_one(
+        """SELECT call_id FROM order_call_attempts
+           WHERE order_id = %s AND tenant_id = %s AND attempt_no = %s
+             AND call_id IS NOT NULL
+           ORDER BY id DESC LIMIT 1""",
+        (order_id, tenant_id, current_attempt_no),
+    )
+    if existing_attempt and existing_attempt["call_id"]:
+        logger.info(
+            "queue_confirmation_call: call already created for order %s attempt %s "
+            "(call_id=%s) — returning existing (crash recovery)",
+            order_id, current_attempt_no, existing_attempt["call_id"],
+        )
+        return int(existing_attempt["call_id"])
 
     # Select caller ID CLI
     caller_id = select_caller_id(tenant_id)
@@ -583,6 +623,13 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
         from app.services.number_service import get_sip_trunk_for_caller_id, get_sip_provider_id_for_caller_id
         sip_override = get_sip_trunk_for_caller_id(caller_id)
         sip_gateway_id = get_sip_provider_id_for_caller_id(caller_id)
+        # Resolve and snapshot billing policy at dispatch time so finalize_call_billing
+        # uses the rate in effect when the call was placed, not when it ended.
+        from app.services.rate_service import resolve_billing_policy
+        import json as _json
+        _policy = resolve_billing_policy(tenant_id)
+        _rate_snapshot_json = _json.dumps(_policy.as_dict())
+
         if os.environ.get("MOCK_SIP_PROVIDER", "").lower() in ("1", "true", "yes"):
             call_id = None
             logger.info("[MOCK_SIP] MOCK_SIP_PROVIDER=true — skipping real SIP call")
@@ -596,6 +643,12 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
                 caller_id=caller_id,
                 sip_gateway_id=sip_gateway_id,
                 sip_override=sip_override
+            )
+
+        if call_id:
+            db.execute(
+                "UPDATE calls SET rate_snapshot = %s WHERE id = %s",
+                (_rate_snapshot_json, call_id),
             )
         
         # Create attempt
@@ -803,7 +856,15 @@ def update_status_from_call(
     billable_seconds = 0
     txn_id = None
     if call_id:
-        db.execute("UPDATE calls SET status = %s WHERE id = %s", (call_result, call_id))
+        # Write talk_seconds if not already set by call_runner (handles test-injected calls
+        # that skip the IVR thread and never had talk_seconds persisted).
+        db.execute(
+            "UPDATE calls SET status = %s,"
+            " talk_seconds = CASE WHEN (talk_seconds IS NULL OR talk_seconds = 0) AND %s > 0"
+            "                     THEN %s ELSE talk_seconds END"
+            " WHERE id = %s",
+            (call_result, talk_seconds, talk_seconds, call_id),
+        )
         from app.services.billing_service import finalize_call_billing
         result = finalize_call_billing(call_id)
         charge = result["charge"]

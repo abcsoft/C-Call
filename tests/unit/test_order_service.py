@@ -107,8 +107,7 @@ def test_create_order_success_and_idempotency(app, test_setup, monkeypatch):
     
     # Mock call runner to avoid actual SIP processes (accepts all kwargs including tenant_id)
     monkeypatch.setattr(call_runner, "start_call", lambda number, flow_id, name="", **kw: 42)
-    # Prevent async dispatch pool from submitting (order_service uses ThreadPoolExecutor, not Thread.start)
-    monkeypatch.setattr("app.services.order_service._dispatch_pool.submit", lambda f: None)
+    # Durable queue: create_order enqueues to call_jobs; no dispatch pool to patch.
     
     with app.app_context():
         # Set tenant webhook setting

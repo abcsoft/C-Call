@@ -355,22 +355,7 @@ def mock_tts_and_call_runner(request, monkeypatch):
     except AttributeError:
         pass
 
-    # Patch _dispatch_pool.submit to run work synchronously.
-    # prevent_background_threads patches threading.Thread.start to run targets inline;
-    # but ThreadPoolExecutor._worker is an infinite loop — running it inline hangs forever.
-    # Replacing submit avoids starting any executor worker threads at all.
-    import concurrent.futures
-    from app.services import order_service
-
-    def _sync_submit(fn, *args, **kwargs):
-        f = concurrent.futures.Future()
-        try:
-            f.set_result(fn(*args, **kwargs))
-        except Exception as exc:
-            f.set_exception(exc)
-        return f
-
-    monkeypatch.setattr(order_service._dispatch_pool, "submit", _sync_submit)
+    # _dispatch_pool removed — dispatch is now durable via call_jobs queue.
 
 
 @pytest.fixture(autouse=True)

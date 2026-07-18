@@ -54,33 +54,40 @@ def test_create_order_queues_call_and_returns_order_id(client, app, create_tenan
                 (phone,)
             )
 
-    with patch("call_engine.call_runner.start_call", side_effect=mock_start) as mock_start_call:
-        payload = {
-            "order_id": "ORD-101",
-            "phone": "01712345678",
-            "customer_name": "Rahim",
-            "amount": 2500.0
-        }
+    payload = {
+        "order_id": "ORD-101",
+        "phone": "01712345678",
+        "customer_name": "Rahim",
+        "amount": 2500.0
+    }
 
-        response = client.post(
-            "/api/v1/orders",
-            headers={"X-API-Key": api_key},
-            json=payload
+    response = client.post(
+        "/api/v1/orders",
+        headers={"X-API-Key": api_key},
+        json=payload
+    )
+    assert response.status_code == 200
+    data = response.json
+    assert data["success"] is True
+    assert data["order_id"] == "ORD-101"
+    # Durable queue: order stays CALL_QUEUED; worker dispatches asynchronously
+    assert data["status"] == "CALL_QUEUED"
+
+    with app.app_context():
+        from app.db import db as _db
+        order_row = _db.query_one(
+            "SELECT id, order_status FROM orders WHERE external_order_id='ORD-101' AND tenant_id=%s",
+            (tenant["id"],),
         )
-        assert response.status_code == 200
-        data = response.json
-        assert data["success"] is True
-        assert data["order_id"] == "ORD-101"
-        assert data["status"] in ("CALL_QUEUED", "CALLING")
-        
-        # Wait/assert background thread triggered queue_confirmation_call
-        import time
-        for _ in range(20):
-            if mock_start_call.call_count > 0:
-                break
-            time.sleep(0.05)
-            
-        assert mock_start_call.call_count == 1
+        assert order_row is not None
+        job_row = _db.query_one(
+            "SELECT id, job_status FROM call_jobs WHERE order_id=%s AND attempt_no=1",
+            (order_row["id"],),
+        )
+        assert job_row is not None, "call_jobs row must exist after create_order"
+        assert job_row["job_status"] == "queued", (
+            f"Job must be queued, got {job_row['job_status']}"
+        )
 
 def test_duplicate_order_id_returns_existing_not_error(client, app, create_tenant):
     """Test that submitting a duplicate external order ID returns the existing order."""
