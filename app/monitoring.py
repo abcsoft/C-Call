@@ -54,6 +54,7 @@ CALL_QUEUE_FAILED = Gauge("ccall_call_queue_failed_total_gauge", "Call jobs perm
 EXPIRED_LEASES_RECOVERED = Counter("ccall_expired_leases_recovered_total", "Leases recovered after expiry")
 CALL_JOB_DISPATCH_SUCCESS = Counter("ccall_call_job_dispatch_success_total", "Jobs dispatched successfully")
 CALL_JOB_DISPATCH_FAILURE = Counter("ccall_call_job_dispatch_failure_total", "Jobs that failed dispatch", ["error_code"])
+CALL_WORKER_LAST_POLL = Gauge("ccall_call_worker_last_poll_timestamp_seconds", "Unix timestamp of last successful worker poll tick")
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
 TTS_DURATION = Histogram(

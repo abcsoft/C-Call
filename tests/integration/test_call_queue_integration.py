@@ -450,24 +450,21 @@ def test_terminal_order_job_cancelled(flask_app, test_tenant, raw_conn):
     with flask_app.app_context():
         from app.commands.run_call_worker import _dispatch_job
 
-        dispatched_calls: list = []
-        with mock.patch(
-            "app.services.order_service.queue_confirmation_call",
-            side_effect=dispatched_calls.append,
-        ):
-            _dispatch_job(flask_app, {
-                "id": job_id, "order_id": oid, "tenant_id": test_tenant,
-                "attempt_no": 1, "attempts": 1, "max_attempts": 5,
-                "caller_id": None, "audio_path": None, "priority": 0,
-                "created_at": datetime.datetime.now(_UTC),
-                "order_call_attempt_id": None, "call_id": None,
-            })
+        # No mock needed: queue_confirmation_call raises DispatchTerminalOrderError
+        # for CONFIRMED orders, which dispatch_order_call translates to
+        # error_code="terminal_order" → _dispatch_job calls mark_cancelled.
+        _dispatch_job(flask_app, {
+            "id": job_id, "order_id": oid, "tenant_id": test_tenant,
+            "attempt_no": 1, "attempts": 1, "max_attempts": 5,
+            "caller_id": None, "audio_path": None, "priority": 0,
+            "created_at": datetime.datetime.now(_UTC),
+            "order_call_attempt_id": None, "call_id": None,
+        })
 
-    assert len(dispatched_calls) == 0, "Terminal order must not dispatch a call"
     job_row = raw_conn.execute(
         "SELECT job_status FROM call_jobs WHERE id=%s", (job_id,)
     ).fetchone()
-    assert job_row[0] == "cancelled"
+    assert job_row[0] == "cancelled", f"Expected cancelled, got {job_row[0]}"
 
     raw_conn.execute("DELETE FROM call_jobs WHERE order_id=%s", (oid,))
     raw_conn.execute("DELETE FROM orders WHERE id=%s", (oid,))
@@ -533,9 +530,10 @@ def test_permanent_failure_marks_failed(flask_app, test_tenant, raw_conn):
     with flask_app.app_context():
         from app.commands.run_call_worker import _dispatch_job
 
+        from app.exceptions import DispatchNoCallerIdError
         with mock.patch(
             "app.services.order_service.queue_confirmation_call",
-            side_effect=ValueError("Invalid order_id or tenant_id"),
+            side_effect=DispatchNoCallerIdError("no caller ID — permanent"),
         ):
             _dispatch_job(flask_app, {
                 "id": job_id, "order_id": oid, "tenant_id": test_tenant,
@@ -667,25 +665,20 @@ def test_crash_after_call_creation_no_duplicate(flask_app, test_tenant, raw_conn
         (oid, test_tenant),
     ).fetchone()[0]
 
-    dispatched_call_ids: list = []
     with flask_app.app_context():
         from app.commands.run_call_worker import _dispatch_job
 
-        with mock.patch(
-            "app.services.order_service.queue_confirmation_call",
-            side_effect=lambda oid, tid: dispatched_call_ids.append((oid, tid)) or 99999,
-        ):
-            _dispatch_job(flask_app, {
-                "id": job_id, "order_id": oid, "tenant_id": test_tenant,
-                "attempt_no": 1, "attempts": 2, "max_attempts": 5,
-                "caller_id": None, "audio_path": None, "priority": 0,
-                "created_at": datetime.datetime.now(_UTC),
-                "order_call_attempt_id": None, "call_id": None,
-            })
+        # No mock: queue_confirmation_call raises DispatchDuplicateCallError
+        # (crash-after-call guard) because attempt_no=1 already has a call_id.
+        # dispatch_order_call catches it and returns accepted=True + existing call_id.
+        _dispatch_job(flask_app, {
+            "id": job_id, "order_id": oid, "tenant_id": test_tenant,
+            "attempt_no": 1, "attempts": 2, "max_attempts": 5,
+            "caller_id": None, "audio_path": None, "priority": 0,
+            "created_at": datetime.datetime.now(_UTC),
+            "order_call_attempt_id": None, "call_id": None,
+        })
 
-    assert len(dispatched_call_ids) == 0, (
-        "Worker must NOT create a new call when call already exists for this attempt"
-    )
     job_row = raw_conn.execute(
         "SELECT job_status FROM call_jobs WHERE id=%s", (job_id,)
     ).fetchone()
@@ -717,10 +710,11 @@ def test_job_completed_only_after_call_id(flask_app, test_tenant, raw_conn):
     with flask_app.app_context():
         from app.commands.run_call_worker import _dispatch_job
 
-        # Dispatch returns 0 (no call created)
+        # Simulate SIP startup rejection (no call_id issued) — permanent dispatch failure
+        from app.exceptions import DispatchNoCallerIdError
         with mock.patch(
             "app.services.order_service.queue_confirmation_call",
-            return_value=0,
+            side_effect=DispatchNoCallerIdError("no caller id — test"),
         ):
             _dispatch_job(flask_app, {
                 "id": job_id, "order_id": oid, "tenant_id": test_tenant,

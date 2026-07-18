@@ -150,18 +150,18 @@ def test_queue_confirmation_call_failures(app, test_setup, monkeypatch):
         )
         db.execute("UPDATE orders SET attempt_count = 1 WHERE id = %s", (order_id,))
         
-        # Test invalid IDs
-        with pytest.raises(ValueError):
+        from app.exceptions import DispatchOrderNotFoundError, DispatchNoCallerIdError
+
+        # Test invalid IDs — typed exceptions replace bare ValueError
+        with pytest.raises(DispatchOrderNotFoundError):
             queue_confirmation_call(999999, tenant_id)
-        with pytest.raises(ValueError):
+        with pytest.raises(DispatchOrderNotFoundError):
             queue_confirmation_call(order_id, 999999)
-            
+
         # Test missing caller ID CLI (delete all CLIs)
         db.execute("DELETE FROM phone_numbers")
-        call_id = queue_confirmation_call(order_id, tenant_id)
-        assert call_id == 0
-        order_db = db.query_one("SELECT order_status FROM orders WHERE id = %s", (order_id,))
-        assert order_db["order_status"] == "FAILED"
+        with pytest.raises(DispatchNoCallerIdError):
+            queue_confirmation_call(order_id, tenant_id)
 
 def test_queue_confirmation_call_exception(app, test_setup, monkeypatch):
     """Test exception recovery when call_runner throws an error."""
@@ -183,10 +183,9 @@ def test_queue_confirmation_call_exception(app, test_setup, monkeypatch):
             (tenant_id,)
         )
         
-        call_id = queue_confirmation_call(order_id, tenant_id)
-        assert call_id == 0
-        order_db = db.query_one("SELECT order_status FROM orders WHERE id = %s", (order_id,))
-        assert order_db["order_status"] == "FAILED"
+        from app.exceptions import DispatchStartupRejectedError, DispatchSipUnavailableError
+        with pytest.raises((DispatchStartupRejectedError, DispatchSipUnavailableError)):
+            queue_confirmation_call(order_id, tenant_id)
 
 def test_update_status_from_call_outcomes(app, test_setup, monkeypatch):
     """Test all outcome mappings, billing calculations, and retries in update_status_from_call."""
@@ -379,13 +378,14 @@ def test_additional_service_methods(app, test_setup, monkeypatch):
         assert found_order is not None
         assert found_order["id"] == res_wrap["id"]
         
-        # Test queue_confirmation_call when flow already exists
-        # 1st call creates the flow
+        from app.exceptions import DispatchDuplicateCallError
+
+        # 1st call dispatches successfully
         call_id_1 = queue_confirmation_call(res_wrap["id"], tenant_id)
         assert call_id_1 == call_id
-        # 2nd call uses the existing flow
-        call_id_2 = queue_confirmation_call(res_wrap["id"], tenant_id)
-        assert call_id_2 == call_id
+        # 2nd call hits crash-recovery guard — attempt already has a call
+        with pytest.raises(DispatchDuplicateCallError):
+            queue_confirmation_call(res_wrap["id"], tenant_id)
         
         # Test update_status_from_call with missing order
         from app.services.order_service import update_status_from_call

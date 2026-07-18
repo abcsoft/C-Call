@@ -39,7 +39,7 @@ DEFAULT_MAX_DISPATCH_ATTEMPTS = 5
 class DispatchResult:
     accepted: bool                # True when call startup was accepted
     call_id: Optional[int]        # calls.id — set only when accepted=True
-    attempt_id: Optional[int]     # order_call_attempts.id — set only when accepted=True
+    order_call_attempt_id: Optional[int]  # order_call_attempts.id — set only when accepted=True
     retryable: bool               # True when failure is temporary
     error_code: str               # machine-readable slug
     safe_message: str             # log-safe; no PII, no raw exception text
@@ -295,3 +295,109 @@ def get_stale_lease_count() -> int:
         return int(row["n"]) if row else 0
     except Exception:
         return 0
+
+
+# ── Structured dispatch ───────────────────────────────────────────────────────
+
+def dispatch_order_call(order_id: int, tenant_id: int, attempt_no: int) -> "DispatchResult":
+    """Call queue_confirmation_call and translate typed dispatch exceptions to DispatchResult.
+
+    This is the only path the worker uses to dispatch calls.
+    Never parses exception message strings to determine retry policy.
+
+    Dispatch success boundary:
+      1. calls row committed by start_call()
+      2. order_call_attempts row created and linked
+      3. SIP executor accepted the thread (start_call returned non-zero call_id)
+      4. call_id belongs to the correct tenant (verified by create_call_attempt tenant_id)
+
+    Any exception that is NOT a typed DispatchXxxError is treated as
+    DispatchInternalError — retryable up to max_attempts.
+    """
+    from app.exceptions import (
+        DispatchOrderNotFoundError, DispatchTerminalOrderError,
+        DispatchDuplicateCallError, DispatchNoCallerIdError,
+        DispatchInvalidFlowError, DispatchSipUnavailableError,
+        DispatchProviderTimeoutError, DispatchDatabaseRetryableError,
+        DispatchStartupRejectedError, DispatchInternalError,
+        DispatchTenantMismatchError,
+    )
+    from app.services.order_service import queue_confirmation_call
+    from app.services.order_service import get_order_by_id_system
+
+    # Pre-dispatch tenant ownership check.
+    order = get_order_by_id_system(order_id)
+    if not order or int(order.get("tenant_id", 0)) != tenant_id:
+        return DispatchResult(
+            accepted=False, call_id=None, order_call_attempt_id=None,
+            retryable=False, error_code="tenant_mismatch",
+            safe_message="Order not found or tenant_id mismatch",
+        )
+
+    try:
+        call_id = queue_confirmation_call(order_id, tenant_id)
+    except DispatchDuplicateCallError as exc:
+        # Crash-recovery: existing call — parse the call_id from the exception message.
+        # This is the only place we inspect exception state (it's our own typed exc).
+        existing_call_id = None
+        try:
+            for part in str(exc).split():
+                if part.startswith("existing_call_id="):
+                    existing_call_id = int(part.split("=")[1])
+        except Exception:
+            pass
+        return DispatchResult(
+            accepted=True,  # A call WAS created (on a prior attempt) — job should complete
+            call_id=existing_call_id,
+            order_call_attempt_id=None,
+            retryable=False,
+            error_code=DispatchDuplicateCallError.error_code,
+            safe_message="Existing call found for this attempt — crash recovery",
+        )
+    except (DispatchOrderNotFoundError, DispatchTenantMismatchError,
+            DispatchTerminalOrderError, DispatchNoCallerIdError,
+            DispatchInvalidFlowError) as exc:
+        return DispatchResult(
+            accepted=False, call_id=None, order_call_attempt_id=None,
+            retryable=exc.__class__.retryable,
+            error_code=exc.__class__.error_code,
+            safe_message=exc.__class__.error_code.replace("_", " ").capitalize(),
+        )
+    except (DispatchSipUnavailableError, DispatchProviderTimeoutError,
+            DispatchDatabaseRetryableError, DispatchStartupRejectedError) as exc:
+        return DispatchResult(
+            accepted=False, call_id=None, order_call_attempt_id=None,
+            retryable=exc.__class__.retryable,
+            error_code=exc.__class__.error_code,
+            safe_message=exc.__class__.error_code.replace("_", " ").capitalize(),
+        )
+    except Exception as exc:
+        # Unexpected exception — log type only (no message, no PII).
+        logger.warning(
+            "dispatch_order_call: unexpected exception for order %s (type=%s) — treating as internal_dispatch_error",
+            order_id, type(exc).__name__,
+        )
+        return DispatchResult(
+            accepted=False, call_id=None, order_call_attempt_id=None,
+            retryable=True,
+            error_code=DispatchInternalError.error_code,
+            safe_message="Unexpected internal error",
+        )
+
+    # Locate the attempt row that queue_confirmation_call created.
+    attempt_row = db.query_one(
+        """SELECT id FROM order_call_attempts
+           WHERE order_id = %s AND tenant_id = %s AND call_id = %s
+           ORDER BY id DESC LIMIT 1""",
+        (order_id, tenant_id, call_id),
+    )
+    attempt_id = int(attempt_row["id"]) if attempt_row else None
+
+    return DispatchResult(
+        accepted=True,
+        call_id=call_id,
+        order_call_attempt_id=attempt_id,
+        retryable=False,
+        error_code="",
+        safe_message="",
+    )

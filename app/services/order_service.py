@@ -518,30 +518,35 @@ def get_order_by_external_id_service(tenant_id: int, external_order_id: str) -> 
 def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
     """Select phone number CLI, generate script audio, and launch the SIP IVR call.
 
-    This is the synchronous dispatch boundary called by the call worker.
-    Also called directly by manual_recall() for Quick Call (existing path retained).
+    Returns call_id (int > 0) on success.
 
-    Crash-recovery guard: if the order is already CALLING or a call already
-    exists for the current attempt_no, returns the existing call_id without
-    starting a duplicate call.
+    Raises typed DispatchXxxError exceptions (from app.exceptions) — never
+    returns 0 or raises bare ValueError for expected failure conditions.
+
+    Called by the call worker (primary path) and by manual_recall().
     """
+    from app.exceptions import (
+        DispatchOrderNotFoundError, DispatchTerminalOrderError,
+        DispatchDuplicateCallError, DispatchNoCallerIdError,
+        DispatchSipUnavailableError, DispatchStartupRejectedError,
+    )
     order = get_order_by_id_system(order_id)
     tenant = get_tenant_by_id(tenant_id)
     if not order or not tenant:
-        raise ValueError("Invalid order_id or tenant_id")
+        raise DispatchOrderNotFoundError(f"order_id={order_id} tenant_id={tenant_id}")
 
-    # Guard: skip terminal orders — they cannot be dispatched.
+    # Guard: skip terminal orders.
     _TERMINAL = {"CONFIRMED", "CANCELLED", "UNREACHABLE", "FAILED"}
     if order.get("order_status") in _TERMINAL:
         logger.info(
             "queue_confirmation_call: order %s already terminal (%s) — no-op",
             order_id, order["order_status"],
         )
-        return 0
+        raise DispatchTerminalOrderError(
+            f"order_id={order_id} status={order['order_status']}"
+        )
 
-    # Guard: if an attempt already has a call_id for this attempt_no, the
-    # worker previously created the call but crashed before marking the job
-    # completed. Return the existing call_id to avoid a duplicate call.
+    # Guard: crash-after-call duplicate protection.
     current_attempt_no = (order.get("attempt_count") or 0)
     existing_attempt = db.query_one(
         """SELECT call_id FROM order_call_attempts
@@ -551,12 +556,15 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
         (order_id, tenant_id, current_attempt_no),
     )
     if existing_attempt and existing_attempt["call_id"]:
+        existing_call_id = int(existing_attempt["call_id"])
         logger.info(
-            "queue_confirmation_call: call already created for order %s attempt %s "
-            "(call_id=%s) — returning existing (crash recovery)",
-            order_id, current_attempt_no, existing_attempt["call_id"],
+            "queue_confirmation_call: call already exists for order %s attempt %s "
+            "call_id=%s — crash-recovery path",
+            order_id, current_attempt_no, existing_call_id,
         )
-        return int(existing_attempt["call_id"])
+        raise DispatchDuplicateCallError(
+            f"order_id={order_id} attempt={current_attempt_no} existing_call_id={existing_call_id}"
+        )
 
     # Select caller ID CLI
     caller_id = select_caller_id(tenant_id)
@@ -582,13 +590,16 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
                 metadata = json.loads(metadata)
             except Exception:
                 metadata = {}
-        metadata["failure_reason"] = "No active caller ID assigned to this account. Go to Settings → contact admin."
+        metadata["failure_reason"] = "No active caller ID assigned. Contact admin."
         db.execute(
             "UPDATE orders SET order_status = 'FAILED', metadata = %s, updated_at = now() WHERE id = %s",
             (Jsonb(metadata), order_id)
         )
-        logger.warning(f"Failed to queue call for order {order_id} (tenant {tenant_id}): no active phone CLI available.")
-        return 0
+        logger.warning(
+            "queue_confirmation_call: order %s tenant %s — no active caller ID",
+            order_id, tenant_id,
+        )
+        raise DispatchNoCallerIdError(f"order_id={order_id} tenant_id={tenant_id}")
 
     set_order_caller_id(tenant_id, order_id, caller_id)
 
@@ -619,56 +630,65 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
         flow_id = _get_or_create_confirmation_flow(tenant_id, audio_filename)
 
     # Launch call
-    try:
-        from app.services.number_service import get_sip_trunk_for_caller_id, get_sip_provider_id_for_caller_id
-        sip_override = get_sip_trunk_for_caller_id(caller_id)
-        sip_gateway_id = get_sip_provider_id_for_caller_id(caller_id)
-        # Resolve and snapshot billing policy at dispatch time so finalize_call_billing
-        # uses the rate in effect when the call was placed, not when it ended.
-        from app.services.rate_service import resolve_billing_policy
-        import json as _json
-        _policy = resolve_billing_policy(tenant_id)
-        _rate_snapshot_json = _json.dumps(_policy.as_dict())
+    from app.services.number_service import get_sip_trunk_for_caller_id, get_sip_provider_id_for_caller_id
+    sip_override = get_sip_trunk_for_caller_id(caller_id)
+    sip_gateway_id = get_sip_provider_id_for_caller_id(caller_id)
 
-        if os.environ.get("MOCK_SIP_PROVIDER", "").lower() in ("1", "true", "yes"):
-            call_id = None
-            logger.info("[MOCK_SIP] MOCK_SIP_PROVIDER=true — skipping real SIP call")
-        else:
-            call_id = call_runner.start_call(
-                order["phone"],
-                flow_id,
-                name=order.get("customer_name") or "",
-                tenant_id=tenant_id,
-                order_id=order_id,
-                caller_id=caller_id,
-                sip_gateway_id=sip_gateway_id,
-                sip_override=sip_override
-            )
-
-        if call_id:
-            db.execute(
-                "UPDATE calls SET rate_snapshot = %s WHERE id = %s",
-                (_rate_snapshot_json, call_id),
-            )
-        
-        # Create attempt
+    if os.environ.get("MOCK_SIP_PROVIDER", "").lower() in ("1", "true", "yes"):
+        logger.info("[MOCK_SIP] MOCK_SIP_PROVIDER=true — skipping real SIP call for order %s", order_id)
+        # MOCK_SIP: create attempt with call_id=None and mark CALLING for test visibility.
         create_call_attempt(
             order_id=order_id,
             tenant_id=tenant_id,
             attempt_no=order["attempt_count"],
-            call_id=call_id
+            call_id=None,
         )
-        
-        # [SAAS STEP 8] Call queued
-        logger.info(f"[SAAS STEP 8] Call queued in DB attempts table. Call ID: {call_id}, Order ID: {order_id}, Attempt: {order['attempt_count']}")
-        
         update_order_status_system(order_id, "CALLING")
-        logger.info(f"Dispatched call {call_id} for order {order_id} (Attempt {order['attempt_count']})")
-        return call_id
+        raise DispatchSipUnavailableError("MOCK_SIP_PROVIDER=true — no real SIP call placed")
+
+    try:
+        call_id = call_runner.start_call(
+            order["phone"],
+            flow_id,
+            name=order.get("customer_name") or "",
+            tenant_id=tenant_id,
+            order_id=order_id,
+            caller_id=caller_id,
+            sip_gateway_id=sip_gateway_id,
+            sip_override=sip_override,
+        )
+    except RuntimeError as exc:
+        safe_msg = str(exc) if "credentials" in str(exc).lower() else "SIP startup rejected"
+        logger.warning(
+            "queue_confirmation_call: order %s — startup rejected: %s",
+            order_id, safe_msg,
+        )
+        raise DispatchStartupRejectedError(safe_msg) from exc
     except Exception as exc:
+        logger.warning(
+            "queue_confirmation_call: order %s — transient SIP error (type=%s)",
+            order_id, type(exc).__name__,
+        )
+        raise DispatchSipUnavailableError(f"SIP dispatch failed: {type(exc).__name__}") from exc
+
+    if not call_id:
         update_order_status_system(order_id, "FAILED")
-        logger.error(f"Error starting call for order {order_id}: {exc}")
-        return 0
+        raise DispatchStartupRejectedError(f"start_call returned no call_id for order {order_id}")
+
+    # Create attempt row — durably links this call to this order attempt.
+    create_call_attempt(
+        order_id=order_id,
+        tenant_id=tenant_id,
+        attempt_no=order["attempt_count"],
+        call_id=call_id,
+    )
+
+    logger.info(
+        "queue_confirmation_call: order %s attempt %s call_id=%s — dispatched",
+        order_id, order["attempt_count"], call_id,
+    )
+    update_order_status_system(order_id, "CALLING")
+    return call_id
 
 CONFIRMED_MSG_TEXT = "ধন্যবাদ, আপনার অর্ডারটি নিশ্চিত করা হয়েছে।"
 CANCELLED_MSG_TEXT = "ধন্যবাদ, আপনার অর্ডারটি বাতিল করা হয়েছে।"
@@ -856,15 +876,7 @@ def update_status_from_call(
     billable_seconds = 0
     txn_id = None
     if call_id:
-        # Write talk_seconds if not already set by call_runner (handles test-injected calls
-        # that skip the IVR thread and never had talk_seconds persisted).
-        db.execute(
-            "UPDATE calls SET status = %s,"
-            " talk_seconds = CASE WHEN (talk_seconds IS NULL OR talk_seconds = 0) AND %s > 0"
-            "                     THEN %s ELSE talk_seconds END"
-            " WHERE id = %s",
-            (call_result, talk_seconds, talk_seconds, call_id),
-        )
+        db.execute("UPDATE calls SET status = %s, talk_seconds = %s WHERE id = %s", (call_result, talk_seconds, call_id))
         from app.services.billing_service import finalize_call_billing
         result = finalize_call_billing(call_id)
         charge = result["charge"]

@@ -57,6 +57,9 @@ logger = logging.getLogger("ccall.call_worker")
 _UTC = datetime.timezone.utc
 _SHUTDOWN = False
 
+# Re-export for config validation.
+from app.services.call_job_service import DEFAULT_MAX_DISPATCH_ATTEMPTS, release_expired_leases
+
 
 def _handle_shutdown(signum, frame):
     global _SHUTDOWN
@@ -118,141 +121,65 @@ _TERMINAL_ORDER_STATUSES = frozenset({
     "CONFIRMED", "CANCELLED", "UNREACHABLE", "FAILED",
 })
 
-_RETRYABLE_ERROR_CODES = frozenset({
-    "sip_unavailable", "provider_error", "db_serialization", "no_caller_id_transient",
-})
-
-
-def _classify_exception(exc: Exception) -> tuple[bool, str, str]:
-    """Return (retryable, error_code, safe_message) from an exception."""
-    msg = str(exc).lower()
-    # Explicit permanent signals from queue_confirmation_call
-    if "invalid order_id or tenant_id" in msg:
-        return False, "invalid_reference", "Order or tenant not found"
-    if "no active caller id" in msg or "no active phone" in msg:
-        return False, "no_caller_id", "No active caller ID assigned to tenant"
-    # Transient SIP / network signals
-    if any(k in msg for k in ("connection refused", "timeout", "network", "temporarily")):
-        return True, "sip_unavailable", "Transient SIP/network error"
-    # Default: retryable for first N attempts, then permanent
-    return True, "dispatch_error", "Dispatch error (see worker logs)"
-
 
 def _dispatch_job(app, job: dict) -> None:
     """Execute one leased job inside app context.
 
-    1. Reload order; verify eligibility and tenant ownership.
-    2. Check crash-after-call guard (existing attempt with call_id).
-    3. Call queue_confirmation_call() to start SIP call.
-    4. Mark job completed or retry_wait/failed based on result.
+    Uses dispatch_order_call() which returns a structured DispatchResult.
+    No exception message string parsing for classification.
+
+    Dispatch success boundary:
+      1. calls row committed by start_call()
+      2. order_call_attempts row created with call_id linked
+      3. SIP executor accepted the thread (start_call returned non-zero call_id)
     """
     from app.db import db
+    from app.monitoring import CALL_JOB_DISPATCH_SUCCESS, CALL_JOB_DISPATCH_FAILURE
     from app.services.call_job_service import (
-        DispatchResult, mark_dispatched, mark_failed, mark_retry_wait, mark_cancelled,
+        dispatch_order_call, mark_dispatched, mark_failed, mark_retry_wait, mark_cancelled,
     )
-    from app.models.order import get_order_by_id_system
 
-    job_id    = job["id"]
-    order_id  = job["order_id"]
-    tenant_id = job["tenant_id"]
-    attempt_no = job["attempt_no"]
-    attempts   = job["attempts"]        # incremented in _lease_job
+    job_id       = job["id"]
+    order_id     = job["order_id"]
+    tenant_id    = job["tenant_id"]
+    attempt_no   = job["attempt_no"]
+    attempts     = job["attempts"]      # incremented in _lease_job
     max_attempts = job["max_attempts"]
 
-    # ── 1. Reload order ───────────────────────────────────────────────────────
-    order = get_order_by_id_system(order_id)
-    if not order or int(order.get("tenant_id", 0)) != tenant_id:
-        logger.warning(
-            "call_worker: job=%s order=%s tenant=%s — order not found or tenant mismatch",
-            job_id, order_id, tenant_id,
-        )
+    result = dispatch_order_call(order_id, tenant_id, attempt_no)
+
+    if result.accepted and result.call_id:
         with db.transaction() as conn:
-            mark_failed(conn, job_id, "invalid_reference", "Order not found or tenant mismatch")
+            mark_dispatched(conn, job_id, result.call_id, result.order_call_attempt_id)
+        CALL_JOB_DISPATCH_SUCCESS.inc()
+        logger.info(
+            "call_worker: job=%s order=%s attempt=%s call_id=%s — completed",
+            job_id, order_id, attempt_no, result.call_id,
+        )
         return
 
-    # ── 2. Eligibility check ──────────────────────────────────────────────────
-    order_status = order.get("order_status", "")
-    if order_status in _TERMINAL_ORDER_STATUSES:
-        logger.info(
-            "call_worker: job=%s order=%s already terminal (%s) — cancelling job",
-            job_id, order_id, order_status,
-        )
+    CALL_JOB_DISPATCH_FAILURE.labels(error_code=result.error_code).inc()
+    logger.warning(
+        "call_worker: job=%s order=%s attempt=%s code=%s retryable=%s msg=%s",
+        job_id, order_id, attempt_no, result.error_code, result.retryable, result.safe_message,
+    )
+
+    if result.error_code in ("terminal_order", "tenant_mismatch"):
         with db.transaction() as conn:
             mark_cancelled(conn, job_id)
         return
 
-    # ── 3. Crash-after-call duplicate guard ───────────────────────────────────
-    # If the previous lease created the attempt row and call, but crashed before
-    # marking the job completed, we must not start a second call.
-    existing_attempt = db.query_one(
-        """SELECT id, call_id FROM order_call_attempts
-           WHERE order_id = %s AND tenant_id = %s AND attempt_no = %s
-             AND call_id IS NOT NULL
-           ORDER BY id DESC LIMIT 1""",
-        (order_id, tenant_id, attempt_no),
-    )
-    if existing_attempt and existing_attempt["call_id"]:
-        existing_call_id = int(existing_attempt["call_id"])
-        existing_attempt_id = int(existing_attempt["id"])
-        logger.info(
-            "call_worker: job=%s order=%s attempt=%s — call already exists (call_id=%s) "
-            "crash recovery: marking completed without re-dispatch",
-            job_id, order_id, attempt_no, existing_call_id,
-        )
+    if result.retryable and attempts < max_attempts:
         with db.transaction() as conn:
-            mark_dispatched(conn, job_id, existing_call_id, existing_attempt_id)
-        return
-
-    # ── 4. Dispatch ───────────────────────────────────────────────────────────
-    try:
-        from app.services.order_service import queue_confirmation_call
-        call_id = queue_confirmation_call(order_id, tenant_id)
-    except Exception as exc:
-        retryable, code, safe_msg = _classify_exception(exc)
-        logger.error(
-            "call_worker: job=%s order=%s dispatch error code=%s retryable=%s: %s",
-            job_id, order_id, code, retryable, exc,
-        )
-        if retryable and attempts < max_attempts:
-            with db.transaction() as conn:
-                mark_retry_wait(conn, job_id, attempts, max_attempts, code, safe_msg)
-        else:
-            with db.transaction() as conn:
-                mark_failed(conn, job_id, code, safe_msg)
-                # Transition order out of CALL_QUEUED so it doesn't get stuck.
-                conn.execute(
-                    "UPDATE orders SET order_status='FAILED', updated_at=now() "
-                    "WHERE id=%s AND order_status='CALL_QUEUED'",
-                    (order_id,),
-                )
-        return
-
-    # ── 5. Evaluate dispatch result ───────────────────────────────────────────
-    if call_id and call_id > 0:
-        # Locate the attempt row that queue_confirmation_call created.
-        attempt_row = db.query_one(
-            """SELECT id FROM order_call_attempts
-               WHERE order_id = %s AND tenant_id = %s AND call_id = %s
-               ORDER BY id DESC LIMIT 1""",
-            (order_id, tenant_id, call_id),
-        )
-        attempt_id = int(attempt_row["id"]) if attempt_row else None
-        with db.transaction() as conn:
-            mark_dispatched(conn, job_id, call_id, attempt_id)
-        logger.info(
-            "call_worker: job=%s order=%s call_id=%s — dispatched and completed",
-            job_id, order_id, call_id,
-        )
+            mark_retry_wait(conn, job_id, attempts, max_attempts, result.error_code, result.safe_message)
     else:
-        # queue_confirmation_call returned 0 — order set to FAILED inside it.
-        code = "no_caller_id" if call_id == 0 else "dispatch_returned_zero"
-        safe_msg = "Dispatch returned no call_id; order marked FAILED by dispatch function"
-        logger.warning(
-            "call_worker: job=%s order=%s dispatch returned call_id=%s — marking job failed",
-            job_id, order_id, call_id,
-        )
         with db.transaction() as conn:
-            mark_failed(conn, job_id, code, safe_msg)
+            mark_failed(conn, job_id, result.error_code, result.safe_message)
+            conn.execute(
+                "UPDATE orders SET order_status='FAILED', updated_at=now() "
+                "WHERE id=%s AND order_status='CALL_QUEUED'",
+                (order_id,),
+            )
 
 
 # ── Worker loop ───────────────────────────────────────────────────────────────
@@ -276,39 +203,80 @@ def main() -> None:
     from app import create_app
     app = create_app(config_name)
 
-    worker_id    = _worker_id()
+    worker_id     = _worker_id()
     poll_interval = float(os.environ.get("CALL_WORKER_POLL_SECONDS", "2"))
     lease_seconds = int(os.environ.get("CALL_WORKER_LEASE_SECONDS", "120"))
+    batch_size    = int(os.environ.get("CALL_WORKER_BATCH_SIZE", "1"))
+
+    # Validate configuration — fail fast on nonsense values.
+    if poll_interval < 0.5:
+        raise ValueError(f"CALL_WORKER_POLL_SECONDS={poll_interval} too low (min 0.5)")
+    if lease_seconds < 30:
+        raise ValueError(f"CALL_WORKER_LEASE_SECONDS={lease_seconds} too low (min 30)")
+    if batch_size < 1 or batch_size > 50:
+        raise ValueError(f"CALL_WORKER_BATCH_SIZE={batch_size} out of range [1, 50]")
+    max_dispatch_attempts = int(os.environ.get("CALL_WORKER_MAX_DISPATCH_ATTEMPTS",
+                                               str(DEFAULT_MAX_DISPATCH_ATTEMPTS)))
+    if max_dispatch_attempts < 1:
+        raise ValueError(f"CALL_WORKER_MAX_DISPATCH_ATTEMPTS={max_dispatch_attempts} must be >= 1")
 
     logger.info(
-        "Call worker started. worker_id=%s poll=%.1fs lease=%ds",
-        worker_id, poll_interval, lease_seconds,
+        "Call worker started. worker_id=%s poll=%.1fs lease=%ds batch=%d",
+        worker_id, poll_interval, lease_seconds, batch_size,
     )
 
-    # Start call monitor (billing and order outcome processing).
-    from app.services.order_service import start_call_monitor
-    start_call_monitor(app)
+    # Call monitor: only start when explicitly enabled.
+    # With replicas > 1, multiple workers would each start an unsafe monitor loop.
+    # Set ENABLE_CALL_MONITOR=true only in the scheduler (replicas=1) or a
+    # dedicated singleton service.
+    if os.environ.get("ENABLE_CALL_MONITOR", "false").lower() == "true":
+        from app.services.order_service import start_call_monitor
+        logger.info("call_worker: starting call monitor (ENABLE_CALL_MONITOR=true)")
+        start_call_monitor(app)
+    else:
+        logger.info("call_worker: call monitor disabled (ENABLE_CALL_MONITOR!=true)")
 
     with app.app_context():
         from app.db import db
+        from app.monitoring import CALL_WORKER_LAST_POLL, EXPIRED_LEASES_RECOVERED
 
         while not _SHUTDOWN:
             try:
-                with db.transaction() as conn:
-                    job = _lease_job(conn, worker_id, lease_seconds)
-
-                if job:
-                    logger.info(
-                        "call_worker: leased job_id=%s order_id=%s tenant_id=%s attempt=%s",
-                        job["id"], job["order_id"], job["tenant_id"], job["attempt_no"],
-                    )
-                    with app.app_context():
+                dispatched_in_batch = 0
+                for _ in range(batch_size):
+                    if _SHUTDOWN:
+                        break
+                    with db.transaction() as conn:
+                        job = _lease_job(conn, worker_id, lease_seconds)
+                    if job:
+                        logger.info(
+                            "call_worker: leased job_id=%s order_id=%s tenant_id=%s attempt=%s",
+                            job["id"], job["order_id"], job["tenant_id"], job["attempt_no"],
+                        )
                         _dispatch_job(app, job)
-                else:
+                        dispatched_in_batch += 1
+                    else:
+                        break  # no more jobs; stop this batch
+
+                # Update heartbeat timestamp (last successful poll tick).
+                CALL_WORKER_LAST_POLL.set_to_current_time()
+
+                if dispatched_in_batch == 0:
+                    # Release expired leases as part of idle maintenance.
+                    try:
+                        with db.transaction() as conn:
+                            recovered = release_expired_leases(conn)
+                        if recovered > 0:
+                            EXPIRED_LEASES_RECOVERED.inc(recovered)
+                    except Exception:
+                        pass
                     time.sleep(poll_interval)
 
             except Exception as exc:
-                logger.error("call_worker: poll loop error: %s", exc, exc_info=True)
+                logger.error(
+                    "call_worker: poll loop error (type=%s) — will retry in %.1fs",
+                    type(exc).__name__, poll_interval * 2,
+                )
                 time.sleep(poll_interval * 2)
 
     logger.info("Call worker stopped cleanly.")

@@ -288,7 +288,9 @@ def test_cli_pool_assignment_scenarios(app):
         
         from app.services.order_service import queue_confirmation_call
         from app.models.order import create_order as db_create_order
-        
+        from app.exceptions import DispatchNoCallerIdError
+        import pytest
+
         order_id = db_create_order(
             tenant_id=tenant_live,
             external_order_id="TEST-101",
@@ -297,9 +299,7 @@ def test_cli_pool_assignment_scenarios(app):
             amount=Decimal("1500.0"),
             webhook_url="https://example.com/webhook"
         )
-        
-        call_id = queue_confirmation_call(order_id, tenant_live)
-        assert call_id == 0
-        order_db = db.query_one("SELECT order_status FROM orders WHERE id = %s", (order_id,))
-        assert order_db["order_status"] == "FAILED"
+
+        with pytest.raises(DispatchNoCallerIdError):
+            queue_confirmation_call(order_id, tenant_live)
 

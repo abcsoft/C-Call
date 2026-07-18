@@ -55,6 +55,25 @@ CREATE INDEX IF NOT EXISTS idx_call_jobs_available
     ON call_jobs (available_at ASC, priority DESC)
     WHERE job_status IN ('queued', 'retry_wait');
 
+-- Pre-index duplicate cleanup: cancel all but the newest active job per
+-- (order_id, attempt_no) before creating the unique partial index.
+-- Without this, CREATE UNIQUE INDEX fails if duplicates already exist.
+-- Keeps the row with the highest id (most recent insert); if a row has a
+-- call_id it is preferred (crash-recovery: call already started).
+UPDATE call_jobs
+SET    job_status  = 'cancelled',
+       updated_at  = now()
+WHERE  job_status NOT IN ('completed', 'failed', 'cancelled')
+  AND  id NOT IN (
+         SELECT DISTINCT ON (order_id, attempt_no)
+                id
+         FROM   call_jobs
+         WHERE  job_status NOT IN ('completed', 'failed', 'cancelled')
+         ORDER  BY order_id, attempt_no,
+                   (call_id IS NOT NULL) DESC,
+                   id DESC
+       );
+
 -- Idempotency: one active job per (order_id, attempt_no).
 -- Prevents duplicate enqueue from concurrent schedulers or request retries.
 CREATE UNIQUE INDEX IF NOT EXISTS uix_call_jobs_active_order_attempt

@@ -20,21 +20,25 @@ Apply mode
 - Cancels jobs for cases 2, 3, 7.
 - Resets expired leases for case 4 (returns to queued).
 - Marks case 5 jobs as failed and transitions order to FAILED.
+- Sets case 6 pending attempt result to 'no_answer' (job permanently failed).
 - No calls are initiated. No billing is applied. Audit log written for each action.
 
 Usage
 -----
     python scripts/reconcile_call_jobs.py --dry-run     (default)
     python scripts/reconcile_call_jobs.py --apply
+    python scripts/reconcile_call_jobs.py --apply --json-output /tmp/reconcile.json
 
 Never log raw phone numbers or order payloads.
 """
 from __future__ import annotations
 
 import argparse
+import datetime
+import json
 import logging
-import sys
 import os
+import sys
 from pathlib import Path
 
 # Ensure the project root is importable.
@@ -47,6 +51,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ccall.reconcile_call_jobs")
 
+_UTC = datetime.timezone.utc
+
 
 def _get_app():
     from dotenv import load_dotenv
@@ -56,12 +62,32 @@ def _get_app():
     return create_app(config_name)
 
 
-def _run(dry_run: bool) -> int:
+def _audit(report: dict, case: int, action: str, **kwargs) -> None:
+    """Append an audit entry to the report. Called only in --apply mode."""
+    entry = {
+        "ts": datetime.datetime.now(_UTC).isoformat(),
+        "case": case,
+        "action": action,
+        **kwargs,
+    }
+    report.setdefault("audit", []).append(entry)
+    logger.info("AUDIT case=%d action=%s %s", case, action, kwargs)
+
+
+def _run(dry_run: bool, json_output: str | None = None) -> int:
     """Return exit code: 0 = clean or repaired, 1 = issues found (dry-run)."""
     from app.db import db
 
     issues_found = 0
     actions_taken = 0
+    report: dict = {
+        "dry_run": dry_run,
+        "started_at": datetime.datetime.now(_UTC).isoformat(),
+        "cases": {},
+        "audit": [],
+        "issues_found": 0,
+        "actions_taken": 0,
+    }
 
     label = "[DRY-RUN]" if dry_run else "[APPLY]"
 
@@ -87,6 +113,7 @@ def _run(dry_run: bool) -> int:
         """
     )
     print(f"[1] Stuck CALL_QUEUED orders (no active job, no active call): {len(stuck)}")
+    report["cases"]["1_stuck_queued"] = [{"order_id": r["order_id"], "tenant_id": r["tenant_id"]} for r in stuck]
     for row in stuck:
         oid, tid = row["order_id"], row["tenant_id"]
         print(f"    order_id={oid}  tenant_id={tid}  attempt_count={row['attempt_count']}")
@@ -98,6 +125,7 @@ def _run(dry_run: bool) -> int:
                 with db.transaction() as conn:
                     enqueue_order_call(conn, oid, tid, attempt_no)
                 print(f"    [ACTION] Enqueued new job for order_id={oid} attempt={attempt_no}")
+                _audit(report, 1, "enqueue_job", order_id=oid, tenant_id=tid, attempt_no=attempt_no)
                 actions_taken += 1
             except Exception as exc:
                 print(f"    [ERROR]  Failed to enqueue for order_id={oid}: {exc}")
@@ -116,6 +144,7 @@ def _run(dry_run: bool) -> int:
         (_TERMINAL,),
     )
     print(f"[2] Active jobs for terminal orders: {len(active_for_terminal)}")
+    report["cases"]["2_active_for_terminal"] = [{"job_id": r["job_id"], "order_id": r["order_id"]} for r in active_for_terminal]
     for row in active_for_terminal:
         print(f"    job_id={row['job_id']}  order_id={row['order_id']}  "
               f"job_status={row['job_status']}  order_status={row['order_status']}")
@@ -129,6 +158,7 @@ def _run(dry_run: bool) -> int:
                         (row["job_id"],),
                     )
                 print(f"    [ACTION] Cancelled job_id={row['job_id']}")
+                _audit(report, 2, "cancel_job", job_id=row["job_id"], order_id=row["order_id"])
                 actions_taken += 1
             except Exception as exc:
                 print(f"    [ERROR]  Failed to cancel job_id={row['job_id']}: {exc}")
@@ -146,6 +176,7 @@ def _run(dry_run: bool) -> int:
         """
     )
     print(f"[3] Duplicate active jobs (same order+attempt): {len(duplicates)} group(s)")
+    report["cases"]["3_duplicates"] = [{"order_id": r["order_id"], "attempt_no": r["attempt_no"], "job_ids": list(r["job_ids"])} for r in duplicates]
     for row in duplicates:
         job_ids = row["job_ids"]
         keep_id = job_ids[0]
@@ -163,6 +194,7 @@ def _run(dry_run: bool) -> int:
                             (jid,),
                         )
                     print(f"    [ACTION] Cancelled duplicate job_id={jid}")
+                    _audit(report, 3, "cancel_duplicate_job", job_id=jid, kept_job_id=keep_id, order_id=row["order_id"])
                     actions_taken += 1
                 except Exception as exc:
                     print(f"    [ERROR]  Failed to cancel job_id={jid}: {exc}")
@@ -178,6 +210,7 @@ def _run(dry_run: bool) -> int:
         """
     )
     print(f"[4] Leased jobs with expired lease: {len(expired)}")
+    report["cases"]["4_expired_leases"] = [{"job_id": r["job_id"], "order_id": r["order_id"]} for r in expired]
     for row in expired:
         print(f"    job_id={row['job_id']}  order_id={row['order_id']}  "
               f"leased_by={row['leased_by']}  expired_at={row['lease_expires_at']}")
@@ -188,6 +221,7 @@ def _run(dry_run: bool) -> int:
                 with db.transaction() as conn:
                     n = release_expired_leases(conn)
                 print(f"    [ACTION] Released {n} expired lease(s)")
+                _audit(report, 4, "release_expired_leases", count=n)
                 actions_taken += n
                 break  # release_expired_leases handles all in one query
             except Exception as exc:
@@ -205,6 +239,7 @@ def _run(dry_run: bool) -> int:
         """
     )
     print(f"[5] Jobs completed but calls row missing: {len(orphan_jobs)}")
+    report["cases"]["5_orphan_jobs"] = [{"job_id": r["job_id"], "order_id": r["order_id"], "call_id": r["call_id"]} for r in orphan_jobs]
     for row in orphan_jobs:
         print(f"    job_id={row['job_id']}  order_id={row['order_id']}  call_id={row['call_id']}")
         issues_found += 1
@@ -223,6 +258,7 @@ def _run(dry_run: bool) -> int:
                         (row["order_id"],),
                     )
                 print(f"    [ACTION] Marked job_id={row['job_id']} failed; order_id={row['order_id']} FAILED")
+                _audit(report, 5, "mark_job_failed_calls_missing", job_id=row["job_id"], order_id=row["order_id"], call_id=row["call_id"])
                 actions_taken += 1
             except Exception as exc:
                 print(f"    [ERROR]  Failed for job_id={row['job_id']}: {exc}")
@@ -240,11 +276,24 @@ def _run(dry_run: bool) -> int:
         """
     )
     print(f"[6] Attempts pending despite permanently failed job: {len(stale_attempts)}")
+    report["cases"]["6_stale_attempts"] = [{"attempt_id": r["attempt_id"], "order_id": r["order_id"]} for r in stale_attempts]
     for row in stale_attempts:
         print(f"    attempt_id={row['attempt_id']}  order_id={row['order_id']}  "
               f"attempt_no={row['attempt_no']}  job_id={row['job_id']}")
         issues_found += 1
-        # No auto-repair: requires business decision on what result to write.
+        if not dry_run:
+            try:
+                with db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE order_call_attempts SET result='no_answer', ended_at=now() "
+                        "WHERE id=%s AND result IS NULL",
+                        (row["attempt_id"],),
+                    )
+                print(f"    [ACTION] Set attempt_id={row['attempt_id']} result=no_answer")
+                _audit(report, 6, "close_stale_attempt", attempt_id=row["attempt_id"], order_id=row["order_id"])
+                actions_taken += 1
+            except Exception as exc:
+                print(f"    [ERROR]  Failed for attempt_id={row['attempt_id']}: {exc}")
 
     # ── 7. Job/order tenant mismatch ─────────────────────────────────────────
     mismatched = db.query(
@@ -258,6 +307,7 @@ def _run(dry_run: bool) -> int:
         """
     )
     print(f"[7] Job/order tenant mismatch: {len(mismatched)}")
+    report["cases"]["7_tenant_mismatch"] = [{"job_id": r["job_id"], "order_id": r["order_id"]} for r in mismatched]
     for row in mismatched:
         print(f"    job_id={row['job_id']}  order_id={row['order_id']}  "
               f"job_tenant={row['job_tenant']}  order_tenant={row['order_tenant']}")
@@ -271,6 +321,7 @@ def _run(dry_run: bool) -> int:
                         (row["job_id"],),
                     )
                 print(f"    [ACTION] Cancelled mismatched job_id={row['job_id']}")
+                _audit(report, 7, "cancel_tenant_mismatch_job", job_id=row["job_id"], order_id=row["order_id"])
                 actions_taken += 1
             except Exception as exc:
                 print(f"    [ERROR]  job_id={row['job_id']}: {exc}")
@@ -279,6 +330,17 @@ def _run(dry_run: bool) -> int:
     print(f"\nTotal issues found: {issues_found}")
     if not dry_run:
         print(f"Total actions taken: {actions_taken}")
+
+    report["issues_found"] = issues_found
+    report["actions_taken"] = actions_taken
+    report["finished_at"] = datetime.datetime.now(_UTC).isoformat()
+
+    if json_output:
+        try:
+            Path(json_output).write_text(json.dumps(report, indent=2, default=str))
+            print(f"\nJSON report written to: {json_output}")
+        except Exception as exc:
+            print(f"\n[ERROR] Failed to write JSON report: {exc}", file=sys.stderr)
 
     if dry_run and issues_found > 0:
         print("\nRun with --apply to repair.")
@@ -299,12 +361,16 @@ def main():
         "--apply", action="store_true", default=False,
         help="Apply safe repairs atomically (requires explicit flag)"
     )
+    parser.add_argument(
+        "--json-output", metavar="PATH", default=None,
+        help="Write JSON report to this file path after reconciliation"
+    )
     args = parser.parse_args()
 
     dry_run = not args.apply
     app = _get_app()
     with app.app_context():
-        exit_code = _run(dry_run=dry_run)
+        exit_code = _run(dry_run=dry_run, json_output=args.json_output)
     sys.exit(exit_code)
 
 

@@ -80,3 +80,63 @@ class TTSCredentialModeError(Exception):
         if message is None:
             message = f"Credential mode '{mode}' is not allowed on your current plan."
         super().__init__(message)
+
+
+# ── Typed dispatch exceptions ─────────────────────────────────────────────────
+# Used by queue_confirmation_call to communicate failure kind without
+# embedding machine-readable codes in exception message strings.
+
+class DispatchOrderNotFoundError(Exception):
+    """Order or tenant not found for this dispatch."""
+    error_code = "order_not_found"
+    retryable = False
+
+class DispatchTenantMismatchError(Exception):
+    """Job tenant_id does not match order tenant_id."""
+    error_code = "tenant_mismatch"
+    retryable = False
+
+class DispatchTerminalOrderError(Exception):
+    """Order is already in a terminal status."""
+    error_code = "terminal_order"
+    retryable = False
+
+class DispatchDuplicateCallError(Exception):
+    """A call already exists for this attempt (crash-recovery guard fired)."""
+    error_code = "duplicate_call_existing"
+    retryable = False
+
+class DispatchNoCallerIdError(Exception):
+    """No active caller ID assigned to the tenant."""
+    error_code = "no_caller_id"
+    retryable = False
+
+class DispatchInvalidFlowError(Exception):
+    """Required IVR flow could not be resolved."""
+    error_code = "invalid_flow"
+    retryable = False
+
+class DispatchSipUnavailableError(Exception):
+    """SIP provider temporarily unavailable (transient)."""
+    error_code = "sip_temporarily_unavailable"
+    retryable = True
+
+class DispatchProviderTimeoutError(Exception):
+    """Provider timed out (transient)."""
+    error_code = "provider_timeout"
+    retryable = True
+
+class DispatchDatabaseRetryableError(Exception):
+    """DB serialization error or transient lock (transient)."""
+    error_code = "database_retryable"
+    retryable = True
+
+class DispatchStartupRejectedError(Exception):
+    """Call runner rejected startup (executor full or credentials invalid)."""
+    error_code = "startup_rejected"
+    retryable = True
+
+class DispatchInternalError(Exception):
+    """Unexpected internal error — retried up to max_attempts then permanent."""
+    error_code = "internal_dispatch_error"
+    retryable = True

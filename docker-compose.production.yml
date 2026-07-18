@@ -173,7 +173,7 @@ services:
     environment:
       ENABLE_SCHEDULER: "false"
       ENABLE_CALL_WORKER: "true"
-      ENABLE_CALL_MONITOR: "true"
+      ENABLE_CALL_MONITOR: "false"   # monitor runs in scheduler (replicas=1) only
     deploy:
       replicas: 2   # Each instance leases different jobs via SKIP LOCKED
       resources:
