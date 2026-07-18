@@ -84,20 +84,20 @@ def test_sip_config_tenant_fallback(app, test_setup_ext):
         root_db.set_setting("SIP_DOMAIN", "global.domain.com")
         root_db.set_setting("SIP_PORT", "5060")
         root_db.set_setting("SIP_USER", "globaluser")
-        root_db.set_setting("SIP_PASSWORD", "globalpass")
+        root_db.set_setting("SIP_PASSWORD", "FAKE_GLOBAL_SIP_PASS")
 
         cfg = call_runner.sip_config(tenant_id)
         assert cfg["SIP_DOMAIN"] == "global.domain.com"
         assert cfg["SIP_PORT"] == "5060"
         assert cfg["SIP_USER"] == "globaluser"
-        assert cfg["SIP_PASSWORD"] == "globalpass"
+        assert cfg["SIP_PASSWORD"] == "FAKE_GLOBAL_SIP_PASS"
         assert call_runner.sip_ready(tenant_id) is True
 
         # 2. With tenant settings, override global settings
         tenant_settings = {
             "SIP_DOMAIN": "tenant.domain.com",
             "sip_user": "tenantuser",
-            "sip_password": "tenantpass"
+            "sip_password": "FAKE_TENANT_SIP_PASS"
         }
         update_tenant(tenant_id, {"settings": tenant_settings})
 
@@ -105,7 +105,7 @@ def test_sip_config_tenant_fallback(app, test_setup_ext):
         assert cfg["SIP_DOMAIN"] == "tenant.domain.com"
         assert cfg["SIP_PORT"] == "5060" # Fallback
         assert cfg["SIP_USER"] == "tenantuser" # lowercase resolution
-        assert cfg["SIP_PASSWORD"] == "tenantpass"
+        assert cfg["SIP_PASSWORD"] == "FAKE_TENANT_SIP_PASS"
         assert call_runner.sip_ready(tenant_id) is True
 
 

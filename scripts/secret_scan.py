@@ -24,10 +24,7 @@ from pathlib import Path
 # Shared patterns — single source of truth for all hardening tools.
 from secret_patterns import (
     BINARY_EXTENSIONS,
-    DOCUMENTATION_EXTENSIONS,
-    SCANNER_SOURCE_FILES,
     Finding,
-    redact,
     scan_file,
     scan_text,
 )
@@ -62,9 +59,6 @@ def scan_staged() -> list[Finding]:
         elif line.startswith("+") and not line.startswith("+++"):
             line_no += 1
             content = line[1:]
-            # Skip scanner/verifier source files — they contain patterns as code.
-            if current_file in SCANNER_SOURCE_FILES:
-                continue
             for f in scan_text(content, f"{current_file}:{line_no}"):
                 findings.append(Finding(f"{current_file}", line_no, f.pattern_name, f.redacted))
 
@@ -79,10 +73,9 @@ def scan_archive(archive_path: Path) -> list[Finding]:
             ext = Path(name).suffix.lower()
             if ext in BINARY_EXTENSIONS:
                 continue
-            if ext in DOCUMENTATION_EXTENSIONS:
-                continue  # doc examples are not live credentials
-            if name in SCANNER_SOURCE_FILES:
-                continue  # pattern strings in scanner code
+            # Documentation files (.md, .rst, .txt) ARE scanned — they can
+            # contain real credentials (runbooks, READMEs with embedded tokens).
+            # Individual safe lines may use the allow-pattern-definition marker.
             try:
                 text = zf.read(name).decode("utf-8", errors="replace")
             except Exception:

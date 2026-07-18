@@ -374,7 +374,7 @@ tenant_viewer  → read-only orders and CDR
 
 ```bash
 # Required
-DATABASE_URL=postgresql://ccall:password@localhost:5432/ccall
+DATABASE_URL=postgresql://ccall:YOUR_DEV_DB_PASSWORD@localhost:5432/ccall
 REDIS_URL=redis://localhost:6379/0
 SECRET_KEY=<64-char random string>
 FLASK_ENV=production

@@ -34,8 +34,6 @@ from pathlib import Path, PurePosixPath
 # Shared patterns — must match secret_scan.py exactly.
 from secret_patterns import (
     BINARY_EXTENSIONS,
-    DOCUMENTATION_EXTENSIONS,
-    SCANNER_SOURCE_FILES,
     scan_text,
 )
 
@@ -132,16 +130,14 @@ def check_archive(archive_path: Path) -> int:
         if SESSION_PATTERN.search(name):
             failures.append(f"Browser/session artifact in archive: {name}")
 
-    # 10. Content scan — uses shared patterns (same as secret_scan.py)
+    # 10. Content scan — uses shared patterns (same as secret_scan.py).
+    # Documentation files (.md, .rst, .txt) ARE scanned — they can contain
+    # real credentials.  No whole-file or whole-extension skips.
     for entry in entries:
         name = entry.filename
         ext  = Path(name).suffix.lower()
         if ext in BINARY_EXTENSIONS:
             continue
-        if ext in DOCUMENTATION_EXTENSIONS:
-            continue  # docs contain examples, not live credentials
-        if name in SCANNER_SOURCE_FILES:
-            continue  # pattern strings in scanner code are not credentials
         try:
             text = zf.read(name).decode("utf-8", errors="replace")
         except Exception:

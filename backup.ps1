@@ -21,10 +21,15 @@
 #   $env:CCALL_KEEP_LAST   = "10"
 #
 # Usage:
-#   .\backup.ps1
+#   .\backup.ps1                 — full backup (DB dump + source archive)
+#   .\backup.ps1 -SourceOnly     — source archive only (no DB credentials needed)
 #
 # The script fails immediately if required credentials are missing.
 # Credentials are never passed as command-line arguments or written to filenames.
+
+param(
+    [switch]$SourceOnly   # Skip DB dump; create source archive only
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -53,19 +58,21 @@ if (-not $DB_PASS -and $env:DATABASE_URL) {
     }
 }
 
-# ── Fail closed — all required values must be present ────────────────────────
-$missing = @()
-if (-not $DB_HOST) { $missing += "CCALL_DB_HOST (or DATABASE_URL)" }
-if (-not $DB_NAME) { $missing += "CCALL_DB_NAME (or DATABASE_URL)" }
-if (-not $DB_USER) { $missing += "CCALL_DB_USER (or DATABASE_URL)" }
-if (-not $DB_PASS) { $missing += "CCALL_DB_PASSWORD (or DATABASE_URL)" }
-if ($missing.Count -gt 0) {
-    Write-Error "Backup aborted — missing required environment variable(s):`n  $($missing -join "`n  ")"
-    exit 1
-}
-if (-not (Test-Path $PGDUMP)) {
-    Write-Error "Backup aborted — pg_dump not found at: $PGDUMP`nSet CCALL_PGDUMP env var to override."
-    exit 1
+# ── Fail closed — all required values must be present (full backup only) ─────
+if (-not $SourceOnly) {
+    $missing = @()
+    if (-not $DB_HOST) { $missing += "CCALL_DB_HOST (or DATABASE_URL)" }
+    if (-not $DB_NAME) { $missing += "CCALL_DB_NAME (or DATABASE_URL)" }
+    if (-not $DB_USER) { $missing += "CCALL_DB_USER (or DATABASE_URL)" }
+    if (-not $DB_PASS) { $missing += "CCALL_DB_PASSWORD (or DATABASE_URL)" }
+    if ($missing.Count -gt 0) {
+        Write-Error "Backup aborted — missing required environment variable(s):`n  $($missing -join "`n  ")"
+        exit 1
+    }
+    if (-not (Test-Path $PGDUMP)) {
+        Write-Error "Backup aborted — pg_dump not found at: $PGDUMP`nSet CCALL_PGDUMP env var to override."
+        exit 1
+    }
 }
 
 $DB_PORT = if ($DB_PORT) { $DB_PORT } else { "5432" }
@@ -78,20 +85,22 @@ New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 Write-Host "Backup started : $stamp"
 Write-Host "Destination    : $backupDir"
 
-# ── 1. PostgreSQL dump ────────────────────────────────────────────────────────
-# Password passed via PGPASSWORD env var (never on command line / in filenames).
-$sqlFile = Join-Path $backupDir "db_ccall_$stamp.sql"
-Write-Host "`n[1/2] Dumping database '$DB_NAME'..."
+# ── 1. PostgreSQL dump (skipped when -SourceOnly) ────────────────────────────
+if (-not $SourceOnly) {
+    # Password passed via PGPASSWORD env var (never on command line / in filenames).
+    $sqlFile = Join-Path $backupDir "db_ccall_$stamp.sql"
+    Write-Host "`n[1/2] Dumping database '$DB_NAME'..."
 
-$env:PGPASSWORD = $DB_PASS
-try {
-    & $PGDUMP -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -F plain -f $sqlFile
-    if ($LASTEXITCODE -ne 0) { throw "pg_dump failed with exit code $LASTEXITCODE" }
-    $sizeMB = [math]::Round((Get-Item $sqlFile).Length / 1MB, 2)
-    Write-Host "    Saved: db_ccall_$stamp.sql ($sizeMB MB)"
-} finally {
-    # Always clear the password from the environment, even on failure.
-    Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+    $env:PGPASSWORD = $DB_PASS
+    try {
+        & $PGDUMP -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -F plain -f $sqlFile
+        if ($LASTEXITCODE -ne 0) { throw "pg_dump failed with exit code $LASTEXITCODE" }
+        $sizeMB = [math]::Round((Get-Item $sqlFile).Length / 1MB, 2)
+        Write-Host "    Saved: db_ccall_$stamp.sql ($sizeMB MB)"
+    } finally {
+        # Always clear the password from the environment, even on failure.
+        Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+    }
 }
 
 # ── 2. Source-code archive (allowlist, not blacklist) ─────────────────────────
@@ -159,7 +168,8 @@ function ShouldExclude([string]$relativePath) {
 }
 
 $zipFile = Join-Path $backupDir "code_ccall_$stamp.zip"
-Write-Host "`n[2/2] Creating source archive (allowlist)..."
+$stepLabel = if ($SourceOnly) { "[1/1]" } else { "[2/2]" }
+Write-Host "`n$stepLabel Creating source archive (allowlist)..."
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($zipFile, 'Create')
