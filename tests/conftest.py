@@ -8,8 +8,13 @@ import psycopg
 from app import create_app
 from app.db import db as app_db
 
+# TEST_DATABASE_URL must be supplied by the CI/developer environment.
+# The placeholder below is intentionally non-connectable so that a missing
+# env var causes an immediate connection error rather than silently using
+# a committed default password.
 TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL", "postgresql://ccall:password@localhost:5432/ccall_test"
+    "TEST_DATABASE_URL",
+    "postgresql://ccall:CHANGE_ME_TEST_DB_PASSWORD@localhost:5432/ccall_test",
 )
 
 
@@ -182,6 +187,9 @@ def _schema_is_current(conn) -> bool:
         return cur.fetchone()[0] >= 1
 
 
+_PLACEHOLDER = "CHANGE_ME_TEST_DB_PASSWORD"
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
     """Drop and recreate public schema, and run migrations in order.
@@ -189,6 +197,10 @@ def setup_test_database():
     Pass --force-rebuild to always rebuild.
     """
     import glob
+    if _PLACEHOLDER in TEST_DATABASE_URL:
+        # TEST_DATABASE_URL not configured — unit tests run, DB tests will fail on connect.
+        # Set TEST_DATABASE_URL in .env to run integration tests.
+        return
     with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as conn:
         if _schema_is_current(conn):
             return  # schema already up to date — skip rebuild

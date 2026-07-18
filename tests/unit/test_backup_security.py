@@ -2,7 +2,9 @@
 
 Uses only temporary dummy files — no real credentials anywhere in this file.
 All "secret-looking" values used are intentionally fake test fixtures
-with obvious placeholder names.
+with obvious placeholder names (AKIAIOSFODNN7EXAMPLE is the canonical AWS
+documentation example key, universally known as a test value, never a real
+IAM credential).
 """
 from __future__ import annotations
 
@@ -11,10 +13,13 @@ import re
 import subprocess
 import sys
 import zipfile
-from io import BytesIO
 from pathlib import Path
 
 import pytest
+
+# Import shared patterns directly for unit-level tests
+sys.path.insert(0, str(Path(__file__).parents[2] / "scripts"))
+from secret_patterns import scan_text, scan_file, PATTERNS  # noqa: E402
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
@@ -326,3 +331,209 @@ def test_clean_archive_returns_zero(tmp_path):
         f"Clean archive should pass but got:\n{result.stdout}\n{result.stderr}"
     )
     assert "PASS" in result.stdout
+
+
+# ── Phase 2: Test credential placeholder tests ────────────────────────────────
+
+def test_no_usable_password_in_test_config():
+    """app/config.py must not contain :password@ in any fallback URL."""
+    config_path = PROJECT_ROOT / "app" / "config.py"
+    text = config_path.read_text(encoding="utf-8")
+    # The old usable default was postgresql://ccall:password@
+    # It must not appear in any os.environ.get() fallback.
+    assert ":password@" not in text, (
+        "app/config.py still contains ':password@' — replace with CHANGE_ME placeholder"
+    )
+
+
+def test_no_usable_password_in_conftest():
+    """tests/conftest.py must not contain :password@ as test DB fallback."""
+    conftest = PROJECT_ROOT / "tests" / "conftest.py"
+    text = conftest.read_text(encoding="utf-8")
+    assert ":password@" not in text, (
+        "tests/conftest.py still contains ':password@' — replace with CHANGE_ME placeholder"
+    )
+
+
+def test_change_me_placeholder_not_connectable_in_scanner():
+    """CHANGE_ME_TEST_DB_PASSWORD must pass scanner safe_if (treated as placeholder)."""
+    line = 'DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://ccall:CHANGE_ME_TEST_DB_PASSWORD@localhost:5432/ccall_test")'
+    findings = scan_text(line, "test-input")
+    pg_findings = [f for f in findings if f.pattern_name == "pg-url-with-password"]
+    assert not pg_findings, (
+        f"CHANGE_ME_TEST_DB_PASSWORD should be treated as a non-connectable placeholder:\n{pg_findings}"
+    )
+
+
+def test_env_takes_precedence_over_placeholder(monkeypatch):
+    """When TEST_DATABASE_URL is set, config must use it — not the placeholder."""
+    real_url = "postgresql://ccall:REAL_TEST_PASS@localhost:5432/ccall_test"
+    monkeypatch.setenv("TEST_DATABASE_URL", real_url)
+    # Re-import to pick up the env var change
+    import importlib, app.config as cfg_mod
+    importlib.reload(cfg_mod)
+    assert cfg_mod.TestingConfig.DATABASE_URL == real_url
+
+
+def test_placeholder_url_in_config_not_usable_password():
+    """Verify CHANGE_ME placeholder is present and :password@ is absent from config."""
+    config_path = PROJECT_ROOT / "app" / "config.py"
+    text = config_path.read_text(encoding="utf-8")
+    assert "CHANGE_ME_TEST_DB_PASSWORD" in text
+    assert ":password@" not in text
+
+
+# ── Phase 7: Unsafe archive negative tests ────────────────────────────────────
+
+def _minimal_base(extras: dict[str, str]) -> dict[str, str]:
+    """Minimal valid archive contents + extras."""
+    return {
+        "app/__init__.py": "",
+        "tests/__init__.py": "",
+        "run.py": "",
+        "requirements.txt": "",
+        "migrations/001_initial.sql": "SELECT 1;\n",
+        **extras,
+    }
+
+
+def test_unsafe_github_token_rejected(tmp_path):
+    """Archive with GitHub token must be rejected by both verifier and scanner."""
+    fake_token = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/secrets.py": f"GITHUB_TOKEN = '{fake_token}'\n",
+    }))
+    v = run_verifier(archive)
+    s = run_scanner("--archive", str(archive))
+    assert v.returncode == 1, "Verifier must reject GitHub token"
+    assert s.returncode == 1, "Scanner must reject GitHub token"
+    assert fake_token not in v.stdout + v.stderr
+    assert fake_token not in s.stdout + s.stderr
+
+
+def test_unsafe_aws_key_rejected(tmp_path):
+    """Archive with a non-example AWS-style key must be rejected."""
+    # AKIAZZZZZZZZZZZZZZZZ is not the docs example — should be caught
+    fake_key = "AKIAZZZZZZZZZZZZZZZZ"
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/aws.py": f"AWS_ACCESS_KEY_ID = '{fake_key}'\n",
+    }))
+    v = run_verifier(archive)
+    s = run_scanner("--archive", str(archive))
+    assert v.returncode == 1
+    assert s.returncode == 1
+    assert fake_key not in v.stdout + v.stderr
+    assert fake_key not in s.stdout + s.stderr
+
+
+def test_unsafe_pg_password_rejected(tmp_path):
+    """Archive with a non-placeholder PostgreSQL URL must be rejected."""
+    fake_url = "postgresql://ccall:supersecretdbpassword123@db.example.com:5432/ccall_prod"
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/config_bad.py": f'DATABASE_URL = "{fake_url}"\n',
+    }))
+    v = run_verifier(archive)
+    s = run_scanner("--archive", str(archive))
+    assert v.returncode == 1
+    assert s.returncode == 1
+    assert "supersecretdbpassword123" not in v.stdout + v.stderr
+    assert "supersecretdbpassword123" not in s.stdout + s.stderr
+
+
+def test_unsafe_redis_password_rejected(tmp_path):
+    """Archive with a non-placeholder Redis URL must be rejected."""
+    fake_url = "redis://:prodredissecret456@redis.example.com:6379/0"
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/cache.py": f'REDIS_URL = "{fake_url}"\n',
+    }))
+    s = run_scanner("--archive", str(archive))
+    assert s.returncode == 1
+    assert "prodredissecret456" not in s.stdout + s.stderr
+
+
+def test_unsafe_sip_password_rejected(tmp_path):
+    """Archive with a hardcoded SIP password must be rejected."""
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/sip_config.py": 'SIP_PASSWORD = "myrealpassword9999"\n',
+    }))
+    s = run_scanner("--archive", str(archive))
+    assert s.returncode == 1
+    assert "myrealpassword9999" not in s.stdout + s.stderr
+
+
+def test_unsafe_private_key_rejected(tmp_path):
+    """Archive with a private key header must be rejected by verifier."""
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/key.py": "cert = '-----BEGIN RSA PRIVATE KEY-----'\n",
+    }))
+    v = run_verifier(archive)
+    assert v.returncode == 1
+
+
+def test_env_file_in_archive_rejected(tmp_path):
+    archive = make_archive(tmp_path, _minimal_base({".env": "SECRET=real\n"}))
+    v = run_verifier(archive)
+    assert v.returncode == 1
+    assert "Environment file" in v.stdout or ".env" in v.stdout
+
+
+def test_log_file_in_archive_rejected(tmp_path):
+    archive = make_archive(tmp_path, _minimal_base({"ccall.log": "INFO something\n"}))
+    v = run_verifier(archive)
+    assert v.returncode == 1
+
+
+def test_db_dump_in_archive_rejected(tmp_path):
+    archive = make_archive(tmp_path, _minimal_base({"db.dump": "PGDMP\n"}))
+    v = run_verifier(archive)
+    assert v.returncode == 1
+
+
+def test_audio_in_archive_rejected(tmp_path):
+    archive = make_archive(tmp_path, _minimal_base({"order.mp3": "\xff\xfb"}))
+    v = run_verifier(archive)
+    assert v.returncode == 1
+
+
+def test_path_traversal_in_archive_rejected(tmp_path):
+    archive_path = tmp_path / "traversal.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        info = zipfile.ZipInfo("../../../etc/passwd")
+        zf.writestr(info, "root:x:0:0\n")
+        zf.writestr("app/__init__.py", "")
+        zf.writestr("tests/__init__.py", "")
+        zf.writestr("run.py", "")
+        zf.writestr("requirements.txt", "")
+        zf.writestr("migrations/001.sql", "SELECT 1;\n")
+    v = run_verifier(archive_path)
+    assert v.returncode == 1
+    assert ".." in v.stdout or "traversal" in v.stdout.lower()
+
+
+def test_placeholder_pg_url_allowed_in_archive(tmp_path):
+    """CHANGE_ME / REPLACE_ / YOUR_DEV_ placeholders must pass both tools."""
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/config.py": (
+            'DATABASE_URL = os.environ.get("TEST_DATABASE_URL",'
+            ' "postgresql://ccall:CHANGE_ME_TEST_DB_PASSWORD@localhost:5432/ccall_test")\n'
+        ),
+        ".env.production.example": (
+            "DATABASE_URL=postgresql://ccall_app:REPLACE_DB_APP_PASSWORD@postgres:5432/ccall\n"
+        ),
+    }))
+    v = run_verifier(archive)
+    s = run_scanner("--archive", str(archive))
+    assert v.returncode == 0, f"Placeholder URLs should pass verifier:\n{v.stdout}"
+    assert s.returncode == 0, f"Placeholder URLs should pass scanner:\n{s.stdout}"
+
+
+def test_redaction_never_prints_full_value(tmp_path):
+    """Neither tool must print the full secret value in its output."""
+    fake_token = "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    archive = make_archive(tmp_path, _minimal_base({
+        "app/secret.py": f"TOKEN = '{fake_token}'\n",
+    }))
+    v = run_verifier(archive)
+    s = run_scanner("--archive", str(archive))
+    assert fake_token not in v.stdout + v.stderr, "Verifier printed full secret value"
+    assert fake_token not in s.stdout + s.stderr, "Scanner printed full secret value"

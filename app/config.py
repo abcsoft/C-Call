@@ -68,7 +68,7 @@ class DevelopmentConfig(BaseConfig):
     FLASK_ENV = "development"
     DATABASE_URL = os.environ.get(
         "DATABASE_URL",
-        "postgresql://ccall:ccall_dev_password@localhost:5432/ccall"
+        "postgresql://ccall:YOUR_DEV_DB_PASSWORD@localhost:5432/ccall",
     )
     WTF_CSRF_ENABLED = False  # convenient for local testing
 
@@ -93,7 +93,14 @@ class TestingConfig(BaseConfig):
     FLASK_ENV = "testing"
     WTF_CSRF_ENABLED = False
     RATELIMIT_ENABLED = False
-    DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "postgresql://ccall:password@localhost:5432/ccall_test")
+    # TEST_DATABASE_URL must be set in the environment before running DB tests.
+    # The fallback is a deliberately non-connectable placeholder so tests fail
+    # clearly (connection refused / auth error) rather than silently connecting
+    # with a committed default password.
+    DATABASE_URL = os.environ.get(
+        "TEST_DATABASE_URL",
+        "postgresql://ccall:CHANGE_ME_TEST_DB_PASSWORD@localhost:5432/ccall_test",
+    )
     SCHEDULER_API_ENABLED = False
     SERVER_NAME = os.environ.get("SERVER_NAME", "localhost") or None
     # Static test key — never read env here; BaseConfig.SECRET_KEY may still be the
@@ -118,7 +125,10 @@ class BrowserTestConfig(BaseConfig):
     # Default to ccall_test which already has migrations; override with BROWSER_TEST_DATABASE_URL
     DATABASE_URL = os.environ.get(
         "BROWSER_TEST_DATABASE_URL",
-        os.environ.get("TEST_DATABASE_URL", "postgresql://ccall:password@localhost:5432/ccall_test"),
+        os.environ.get(
+            "TEST_DATABASE_URL",
+            "postgresql://ccall:CHANGE_ME_TEST_DB_PASSWORD@localhost:5432/ccall_test",
+        ),
     )
     SCHEDULER_API_ENABLED = False
 
