@@ -1,0 +1,62 @@
+# ── Secrets and environment files ─────────────────────────────────────────────
+.env
+.env.*
+
+# ── Git history (not needed in image) ────────────────────────────────────────
+.git/
+.gitignore
+.github/
+
+# ── Python artifacts ──────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# ── Runtime / instance data ───────────────────────────────────────────────────
+instance/
+*.db
+*.sqlite
+*.sqlite3
+recordings/
+*.mp3
+*.wav
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Certificates / keys ───────────────────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ── Database dumps and backups ────────────────────────────────────────────────
+*.dump
+*.backup
+*.bak
+*.sql.gz
+backups/
+
+# ── Archives (except committed plugin) ───────────────────────────────────────
+*.tar
+*.tar.gz
+*.zip
+!static/ccall-ivr.zip
+
+# ── Tests / docs / dev tooling ───────────────────────────────────────────────
+tests/
+docs/
+*.md
+!README.md
+.vscode/
+Makefile

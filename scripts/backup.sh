@@ -54,20 +54,48 @@ SUM_FILE="${ENC_FILE}.sha256"
 echo "$LOG_PREFIX Starting PostgreSQL dump..."
 
 # ── pg_dump ───────────────────────────────────────────────────────────────────
-if ! pg_dump "$DATABASE_URL" \
+# Credentials passed via PGPASSWORD env var (never on the command line).
+# DATABASE_URL may contain a password in the URL; export only the password
+# component so it does not appear in the process list as a positional argument.
+#
+# Parse components from DATABASE_URL: postgresql://user:pass@host:port/dbname
+_url_stripped="${DATABASE_URL#postgresql://}"
+_userpass="${_url_stripped%%@*}"
+_hostpart="${_url_stripped#*@}"
+_pg_user="${_userpass%%:*}"
+_pg_pass="${_userpass#*:}"
+_hostport="${_hostpart%%/*}"
+_pg_host="${_hostport%%:*}"
+_pg_port="${_hostport#*:}"
+_pg_db="${_hostpart#*/}"
+# If port not specified in URL, default to 5432
+[[ "$_pg_port" == "$_pg_host" ]] && _pg_port="5432"
+
+export PGPASSWORD="$_pg_pass"
+if ! pg_dump \
+    --host="$_pg_host" \
+    --port="$_pg_port" \
+    --username="$_pg_user" \
+    --dbname="$_pg_db" \
     --format=custom \
     --compress=9 \
     --no-password \
     --file="$DUMP_FILE" 2>&1; then
+    unset PGPASSWORD
     echo "$LOG_PREFIX ERROR: pg_dump failed." >&2; exit 2
 fi
+unset PGPASSWORD _url_stripped _userpass _hostpart _pg_user _pg_pass _hostport _pg_host _pg_port _pg_db
 DUMP_SIZE=$(du -sh "$DUMP_FILE" | cut -f1)
 echo "$LOG_PREFIX Dump complete. Size: $DUMP_SIZE"
 
 # ── Encrypt ──────────────────────────────────────────────────────────────────
+# Passphrase passed via stdin (--passphrase-fd 0) so it does not appear in
+# the process list or shell history.
 echo "$LOG_PREFIX Encrypting backup..."
-if ! gpg --batch --yes \
-    --passphrase "$BACKUP_ENCRYPTION_PASSPHRASE" \
+if ! echo "$BACKUP_ENCRYPTION_PASSPHRASE" | \
+    gpg --batch --yes \
+    --passphrase-fd 0 \
+    --pinentry-mode loopback \
     --symmetric --cipher-algo AES256 \
     --output "$ENC_FILE" "$DUMP_FILE" 2>&1; then
     echo "$LOG_PREFIX ERROR: Encryption failed." >&2

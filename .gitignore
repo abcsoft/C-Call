@@ -1,8 +1,10 @@
+# ── Environment / secrets ─────────────────────────────────────────────────────
 .env
 .env.*
 !.env.example
 !.env.production.example
 
+# ── Python artifacts ──────────────────────────────────────────────────────────
 .venv/
 venv/
 env/
@@ -10,15 +12,66 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+# ── Runtime data ──────────────────────────────────────────────────────────────
 instance/
 *.db
 *.sqlite
 *.sqlite3
-*.log
 
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── TLS certificates and private keys ────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.der
+
+# ── Database dumps and backup artifacts ──────────────────────────────────────
+*.sql.gz
+*.dump
+*.backup
+*.bak
+backups/
+
+# Note: migrations/*.sql ARE source code — those are NOT ignored.
+# This rule matches only dump/bak files, not .sql extension itself.
+
+# ── Generated archives (do not commit backup output) ─────────────────────────
+# Exception: static/ccall-ivr.zip is the committed WooCommerce plugin archive
+*.tar
+*.tar.gz
+*.tar.bz2
+*.zip
+!static/ccall-ivr.zip
+
+# ── Audio / recordings / customer data ───────────────────────────────────────
+recordings/
+*.mp3
+*.wav
+*.ogg
+*.flac
+
+# ── Test / coverage artifacts ─────────────────────────────────────────────────
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
 
+# ── Browser / session state ───────────────────────────────────────────────────
+.playwright/
+playwright-report/
+test-results/
+
+# ── OS / editor noise ────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+.vscode/
+*.swp
+*~
