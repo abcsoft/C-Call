@@ -255,6 +255,33 @@ def _persist_event(call_id: int, ev: Event) -> None:
 def _run_ivr_thread(call_id: int, target_dial: str, flow: Flow, sip: dict[str, str], tenant_id: int | None = None, order_id: int | None = None) -> None:
     """Runs a single interactive IVR call in a background thread."""
     answered_at_monotonic: list[float | None] = [None]
+    # Startup ACK is signalled once, in on_event("ringing"), after the SIP INVITE
+    # has been sent — not at constructor time (which only binds sockets) and not
+    # at executor submission time.
+    _ack_done: list[bool] = [False]
+
+    def _signal_ack(accepted: bool, error_code: str = "") -> None:
+        if _ack_done[0]:
+            return
+        _ack_done[0] = True
+        signal_startup_ack(call_id, accepted=accepted, error_code=error_code)
+        if accepted:
+            try:
+                db.execute(
+                    "UPDATE calls SET startup_state = 'accepted', startup_accepted_at = now() WHERE id = %s",
+                    (call_id,),
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                db.execute(
+                    "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
+                    "startup_error_code = %s WHERE id = %s",
+                    (error_code, call_id),
+                )
+            except Exception:
+                pass
 
     def on_event(ev: Event) -> None:
         try:
@@ -271,10 +298,15 @@ def _run_ivr_thread(call_id: int, target_dial: str, flow: Flow, sip: dict[str, s
                     _live.update_active_call(call_id, status="answered", answered_at=datetime.datetime.now(datetime.timezone.utc))
                 else:
                     _live.update_active_call(call_id, status="ringing")
+                # "ringing" fires in IvrCall.run() immediately after the SIP INVITE
+                # is sent — that is the first reliable dial-start confirmation.
+                # Signal ACK here (after socket init + REGISTER + INVITE sent).
+                if ev.type == "ringing":
+                    _signal_ack(accepted=True)
             elif ev.type == "dtmf" and ev.digit:
                 # [SAAS STEP 11] DTMF callback received
                 import logging
-                logging.getLogger("ccall").info(f"[SAAS STEP 11] DTMF callback received: call_id={call_id}, digit={ev.digit}")
+                logging.getLogger("ccall").info(f"[SAAS STEP 11] DTMF callback received: call_id={call_id}, digit=[redacted]")
                 _live.update_active_call(call_id, dtmf_digit=ev.digit, status="waiting_dtmf")
 
             # Live talk_seconds ticks off whatever events IvrCall emits
@@ -291,23 +323,9 @@ def _run_ivr_thread(call_id: int, target_dial: str, flow: Flow, sip: dict[str, s
     try:
         call = IvrCall(target_dial, flow, sip, on_event, record=record, tenant_id=tenant_id)
     except Exception as _startup_exc:
-        # IvrCall construction failed (e.g. bad SIP config) — signal rejection before
-        # the calls row is updated so the queue worker does not mark the job complete.
-        signal_startup_ack(call_id, accepted=False, error_code="ivr_init_failed")
-        db.execute(
-            "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
-            "startup_error_code = %s WHERE id = %s",
-            (type(_startup_exc).__name__, call_id),
-        )
+        # IvrCall() socket/transport initialization failed.
+        _signal_ack(False, error_code="sip_transport_init_failed")
         raise
-
-    # IvrCall object created — SIP session will begin inside call.run().
-    # Signal accepted now: the executor task is live and will handle the rest.
-    signal_startup_ack(call_id, accepted=True)
-    db.execute(
-        "UPDATE calls SET startup_state = 'accepted', startup_accepted_at = now() WHERE id = %s",
-        (call_id,),
-    )
 
     # Register call globally to enable UI cancellations
     _active_ivr_calls[call_id] = call
@@ -318,8 +336,14 @@ def _run_ivr_thread(call_id: int, target_dial: str, flow: Flow, sip: dict[str, s
         result = call.run()
         # [SAAS STEP 10] Provider response
         import logging
-        logging.getLogger("ccall").info(f"[SAAS STEP 10] Provider response: call_id={call_id}, status={result.status}, SIP Final Status={result.sip_final_status}, Error={result.error}")
+        logging.getLogger("ccall").info(f"[SAAS STEP 10] Provider response: call_id={call_id}, status={result.status}, SIP Final Status={result.sip_final_status}")
+    except Exception as _run_exc:
+        # run() raised before "ringing" was emitted — INVITE or REGISTER failed.
+        _signal_ack(False, error_code="sip_invite_start_failed")
+        raise
     finally:
+        # Catch any path that never signalled ACK (e.g. unexpected early exit).
+        _signal_ack(False, error_code="startup_internal_error")
         _active_ivr_calls.pop(call_id, None)
         ACTIVE_CALLS.dec()
 
@@ -396,154 +420,145 @@ def _run_direct_subprocess(call_id: int, dial_target: str, audio_path: str, repe
     log_file_path = INSTANCE_DIR / "direct-sip.log"
     start_time = time.monotonic()
     cancel_event = threading.Event()
-    # direct_sip_call.py is a read-only legacy subprocess (no DB access,
-    # no IPC back to us) — but it does print "Call answered; sending
-    # audio" to stdout the instant the far end picks up (see its own
-    # line ~421), and stdout is redirected into log_file_path. Record the
-    # byte offset right before launch, then tail only the bytes this call
-    # appended, watching for that line — that's the real answer signal.
-    # Without it we previously stamped "answered" the instant the
-    # subprocess launched, which lied about ring time and talk_seconds.
-    log_offset = log_file_path.stat().st_size if log_file_path.exists() else 0
+
+    # Per-process ACK IPC: each subprocess gets an isolated stdout PIPE so a
+    # concurrent call's output can never trigger this call's ACK.  A background
+    # thread drains the pipe, relays each line to the shared log file for
+    # persistence, and signals _ack_event when the startup sentinel appears.
+    # Popen alone is insufficient — the parent must actively read the pipe.
+    _ack_event = threading.Event()
+    _ack_result: list[tuple[bool, str] | None] = [None]  # (accepted, error_code)
     answered_at_monotonic: float | None = None
     hangup_finalized = False
-
-    def _read_new_log() -> bytes:
-        try:
-            with log_file_path.open("rb") as f:
-                f.seek(log_offset)
-                return f.read()
-        except OSError:
-            return b""
-
-    def _check_answered(chunk: bytes) -> bool:
-        nonlocal answered_at_monotonic
-        if answered_at_monotonic is not None:
-            return True
-        if b"Call answered; sending audio" in chunk:
-            answered_at_monotonic = time.monotonic()
-            _live.update_active_call(
-                call_id, status="answered",
-                answered_at=datetime.datetime.now(datetime.timezone.utc),
-            )
-            return True
-        return False
 
     ACTIVE_CALLS.inc()
     _direct_startup_timeout = int(os.environ.get("TELEPHONY_STARTUP_TIMEOUT_SECONDS", "10"))
     _startup_ack_signalled = False
     proc: subprocess.Popen | None = None
     try:
-        with log_file_path.open("ab", buffering=0) as log_f:
+        try:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(BASE_DIR / "direct_sip_call.py"),
+                    dial_target,
+                    str(audio_path),
+                    str(repeat_count),
+                    str(max_seconds)
+                ],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # merge stderr so one thread handles all output
+            )
+        except OSError as _popen_err:
+            signal_startup_ack(call_id, accepted=False, error_code="subprocess_start_failed")
+            _startup_ack_signalled = True
+            db.execute(
+                "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
+                "startup_error_code = 'subprocess_start_failed' WHERE id = ?", (call_id,)
+            )
+            raise
+
+        _active_direct_procs[call_id] = (proc, cancel_event)
+        _live.set_cancel_handler(call_id, lambda cid=call_id: cancel_call(cid))
+
+        def _pipe_reader() -> None:
+            """Drain proc.stdout, relay to log, signal ACK and track call state."""
+            nonlocal answered_at_monotonic, hangup_finalized
             try:
-                proc = subprocess.Popen(
-                    [
-                        sys.executable,
-                        str(BASE_DIR / "direct_sip_call.py"),
-                        dial_target,
-                        str(audio_path),
-                        str(repeat_count),
-                        str(max_seconds)
-                    ],
-                    env=env,
-                    stdout=log_f,
-                    stderr=log_f,
-                )
-            except OSError as _popen_err:
-                signal_startup_ack(call_id, accepted=False, error_code="subprocess_start_failed")
-                _startup_ack_signalled = True
-                db.execute(
-                    "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
-                    "startup_error_code = 'subprocess_start_failed' WHERE id = ?", (call_id,)
-                )
-                raise
+                with log_file_path.open("ab", buffering=0) as log_f:
+                    for raw_line in proc.stdout:
+                        log_f.write(raw_line)
+                        log_f.flush()
+                        line = raw_line.decode("utf-8", errors="replace")
 
-            _active_direct_procs[call_id] = (proc, cancel_event)
-            _live.set_cancel_handler(call_id, lambda cid=call_id: cancel_call(cid))
+                        # Startup sentinel: direct_sip_call.py prints "Calling …"
+                        # immediately before sending the SIP INVITE (line ~415).
+                        if not _ack_event.is_set() and "Calling " in line:
+                            _ack_result[0] = (True, "")
+                            _ack_event.set()
 
-            # Wait for direct_sip_call.py to emit "Calling " — this line is
-            # printed right before the SIP INVITE is sent, confirming the
-            # telephony layer is running.  Popen alone is not sufficient.
-            _startup_deadline = time.monotonic() + _direct_startup_timeout
-            while not _startup_ack_signalled:
-                chunk = _read_new_log()
-                if b"Calling " in chunk:
-                    signal_startup_ack(call_id, accepted=True)
-                    _startup_ack_signalled = True
-                    db.execute(
-                        "UPDATE calls SET startup_state = 'accepted', startup_accepted_at = now() WHERE id = ?",
-                        (call_id,),
-                    )
-                    break
-                # Check if process already exited before startup signal.
-                rc = proc.poll()
-                if rc is not None:
-                    signal_startup_ack(call_id, accepted=False, error_code="startup_process_exited")
-                    _startup_ack_signalled = True
-                    db.execute(
-                        "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
-                        "startup_error_code = 'startup_process_exited' WHERE id = ?", (call_id,)
-                    )
-                    break
-                if time.monotonic() > _startup_deadline:
-                    signal_startup_ack(call_id, accepted=False, error_code="startup_timeout")
-                    _startup_ack_signalled = True
-                    db.execute(
-                        "UPDATE calls SET startup_state = 'timeout', startup_rejected_at = now(), "
-                        "startup_error_code = 'startup_timeout' WHERE id = ?", (call_id,)
-                    )
-                    break
-                time.sleep(0.1)
+                        # Answer detection
+                        if answered_at_monotonic is None and "Call answered; sending audio" in line:
+                            answered_at_monotonic = time.monotonic()
+                            _live.update_active_call(
+                                call_id, status="answered",
+                                answered_at=datetime.datetime.now(datetime.timezone.utc),
+                            )
 
-            # Poll instead of one blocking wait() — lets us tail the log
-            # for the answer signal and tick talk_seconds only after it.
-            deadline = start_time + max_seconds + int(os.environ.get("SIP_PROCESS_TIMEOUT_SECONDS", "90")) + 30
-            returncode = None
-            while True:
-                try:
-                    returncode = proc.wait(timeout=1.0)
-                    break
-                except subprocess.TimeoutExpired:
-                    now = time.monotonic()
-                    chunk = _read_new_log()
-                    if _check_answered(chunk):
-                        _live.update_active_call(call_id, talk_seconds=int(now - answered_at_monotonic))
+                        # Early hangup finalization: remote BYE arrives before
+                        # the subprocess's own teardown (up to ~4.5 s) completes.
+                        if not hangup_finalized and (
+                            "Remote hung up" in line or "Call completed (remote ended)" in line
+                        ):
+                            hangup_finalized = True
+                            now = time.monotonic()
+                            _talk = int(now - answered_at_monotonic) if answered_at_monotonic else 0
+                            _elapsed = int(now - start_time)
+                            db.execute(
+                                """
+                                UPDATE calls SET
+                                    status = 'completed',
+                                    talk_seconds = ?,
+                                    total_seconds = ?,
+                                    ended_at = now()
+                                WHERE id = ?
+                                """,
+                                (_talk, _elapsed, call_id)
+                            )
+                            _remove_call_delayed(call_id, "completed")
+                            CALLS_TOTAL.labels(result="completed", tenant_id=str(tenant_id or "")).inc()
+                            CALL_DURATION.observe(_talk)
+                            try:
+                                from app.services.billing_service import finalize_call_billing
+                                finalize_call_billing(call_id)
+                            except Exception as _be:
+                                logger.error("[call_runner] billing failed for call %s: %s", call_id, _be)
+            except Exception:
+                pass
+            finally:
+                # Process exited (or pipe closed) without emitting startup sentinel.
+                if not _ack_event.is_set():
+                    _ack_result[0] = (False, "startup_process_exited")
+                    _ack_event.set()
 
-                    # The remote hanging up is detected by direct_sip_call.py
-                    # right away (poll_sip_bye()), but the subprocess itself
-                    # then spends up to ~4.5s (3 retries x 1.5s) confirming
-                    # its own BYE before actually exiting — read-only file,
-                    # can't shorten that. So end the call live the instant
-                    # the log says the remote hung up, instead of waiting
-                    # for proc.wait() to finally return.
-                    if not hangup_finalized and (
-                        b"Remote hung up" in chunk or b"Call completed (remote ended)" in chunk
-                    ):
-                        hangup_finalized = True
-                        talk_seconds = int(now - answered_at_monotonic) if answered_at_monotonic else 0
-                        elapsed = int(now - start_time)
-                        db.execute(
-                            """
-                            UPDATE calls SET
-                                status = 'completed',
-                                talk_seconds = ?,
-                                total_seconds = ?,
-                                ended_at = now()
-                            WHERE id = ?
-                            """,
-                            (talk_seconds, elapsed, call_id)
-                        )
-                        _remove_call_delayed(call_id, "completed")
-                        CALLS_TOTAL.labels(result="completed", tenant_id=str(tenant_id or "")).inc()
-                        CALL_DURATION.observe(talk_seconds)
-                        try:
-                            from app.services.billing_service import finalize_call_billing
-                            finalize_call_billing(call_id)
-                        except Exception as exc:
-                            logger.error("[call_runner] billing failed for call %s: %s", call_id, exc)
+        _reader = threading.Thread(target=_pipe_reader, daemon=True, name=f"pipe-reader-{call_id}")
+        _reader.start()
 
-                    if now >= deadline:
-                        raise
+        # Block until startup ACK arrives on the isolated pipe (or timeout).
+        _acked = _ack_event.wait(timeout=_direct_startup_timeout)
+        if not _acked:
+            _ack_result[0] = (False, "startup_timeout")
+            _ack_event.set()
+
+        _accepted, _err_code = _ack_result[0]
+        _startup_ack_signalled = True
+        signal_startup_ack(call_id, accepted=_accepted, error_code=_err_code)
+        if _accepted:
+            db.execute(
+                "UPDATE calls SET startup_state = 'accepted', startup_accepted_at = now() WHERE id = ?",
+                (call_id,),
+            )
+        else:
+            db.execute(
+                "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
+                "startup_error_code = ? WHERE id = ?", (_err_code, call_id)
+            )
+
+        # Poll instead of a single blocking wait() — lets us tick talk_seconds.
+        # Answer/hangup state is updated by _pipe_reader; just read shared vars here.
+        deadline = start_time + max_seconds + int(os.environ.get("SIP_PROCESS_TIMEOUT_SECONDS", "90")) + 30
+        returncode = None
+        while True:
+            try:
+                returncode = proc.wait(timeout=1.0)
+                break
+            except subprocess.TimeoutExpired:
+                now = time.monotonic()
+                if answered_at_monotonic is not None:
+                    _live.update_active_call(call_id, talk_seconds=int(now - answered_at_monotonic))
+                if now >= deadline:
+                    raise
 
         elapsed = int(time.monotonic() - start_time)
         if hangup_finalized:

@@ -110,12 +110,50 @@ def detailed_health():
         checks["sip_providers"] = {"error": type(e).__name__}
 
     try:
-        row = db.query_one(
-            "SELECT COUNT(*) AS n FROM call_jobs WHERE job_status IN ('queued','leased')"
+        rows = db.query(
+            """SELECT job_status, COUNT(*) AS n
+               FROM call_jobs
+               GROUP BY job_status"""
         )
-        checks["call_queue_depth"] = int(row["n"]) if row else 0
+        counts = {r["job_status"]: int(r["n"]) for r in rows}
+        expired_row = db.query_one(
+            "SELECT COUNT(*) AS n FROM call_jobs "
+            "WHERE job_status = 'leased' AND lease_expires_at < now()"
+        )
+        checks["call_queue"] = {
+            "queued":        counts.get("queued",     0),
+            "leased":        counts.get("leased",     0),
+            "retry_wait":    counts.get("retry_wait", 0),
+            "expired_leases": int(expired_row["n"]) if expired_row else 0,
+        }
+        # Backward-compat alias.
+        checks["call_queue_depth"] = (
+            counts.get("queued", 0) + counts.get("leased", 0)
+        )
     except Exception:
+        checks["call_queue"] = "unavailable"
         checks["call_queue_depth"] = "unavailable"
+
+    try:
+        hb_rows = db.query(
+            """SELECT service_name, instance_id, last_seen_at, status,
+                      EXTRACT(EPOCH FROM (now() - last_seen_at))::int AS age_seconds
+               FROM service_heartbeats
+               ORDER BY service_name, instance_id"""
+        )
+        stale_threshold = 120  # seconds — matches table comment
+        hb_info: dict = {}
+        for r in hb_rows:
+            age = int(r["age_seconds"])
+            hb_info.setdefault(r["service_name"], []).append({
+                "instance_id": r["instance_id"],
+                "age_seconds": age,
+                "status":      r["status"],
+                "stale":       age > stale_threshold,
+            })
+        checks["heartbeats"] = hb_info if hb_info else {}
+    except Exception:
+        checks["heartbeats"] = "unavailable"
 
     if checks.get("database", {}).get("status") == "down" or \
        checks.get("redis", {}).get("status") == "down":
