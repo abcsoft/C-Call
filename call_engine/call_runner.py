@@ -45,16 +45,37 @@ _delayed_removals = set()
 # Lifecycle:
 #   1. order_service.queue_confirmation_call() calls register_startup_ack(call_id)
 #      to allocate a threading.Event keyed by call_id.
-#   2. _run_ivr_thread signals the event via signal_startup_ack() after IvrCall()
-#      is constructed (object init itself does not block on network — it succeeds
-#      unless the executor thread has not started yet, which the event covers).
-#   3. order_service waits on the event for TELEPHONY_STARTUP_TIMEOUT_SECONDS.
-#   4. Timeout → startup_state='timeout', treated as retryable.
-#   5. The event is removed from the dict when the wait completes (success or timeout).
+#   2. For IVR calls: _run_ivr_thread signals accepted via signal_startup_ack()
+#      inside on_event("ringing") — which fires INSIDE call.run() AFTER the SIP
+#      INVITE has been sent by ivr_engine.py.  Constructor alone is NOT sufficient.
+#   3. For direct calls: _pipe_reader signals accepted after receiving the
+#      CCALL_STARTUP_ACK accepted sentinel from direct_sip_wrapper.py.
+#   4. order_service waits on the event for TELEPHONY_STARTUP_TIMEOUT_SECONDS.
+#   5. Timeout → startup_state='timeout', treated as retryable.
+#   6. The event is removed from the dict when the wait completes (success or timeout).
 
 _startup_ack_lock = threading.Lock()
 _startup_ack_events: dict[int, threading.Event] = {}
 _startup_ack_results: dict[int, tuple[bool, str]] = {}  # call_id → (accepted, error_code)
+
+
+# ── Testing-only fault injection ──────────────────────────────────────────────
+# Activated by the _CALL_RUNNER_FAULT_POINT env var (set by run_call_worker.py
+# when --test-fault-point names a point that fires inside the SIP dispatch path).
+# Only active when FLASK_ENV=testing; silently ignored otherwise.
+
+def _maybe_fault(point: str) -> None:
+    """Exit the process at a named fault point — testing only.
+
+    This is called from WITHIN the worker process (not a separate thread) so
+    os._exit() terminates the worker immediately without cleanup, matching a
+    real crash.  The fault point name is compared to _CALL_RUNNER_FAULT_POINT.
+    """
+    if os.environ.get("FLASK_ENV") != "testing":
+        return
+    if os.environ.get("_CALL_RUNNER_FAULT_POINT", "") == point:
+        logger.warning("[call_runner] fault injection at point=%s — simulating crash", point)
+        os._exit(1)
 
 
 def register_startup_ack(call_id: int) -> threading.Event:
@@ -440,7 +461,7 @@ def _run_direct_subprocess(call_id: int, dial_target: str, audio_path: str, repe
             proc = subprocess.Popen(
                 [
                     sys.executable,
-                    str(BASE_DIR / "direct_sip_call.py"),
+                    str(BASE_DIR / "call_engine" / "direct_sip_wrapper.py"),
                     dial_target,
                     str(audio_path),
                     str(repeat_count),
@@ -472,11 +493,21 @@ def _run_direct_subprocess(call_id: int, dial_target: str, audio_path: str, repe
                         log_f.flush()
                         line = raw_line.decode("utf-8", errors="replace")
 
-                        # Startup sentinel: direct_sip_call.py prints "Calling …"
-                        # immediately before sending the SIP INVITE (line ~415).
-                        if not _ack_event.is_set() and "Calling " in line:
-                            _ack_result[0] = (True, "")
+                        # Structured ACK from direct_sip_wrapper.py — the ONLY
+                        # line that triggers the startup ACK event.  Generic log
+                        # lines (including "Calling …" from the inner script) are
+                        # relayed by the wrapper but do NOT reach here as ACK triggers.
+                        if not _ack_event.is_set() and line.startswith("CCALL_STARTUP_ACK "):
+                            payload = line[len("CCALL_STARTUP_ACK "):].strip()
+                            if payload == "accepted":
+                                _ack_result[0] = (True, "")
+                            elif payload.startswith("rejected:"):
+                                _err = payload[len("rejected:"):]
+                                _ack_result[0] = (False, _err or "startup_process_exited")
+                            else:
+                                _ack_result[0] = (False, "startup_protocol_error")
                             _ack_event.set()
+                            continue  # do not relay CCALL_STARTUP_ACK lines to log
 
                         # Answer detection
                         if answered_at_monotonic is None and "Call answered; sending audio" in line:
@@ -715,6 +746,11 @@ def start_call(number: str, flow_id: int, *, name: str = "", tenant_id: int | No
     # Register startup ack event before submitting to executor so the event is
     # always available when the thread runs (even if it runs immediately).
     register_startup_ack(call_id)
+
+    # Fault point: fires after calls row committed + ACK event registered, but
+    # before executor.submit() dispatches the SIP thread.  Simulates a worker
+    # crash after the DB row exists but before any telephony starts.
+    _maybe_fault("after_calls_row")
 
     _live.register_active_call(
         call_id, tenant_id=tenant_id, order_id=order_id, call_type="order_confirmation" if order_id else "ivr",

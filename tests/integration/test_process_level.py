@@ -11,8 +11,9 @@ Tests:
      Distinct PIDs confirm separate processes.
   C. Worker A crashes after dispatch (--test-fault-point after_dispatch) →
      Worker B hits crash guard (duplicate_call_existing) on recovery.
-  D. Job enqueued before any worker starts — persists until worker picks it up
-     (simulates web restart before worker dispatch).
+  D. Real web process restart: Flask subprocess creates order via HTTP API, is
+     killed, worker subprocess picks up the persisted job.  Validates end-to-end
+     durability across two real OS process boundaries.
   E. Worker A crashes after ACK (after_dispatch fault) → startup_state=accepted
      → Worker B crash-recovery returns accepted=True → mark_dispatched completes.
   F. Two workers + 20 jobs: each worker processes half, all 20 distinct order_ids,
@@ -25,6 +26,9 @@ Tests:
      job transitions to failed, order set to FAILED.
   J. Stale-pending startup: existing call with startup_state=pending but stale
      started_at → dispatch service classifies as retryable (not fresh-pending wait).
+  K. Worker crashes after calls INSERT but before executor.submit() (after_calls_row
+     fault point) → calls row exists with startup_state='pending', attempt not linked
+     → Worker B recovers lease and retries dispatch.
 
 Requirements
 ------------
@@ -33,7 +37,9 @@ Requirements
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import socket
 import sys
 import time
 import subprocess
@@ -340,42 +346,192 @@ def test_crash_after_dispatch_crash_guard_fires(app, _tenant_order):
     )
 
 
-# ── D. Job survives web restart (persists without a running worker) ────────────
+# ── D. Real web process restart — job survives across process boundaries ────────
 
-def test_job_survives_before_worker_starts(app, _tenant_order):
-    """Job enqueued while no worker is running persists in 'queued' state.
+def _find_free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
-    When a worker starts it picks up the job exactly once.  Simulates the
-    real-world case where the web process enqueues a job before the worker
-    process comes up (pod restart, cold deploy, etc).
+
+def _wait_for_http(url: str, timeout: float = 20.0) -> bool:
+    """Poll url until HTTP 200 or timeout. Returns True if ready."""
+    import urllib.request, urllib.error
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def test_web_restart_job_survives_and_worker_picks_up(app):
+    """Full web-process-restart durability test.
+
+    1. Start a real Flask subprocess on an isolated port (not the test server).
+    2. Create a tenant + API key via DB, then POST /api/v1/orders to the Flask
+       subprocess using the API key — the web process creates the order and
+       enqueues a durable call_job.
+    3. SIGTERM the Flask subprocess (simulating pod/process death).
+    4. Start a call worker subprocess.
+    5. Worker finds the job (still 'queued' in PostgreSQL) and processes it.
+
+    All three PIDs (test process, Flask subprocess, worker subprocess) must differ.
+    The job must NOT still be 'queued' after the worker runs.
     """
-    order_id, tenant_id = _tenant_order
+    import uuid, hashlib, json
+    import urllib.request, urllib.error
 
-    # Confirm job is still queued (no worker has touched it yet).
+    port = _find_free_port()
+    cwd  = os.path.join(os.path.dirname(__file__), "..", "..")
+    flask_env = {
+        **os.environ,
+        "FLASK_ENV":          "testing",
+        "ENABLE_CALL_WORKER": "false",   # web process must NOT process jobs itself
+        "ENABLE_SCHEDULER":   "false",
+        "MOCK_SIP_PROVIDER":  "1",
+        "PORT":               str(port),
+    }
+
+    # Start Flask on an isolated port (PORT env var read by run.py).
+    flask_proc = subprocess.Popen(
+        [sys.executable, "run.py"],
+        env=flask_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+    )
+    flask_pid = flask_proc.pid
+
+    try:
+        ready = _wait_for_http(f"http://127.0.0.1:{port}/health", timeout=30)
+        if not ready:
+            flask_proc.kill()
+            flask_proc.communicate()
+            pytest.skip("Flask subprocess did not become ready in time — skipping")
+
+        # Create tenant + API key via DB so we can authenticate via HTTP.
+        uid = uuid.uuid4().hex[:8]
+        raw_key = uuid.uuid4().hex
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+        with app.app_context():
+            from app.db import db
+
+            tenant_row = db.query_one(
+                """INSERT INTO tenants (business_name, email, status, settings)
+                   VALUES (%s, %s, 'active', '{}')
+                   RETURNING id""",
+                (f"WebRestart {uid}", f"wr-{uid}@test.internal"),
+            )
+            tenant_id = int(tenant_row["id"])
+            db.execute(
+                "INSERT INTO wallets (tenant_id, balance) VALUES (%s, 1000) "
+                "ON CONFLICT (tenant_id) DO NOTHING",
+                (tenant_id,),
+            )
+            db.execute(
+                """INSERT INTO api_keys (tenant_id, key_hash, name, is_active)
+                   VALUES (%s, %s, 'test-key', true)""",
+                (tenant_id, key_hash),
+            )
+
+        # POST /api/v1/orders → web process enqueues durable call_job.
+        payload = json.dumps({
+            "order_id":      f"WR-{uid}",
+            "phone":         "01700000001",
+            "customer_name": "Web Restart Test",
+            "amount":        "100.00",
+            "items":         "1x Test Item",
+            "store_name":    "Test Store",
+        }).encode()
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/v1/orders",
+            data=payload,
+            headers={"Content-Type": "application/json", "X-API-Key": raw_key},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp_body = resp.read()
+                assert resp.status in (200, 201), (
+                    f"Expected 200/201 from /api/v1/orders, got {resp.status}: {resp_body!r}"
+                )
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            pytest.fail(
+                f"POST /api/v1/orders returned HTTP {exc.code}: {body!r}"
+            )
+
+        # Confirm job enqueued in DB before killing Flask.
+        with app.app_context():
+            from app.db import db
+            job_pre = db.query_one(
+                "SELECT job_status FROM call_jobs WHERE tenant_id = %s",
+                (tenant_id,),
+            )
+        assert job_pre is not None, "call_job must exist after POST /api/v1/orders"
+        assert job_pre["job_status"] == "queued", (
+            f"Expected 'queued' immediately after enqueue, got {job_pre['job_status']!r}"
+        )
+
+    finally:
+        # Kill Flask (simulate pod restart / process death).
+        flask_proc.terminate()
+        try:
+            flask_proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            flask_proc.kill()
+            flask_proc.communicate()
+
+    # Flask is dead. Job must still be 'queued' in PostgreSQL (durability proof).
     with app.app_context():
         from app.db import db
-        job_before = db.query_one(
-            "SELECT job_status FROM call_jobs WHERE order_id = %s",
-            (order_id,),
+        job_after_kill = db.query_one(
+            "SELECT job_status FROM call_jobs WHERE tenant_id = %s",
+            (tenant_id,),
         )
-    assert job_before is not None
-    assert job_before["job_status"] == "queued", (
-        f"Expected queued before worker start, got {job_before['job_status']}"
+    assert job_after_kill is not None
+    assert job_after_kill["job_status"] == "queued", (
+        f"Job lost after Flask killed (expected 'queued'), got {job_after_kill['job_status']!r}"
     )
 
-    # Now start a worker — it must process the waiting job.
-    result = _run_worker("--once")
-    assert result.pid != os.getpid(), "Worker must be a separate OS process"
+    # Worker subprocess picks up the job.
+    worker_result = _run_worker("--once")
+    worker_pid = worker_result.pid
+
+    # Three distinct processes.
+    assert flask_pid  != os.getpid(), "Flask PID must differ from test process"
+    assert worker_pid != os.getpid(), "Worker PID must differ from test process"
+    assert flask_pid  != worker_pid,  "Flask PID must differ from worker PID"
+
+    assert worker_result.returncode == 0, (
+        f"Worker should exit 0.\nstdout: {worker_result.stdout}\nstderr: {worker_result.stderr}"
+    )
 
     with app.app_context():
         from app.db import db
-        job_after = db.query_one(
-            "SELECT job_status FROM call_jobs WHERE order_id = %s",
-            (order_id,),
+        job_final = db.query_one(
+            "SELECT job_status FROM call_jobs WHERE tenant_id = %s",
+            (tenant_id,),
         )
-    assert job_after is not None
-    assert job_after["job_status"] != "queued", (
-        f"Job still queued after worker ran: {job_after['job_status']}"
+        # Cleanup
+        db.execute("DELETE FROM call_jobs WHERE tenant_id = %s",             (tenant_id,))
+        db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s",   (tenant_id,))
+        db.execute("DELETE FROM orders WHERE tenant_id = %s",                (tenant_id,))
+        db.execute("DELETE FROM wallets WHERE tenant_id = %s",               (tenant_id,))
+        db.execute("DELETE FROM api_keys WHERE tenant_id = %s",              (tenant_id,))
+        db.execute("DELETE FROM users WHERE tenant_id = %s",                 (tenant_id,))
+        db.execute("DELETE FROM tenants WHERE id = %s",                      (tenant_id,))
+
+    assert job_final is not None
+    assert job_final["job_status"] != "queued", (
+        f"Job still 'queued' after worker ran: {job_final['job_status']!r}.\n"
+        f"stdout: {worker_result.stdout}\nstderr: {worker_result.stderr}"
     )
 
 
@@ -800,4 +956,218 @@ def test_stale_pending_startup_is_retryable(app):
     assert result.error_code != "startup_pending", (
         f"Stale-pending must NOT return 'startup_pending' (that's the fresh-pending hold). "
         f"Got error_code={result.error_code!r}"
+    )
+
+
+# ── K. Crash after calls row but before executor.submit ───────────────────────
+
+@pytest.fixture()
+def _tenant_order_with_sip(app):
+    """Like _tenant_order but also creates a SIP provider + phone number so that
+    call_runner.start_call() can proceed past SIP credential checks and reach the
+    calls INSERT before the after_calls_row fault fires.
+
+    Required because MOCK_SIP must be disabled for Worker A so that start_call()
+    is actually invoked (with MOCK_SIP=1 the dispatch raises DispatchSipUnavailableError
+    before start_call() is ever called, so the fault point is never reached).
+    """
+    import uuid
+    with app.app_context():
+        from app.db import db
+        from app.services.call_job_service import enqueue_order_call
+        from app.models.sip_provider import encrypt_password
+
+        uid = uuid.uuid4().hex[:8]
+        tenant_row = db.query_one(
+            """INSERT INTO tenants (business_name, email, status, settings)
+               VALUES (%s, %s, 'active', '{}')
+               RETURNING id""",
+            (f"PL SIP Test {uid}", f"pl-sip-{uid}@test.internal"),
+        )
+        tenant_id = int(tenant_row["id"])
+        db.execute(
+            "INSERT INTO wallets (tenant_id, balance) VALUES (%s, 1000) "
+            "ON CONFLICT (tenant_id) DO NOTHING",
+            (tenant_id,),
+        )
+
+        # SIP provider with fake but non-empty credentials.
+        # call_runner.start_call() only validates that the creds are non-empty;
+        # the actual SIP connect fails later (after the fault fires).
+        enc_pw = encrypt_password("fake-sip-password-for-test")
+        provider_row = db.query_one(
+            """INSERT INTO sip_providers (name, sip_domain, sip_port, sip_user, sip_password, status)
+               VALUES (%s, 'sip.test.invalid', 5060, %s, %s, 'active')
+               RETURNING id""",
+            (f"TestSIP-{uid}", f"testuser-{uid}", enc_pw),
+        )
+        provider_id = int(provider_row["id"])
+
+        # Dedicated phone number for this tenant.
+        phone_num = f"019{uid}"  # 11-char fake BD-style number
+        pn_row = db.query_one(
+            """INSERT INTO phone_numbers (number, provider_id, number_type, status)
+               VALUES (%s, %s, 'dedicated', 'active')
+               RETURNING id""",
+            (phone_num, provider_id),
+        )
+        pn_id = int(pn_row["id"])
+        db.execute(
+            """INSERT INTO customer_number_assignments (tenant_id, phone_number_id, is_primary)
+               VALUES (%s, %s, true)
+               ON CONFLICT (phone_number_id, tenant_id) DO NOTHING""",
+            (tenant_id, pn_id),
+        )
+
+        row = db.query_one(
+            """INSERT INTO orders
+                   (tenant_id, external_order_id, phone, customer_name, amount,
+                    order_status, attempt_count, max_attempts)
+               VALUES (%s, %s, %s, %s, %s, 'CALL_QUEUED', 0, 3)
+               RETURNING id""",
+            (tenant_id, f"PL-SIP-{uid}", "01700000001", "SIP Fault Test", "100.00"),
+        )
+        order_id = int(row["id"])
+        with db.transaction() as conn:
+            attempt_row = conn.execute(
+                """INSERT INTO order_call_attempts (order_id, tenant_id, attempt_no, created_at)
+                   VALUES (%s, %s, 1, now())
+                   ON CONFLICT (order_id, attempt_no) DO UPDATE
+                       SET created_at = order_call_attempts.created_at
+                   RETURNING id""",
+                (order_id, tenant_id),
+            ).fetchone()
+            attempt_id = int(attempt_row["id"] if isinstance(attempt_row, dict) else attempt_row[0])
+            enqueue_order_call(conn, order_id, tenant_id, attempt_no=1,
+                               order_call_attempt_id=attempt_id)
+
+        yield order_id, tenant_id, provider_id, pn_id
+
+        db.execute("DELETE FROM call_jobs WHERE tenant_id = %s",               (tenant_id,))
+        db.execute("DELETE FROM calls WHERE tenant_id = %s",                   (tenant_id,))
+        db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s",     (tenant_id,))
+        db.execute("DELETE FROM orders WHERE tenant_id = %s",                  (tenant_id,))
+        db.execute("DELETE FROM wallets WHERE tenant_id = %s",                 (tenant_id,))
+        db.execute("DELETE FROM customer_number_assignments WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM phone_numbers WHERE id = %s",                  (pn_id,))
+        db.execute("DELETE FROM sip_providers WHERE id = %s",                  (provider_id,))
+        db.execute("DELETE FROM customer_rates WHERE tenant_id = %s",          (tenant_id,))
+        db.execute("DELETE FROM retry_rules WHERE tenant_id = %s",             (tenant_id,))
+        db.execute("DELETE FROM api_keys WHERE tenant_id = %s",                (tenant_id,))
+        db.execute("DELETE FROM users WHERE tenant_id = %s",                   (tenant_id,))
+        db.execute("DELETE FROM service_heartbeats WHERE instance_id LIKE %s", ("%@%",))
+        db.execute("DELETE FROM tenants WHERE id = %s",                        (tenant_id,))
+
+
+def test_crash_after_calls_row_before_ack(app, _tenant_order_with_sip):
+    """Worker A crashes after the calls INSERT but before executor.submit().
+
+    The after_calls_row fault fires inside call_runner.start_call() AFTER:
+      - calls row committed with startup_state='pending'
+      - startup ACK event registered in _startup_ack_events
+    But BEFORE executor.submit() dispatches the SIP thread.
+
+    This requires MOCK_SIP to be disabled for Worker A so that call_runner.start_call()
+    is actually invoked (with MOCK_SIP=1 the dispatch path raises before start_call,
+    so the fault never fires).  Worker A has real SIP creds from the fixture (non-empty,
+    fake) so SIP config validation passes; the actual SIP connect would fail, but
+    os._exit(1) fires first.
+
+    After the crash:
+      - calls row exists with startup_state='pending'
+      - order_call_attempts.call_id IS NULL (queue_confirmation_call never linked it)
+
+    Worker B runs with MOCK_SIP=1 → DispatchSipUnavailableError (retryable) →
+    job transitions to retry_wait.
+
+    Both worker PIDs must be distinct and differ from the test process.
+    """
+    order_id, tenant_id, provider_id, pn_id = _tenant_order_with_sip
+
+    # Worker A: real SIP path, crash at after_calls_row.
+    cwd = os.path.join(os.path.dirname(__file__), "..", "..")
+    worker_a_env = {
+        **os.environ,
+        "FLASK_ENV":                "testing",
+        "MOCK_SIP_PROVIDER":        "",   # disabled — reach call_runner.start_call()
+        "ENABLE_CALL_WORKER":       "true",
+        "ENABLE_CALL_MONITOR":      "false",
+        "CALL_WORKER_POLL_SECONDS": "0.5",
+        "CALL_WORKER_LEASE_SECONDS": "30",
+    }
+    proc_a = subprocess.Popen(
+        _WORKER_CMD + ["--once", "--test-fault-point", "after_calls_row"],
+        env=worker_a_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+    )
+    try:
+        out_a, err_a = proc_a.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc_a.kill()
+        out_a, err_a = proc_a.communicate()
+
+    pid_a = proc_a.pid
+    assert proc_a.returncode == 1, (
+        f"Worker A should crash at after_calls_row (exit 1), got {proc_a.returncode}.\n"
+        f"stdout: {out_a}\nstderr: {err_a}"
+    )
+
+    # Verify: calls row committed with startup_state='pending'; attempt call_id NULL.
+    with app.app_context():
+        from app.db import db
+        call_row = db.query_one(
+            "SELECT id, startup_state FROM calls WHERE order_id = %s AND tenant_id = %s",
+            (order_id, tenant_id),
+        )
+        attempt_row = db.query_one(
+            """SELECT call_id FROM order_call_attempts
+               WHERE order_id = %s AND tenant_id = %s AND attempt_no = 1""",
+            (order_id, tenant_id),
+        )
+
+    assert call_row is not None, (
+        "calls row must be committed before after_calls_row fault fires.\n"
+        f"Worker A stdout: {out_a}\nstderr: {err_a}"
+    )
+    assert call_row["startup_state"] == "pending", (
+        f"startup_state should be 'pending' (executor never ran), got {call_row['startup_state']!r}"
+    )
+    assert attempt_row is not None
+    assert attempt_row["call_id"] is None, (
+        f"order_call_attempts.call_id must be NULL (crash before link step), "
+        f"got {attempt_row['call_id']!r}"
+    )
+
+    # Expire lease so Worker B can recover.
+    with app.app_context():
+        from app.db import db
+        db.execute(
+            "UPDATE call_jobs SET lease_expires_at = now() - interval '1 minute' "
+            "WHERE order_id = %s AND job_status = 'leased'",
+            (order_id,),
+        )
+
+    # Worker B: MOCK_SIP=1 → retryable SIP error → job → retry_wait.
+    result_b = _run_worker("--once")
+    pid_b = result_b.pid
+
+    assert pid_a != pid_b, f"Must be separate processes: A={pid_a} B={pid_b}"
+    assert pid_a != os.getpid()
+    assert pid_b != os.getpid()
+    assert result_b.returncode == 0, (
+        f"Worker B should exit 0.\nstdout: {result_b.stdout}\nstderr: {result_b.stderr}"
+    )
+
+    with app.app_context():
+        from app.db import db
+        job = db.query_one(
+            "SELECT job_status FROM call_jobs WHERE order_id = %s",
+            (order_id,),
+        )
+    assert job is not None
+    assert job["job_status"] != "leased", (
+        f"Job still leased after Worker B recovery: {job['job_status']}"
     )

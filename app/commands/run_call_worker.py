@@ -171,7 +171,9 @@ def _dispatch_job(app, job: dict) -> None:
     result = dispatch_order_call(order_id, tenant_id, attempt_no)
 
     if result.accepted and result.call_id:
-        _raise_if_fault("after_dispatch")
+        _raise_if_fault("after_dispatch")          # legacy alias kept for existing tests
+        _raise_if_fault("after_startup_accepted")  # fires at same boundary, named clearly
+        _raise_if_fault("before_job_complete")     # before mark_dispatched writes call_id
         with db.transaction() as conn:
             mark_dispatched(conn, job_id, result.call_id, result.order_call_attempt_id)
         CALL_JOB_DISPATCH_SUCCESS.inc()
@@ -222,7 +224,14 @@ def _dispatch_job(app, job: dict) -> None:
 
 # ── Worker loop ───────────────────────────────────────────────────────────────
 
-_VALID_FAULT_POINTS = frozenset({"after_lease", "after_dispatch"})
+_VALID_FAULT_POINTS = frozenset({
+    "after_lease",            # after leasing job, before dispatch
+    "after_dispatch",         # after accepted dispatch, before mark_dispatched (legacy alias)
+    "after_startup_accepted", # same as after_dispatch, named clearly
+    "after_calls_row",        # fires inside call_runner.start_call() after calls INSERT
+                              #   — implemented via _CALL_RUNNER_FAULT_POINT env var
+    "before_job_complete",    # before mark_dispatched writes call_id to job
+})
 
 
 def main() -> None:
@@ -234,7 +243,9 @@ def main() -> None:
     parser.add_argument("--max-jobs", type=int, default=None,
                         help="Exit after processing N jobs (testing only)")
     parser.add_argument("--test-fault-point", default=None,
-                        help="Simulate crash at named point: after_lease | after_dispatch (testing only)")
+                        help="Simulate crash at named point (testing only): "
+                             "after_lease | after_dispatch | after_startup_accepted | "
+                             "after_calls_row | before_job_complete")
     parser.add_argument("--help", "-h", action="store_true")
     args, _ = parser.parse_known_args()
 
@@ -257,6 +268,10 @@ def main() -> None:
                   f"Valid: {sorted(_VALID_FAULT_POINTS)}", file=sys.stderr)
             sys.exit(1)
         _TEST_FAULT_POINT = args.test_fault_point
+        # after_calls_row fires inside call_runner.start_call() (a different module).
+        # Export via env var so call_runner._maybe_fault() can read it.
+        if args.test_fault_point == "after_calls_row":
+            os.environ["_CALL_RUNNER_FAULT_POINT"] = "after_calls_row"
 
     max_jobs = 1 if args.once else args.max_jobs  # --once implies --max-jobs 1
     jobs_processed = 0
