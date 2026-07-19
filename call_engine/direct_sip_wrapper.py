@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
-"""call_engine/direct_sip_wrapper.py — structured startup ACK wrapper for direct_sip_call.py.
+"""call_engine/direct_sip_wrapper.py — startup ACK relay for direct_sip_call.py.
 
 Spawns direct_sip_call.py as an inner subprocess with its stdout piped.
-Monitors the inner process output for the startup sentinel and emits a
-structured CCALL_STARTUP_ACK line to its own stdout before relaying further
-output.
+Relays ALL inner output verbatim to its own stdout.
 
-This keeps direct_sip_call.py unmodified (read-only legacy binary) while
-giving the parent process an exact, unambiguous ACK sentinel that cannot be
-triggered by any generic log line from any other child process.
+direct_sip_call.py emits the structured ACK sentinel directly after the first
+SIP INVITE send operation completes — see the CCALL_STARTUP_ACK block in that
+script.  This wrapper's job is:
 
-Protocol emitted on stdout (one line, before any other output):
-  CCALL_STARTUP_ACK accepted
-  CCALL_STARTUP_ACK rejected:<error_code>
+  1. Start the inner script.
+  2. Relay every output line verbatim so the parent pipe-reader sees the ACK.
+  3. Emit a fallback rejected sentinel if the inner process exits without
+     having emitted any CCALL_STARTUP_ACK line (crash before ACK point).
 
-After the ACK line, all subsequent inner-process output is relayed verbatim
-so the parent can detect "Call answered; sending audio" and hangup lines.
+Protocol relayed on stdout:
+  CCALL_STARTUP_ACK accepted            — inner emitted after INVITE send OK
+  CCALL_STARTUP_ACK rejected:<code>     — inner emitted on failure
+  CCALL_STARTUP_ACK rejected:startup_process_exited  — wrapper fallback
 
-Error codes:
-  startup_process_exited  — inner process exited without emitting sentinel
-  startup_protocol_error  — internal wrapper error
+The "Calling ..." log line printed by direct_sip_call.py before REGISTER/INVITE
+has NO ACK meaning and is relayed as a plain log line.  The parent must not
+treat it as an ACK.
 
 The parent must actively read this pipe; Popen alone is insufficient.
-Do not include phone numbers, SIP usernames, SIP passwords, or URIs in the
-ACK line.
+Do not include phone numbers, SIP usernames, passwords, or URIs in any
+CCALL_STARTUP_ACK line.
 """
 from __future__ import annotations
 
@@ -40,11 +41,6 @@ if hasattr(sys.stderr, "reconfigure"):
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _INNER_SCRIPT = os.path.join(BASE_DIR, "direct_sip_call.py")
 
-# Startup sentinel printed by direct_sip_call.py immediately before register()
-# and invite().  It is the closest available pre-INVITE boundary in the
-# read-only inner script.
-_INNER_STARTUP_SENTINEL = "Calling "
-
 
 def main() -> None:
     args = sys.argv[1:]  # same positional args as direct_sip_call.py
@@ -57,42 +53,37 @@ def main() -> None:
             env=os.environ.copy(),
         )
     except OSError as exc:
-        sys.stdout.write(f"CCALL_STARTUP_ACK rejected:startup_process_exited\n")
+        sys.stdout.write("CCALL_STARTUP_ACK rejected:startup_process_exited\n")
         sys.stdout.flush()
         sys.stderr.write(f"direct_sip_wrapper: failed to start inner process: {exc}\n")
         sys.stderr.flush()
         sys.exit(1)
 
-    ack_emitted = False
+    ack_seen = False
 
     try:
         for raw_line in inner.stdout:
             line = raw_line.decode("utf-8", errors="replace")
 
-            if not ack_emitted:
-                if _INNER_STARTUP_SENTINEL in line:
-                    # Emit structured ACK before relaying this line.
-                    sys.stdout.write("CCALL_STARTUP_ACK accepted\n")
-                    sys.stdout.flush()
-                    ack_emitted = True
+            # Track whether inner emitted any CCALL_STARTUP_ACK so we know
+            # whether to emit a fallback rejected line on EOF.
+            if not ack_seen and line.startswith("CCALL_STARTUP_ACK "):
+                ack_seen = True
 
-            # Relay ALL inner output verbatim (after ACK line above).
-            # Parent uses this to detect "Call answered; sending audio",
-            # "Remote hung up", and "Call completed (remote ended)".
+            # Relay ALL inner output verbatim — the structured CCALL_STARTUP_ACK
+            # line from direct_sip_call.py passes through here unchanged and is
+            # consumed by the parent's pipe reader.  Do NOT translate or replace
+            # any line: the "Calling ..." log has no ACK meaning.
             sys.stdout.write(line)
             sys.stdout.flush()
     except Exception as exc:
-        if not ack_emitted:
-            sys.stdout.write("CCALL_STARTUP_ACK rejected:startup_protocol_error\n")
-            sys.stdout.flush()
-            ack_emitted = True
         sys.stderr.write(f"direct_sip_wrapper: pipe read error: {exc}\n")
         sys.stderr.flush()
 
     inner.wait()
 
-    if not ack_emitted:
-        # Inner process exited (or EOF) without emitting startup sentinel.
+    if not ack_seen:
+        # Inner process exited (or crashed) without emitting CCALL_STARTUP_ACK.
         sys.stdout.write("CCALL_STARTUP_ACK rejected:startup_process_exited\n")
         sys.stdout.flush()
 

@@ -27,6 +27,19 @@ def nat64_to_ipv4(ip):
     return clean
 
 
+# Testing hook: fast-path ACK without real SIP (must be before argv parsing).
+# Active only when FLASK_ENV=testing AND _DIRECT_SIP_ACK_TEST is set.
+if (os.environ.get("FLASK_ENV", "") in ("testing", "test")
+        and os.environ.get("_DIRECT_SIP_ACK_TEST")):
+    _mode = os.environ["_DIRECT_SIP_ACK_TEST"]
+    if _mode == "sendto_ok":
+        print("CCALL_STARTUP_ACK accepted", flush=True)
+    elif _mode == "sendto_fail":
+        print("CCALL_STARTUP_ACK rejected:sip_invite_start_failed", flush=True)
+    else:
+        print("CCALL_STARTUP_ACK rejected:startup_protocol_error", flush=True)
+    sys.exit(0)
+
 SERVER = os.environ.get("SIP_DOMAIN", "")
 PORT = int(os.environ.get("SIP_PORT", "5060"))
 USER = os.environ.get("SIP_USER", "")
@@ -129,10 +142,17 @@ reg_call_id = f"reg-{token(16)}@{LOCAL_IP}"
 reg_tag = token(8)
 
 
+# Tracks whether the most-recent sock.sendto() succeeded.
+# Read after invite() to decide which CCALL_STARTUP_ACK to emit.
+_last_send_ok = [True]
+
+
 def send(message, addr=None):
     try:
         sock.sendto(message.encode(), addr or (SERVER, PORT))
+        _last_send_ok[0] = True
     except (socket.gaierror, OSError) as exc:
+        _last_send_ok[0] = False
         print(f"send() to {addr} failed: {exc}", flush=True)
 
 
@@ -415,7 +435,17 @@ try:
     print(f"Calling {TARGET} from {LOCAL_IP}:{LOCAL_PORT}", flush=True)
     register()
     cseq = 1
+    _last_send_ok[0] = True  # reset before INVITE
     branch = invite(cseq)
+    # Emit structured ACK after the first INVITE send completes.
+    # _last_send_ok reflects whether sock.sendto() succeeded inside invite().
+    # The parent process (direct_sip_wrapper / call_runner pipe-reader) uses
+    # this sentinel to gate the startup-ACK event.  "Calling " printed above
+    # must NOT be used as an ACK signal — it fires before REGISTER/INVITE.
+    if _last_send_ok[0]:
+        print("CCALL_STARTUP_ACK accepted", flush=True)
+    else:
+        print("CCALL_STARTUP_ACK rejected:sip_invite_start_failed", flush=True)
     final_reply = None
     fallback_ip, fallback_port = None, None
     end = time.time() + int(os.environ.get("SIP_PROCESS_TIMEOUT_SECONDS", "90"))

@@ -63,10 +63,11 @@ _WORKER_CMD = [sys.executable, "-m", "app.commands.run_call_worker"]
 def _worker_env() -> dict:
     return {
         **os.environ,
-        "FLASK_ENV": "testing",
-        "MOCK_SIP_PROVIDER": "1",
-        "ENABLE_CALL_WORKER": "true",
-        "ENABLE_CALL_MONITOR": "false",  # no monitor singleton needed in tests
+        "FLASK_ENV":                "testing",
+        "MOCK_SIP_PROVIDER":        "1",
+        "MOCK_TTS_PROVIDER":        "1",   # skip real TTS network calls in worker
+        "ENABLE_CALL_WORKER":       "true",
+        "ENABLE_CALL_MONITOR":      "false",
         "CALL_WORKER_POLL_SECONDS": "0.5",
         "CALL_WORKER_LEASE_SECONDS": "30",
     }
@@ -89,7 +90,8 @@ def _run_worker(*extra_args: str, timeout: int = 30) -> _WorkerResult:
         env=_worker_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=cwd,
     )
     try:
@@ -131,6 +133,25 @@ def _tenant_order(app):
             (tenant_id,),
         )
 
+        # Shared phone number so select_caller_id() returns a value and the
+        # worker reaches the MOCK_SIP path.  Without a caller ID the dispatch
+        # raises DispatchNoCallerIdError (non-retryable) before MOCK_SIP fires.
+        from app.models.sip_provider import encrypt_password
+        sp_row = db.query_one(
+            """INSERT INTO sip_providers (name, sip_domain, sip_port, sip_user, sip_password, status)
+               VALUES (%s, 'sip.test.invalid', 5060, %s, %s, 'active')
+               RETURNING id""",
+            (f"PL-SP-{uid}", f"pluser-{uid}", encrypt_password("pl-fake-pw")),
+        )
+        provider_id = int(sp_row["id"])
+        pn_row = db.query_one(
+            """INSERT INTO phone_numbers (number, provider_id, number_type, status)
+               VALUES (%s, %s, 'shared', 'active')
+               RETURNING id""",
+            (f"019{uid}", provider_id),
+        )
+        pn_id = int(pn_row["id"])
+
         # Insert order.
         row = db.query_one(
             """INSERT INTO orders
@@ -168,8 +189,11 @@ def _tenant_order(app):
         db.execute("DELETE FROM api_keys WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM users WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM service_heartbeats WHERE instance_id LIKE %s",
-                   (f"%@%",))  # clean any heartbeats (no tenant_id column)
+                   (f"%@%",))
+        db.execute("DELETE FROM flows WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
+        db.execute("DELETE FROM phone_numbers WHERE id = %s", (pn_id,))
+        db.execute("DELETE FROM sip_providers WHERE id = %s", (provider_id,))
 
 
 # ── A. Crash after lease → expired lease recovered ───────────────────────────
@@ -249,12 +273,12 @@ def test_two_workers_only_one_claims_job(app, _tenant_order):
     proc1 = subprocess.Popen(
         _WORKER_CMD + ["--once"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=cwd,
+        encoding="utf-8", errors="replace", cwd=cwd,
     )
     proc2 = subprocess.Popen(
         _WORKER_CMD + ["--once"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=cwd,
+        encoding="utf-8", errors="replace", cwd=cwd,
     )
 
     pid1 = proc1.pid
@@ -394,15 +418,23 @@ def test_web_restart_job_survives_and_worker_picks_up(app):
         "ENABLE_CALL_WORKER": "false",   # web process must NOT process jobs itself
         "ENABLE_SCHEDULER":   "false",
         "MOCK_SIP_PROVIDER":  "1",
+        "MOCK_TTS_PROVIDER":  "1",       # avoid real TTS network calls in subprocess
         "PORT":               str(port),
+        # Prevent Werkzeug dev-server reloader from spawning a child subprocess.
+        # Without this, the outer reloader AND inner HTTP server both inherit our
+        # pipes; the pipe buffer fills on Flask startup logs and the whole chain
+        # deadlocks.  WERKZEUG_RUN_MAIN=true tells Werkzeug it is already the
+        # inner process, so no child is spawned.
+        "WERKZEUG_RUN_MAIN":  "true",
     }
 
-    # Start Flask on an isolated port (PORT env var read by run.py).
+    # Use DEVNULL so Flask startup logs cannot fill a pipe buffer and block.
+    # Readiness is confirmed by polling the health endpoint over HTTP.
     flask_proc = subprocess.Popen(
         [sys.executable, "run.py"],
         env=flask_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         cwd=cwd,
     )
     flask_pid = flask_proc.pid
@@ -411,7 +443,7 @@ def test_web_restart_job_survives_and_worker_picks_up(app):
         ready = _wait_for_http(f"http://127.0.0.1:{port}/health", timeout=30)
         if not ready:
             flask_proc.kill()
-            flask_proc.communicate()
+            flask_proc.wait()
             pytest.skip("Flask subprocess did not become ready in time — skipping")
 
         # Create tenant + API key via DB so we can authenticate via HTTP.
@@ -483,10 +515,10 @@ def test_web_restart_job_survives_and_worker_picks_up(app):
         # Kill Flask (simulate pod restart / process death).
         flask_proc.terminate()
         try:
-            flask_proc.communicate(timeout=5)
+            flask_proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             flask_proc.kill()
-            flask_proc.communicate()
+            flask_proc.wait()
 
     # Flask is dead. Job must still be 'queued' in PostgreSQL (durability proof).
     with app.app_context():
@@ -656,6 +688,8 @@ def _twenty_tenant_orders(app):
         db.execute("DELETE FROM api_keys WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM users WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM service_heartbeats WHERE instance_id LIKE %s", ("%@%",))
+        db.execute("DELETE FROM calls WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM flows WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
 
 
@@ -673,12 +707,12 @@ def test_two_workers_twenty_jobs_no_duplicates(app, _twenty_tenant_orders):
     proc1 = subprocess.Popen(
         _WORKER_CMD + ["--max-jobs", "10"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=cwd,
+        encoding="utf-8", errors="replace", cwd=cwd,
     )
     proc2 = subprocess.Popen(
         _WORKER_CMD + ["--max-jobs", "10"],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=cwd,
+        encoding="utf-8", errors="replace", cwd=cwd,
     )
     pid1, pid2 = proc1.pid, proc2.pid
 
@@ -772,8 +806,10 @@ def test_terminal_order_job_cancelled(app):
         # Cleanup
         db.execute("DELETE FROM call_jobs WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM calls WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM orders WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM wallets WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM flows WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
 
     assert job is not None
@@ -872,8 +908,10 @@ def test_permanent_rejection_marks_failed(app):
         # Cleanup
         db.execute("DELETE FROM call_jobs WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM calls WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM orders WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM wallets WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM flows WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
 
     assert job is not None
@@ -931,22 +969,38 @@ def test_stale_pending_startup_is_retryable(app):
         stale_started = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=120)
         call_row = db.query_one(
             """INSERT INTO calls
-                   (tenant_id, order_id, target_number, started_at, status,
+                   (tenant_id, order_id, number, started_at, status,
                     startup_state, call_type)
-               VALUES (%s, %s, %s, %s, 'ringing', 'pending', 'ivr')
+               VALUES (%s, %s, %s, %s, 'calling', 'pending', 'ivr')
                RETURNING id""",
             (tenant_id, order_id, "01700000001", stale_started),
         )
         call_id = int(call_row["id"])
 
-        # dispatch_order_call will hit DispatchDuplicateCallError (existing calls row)
+        # Simulate the state left by a worker crash after calls INSERT:
+        # order_call_attempts row exists with call_id = call_id (linked).
+        # dispatch_order_call will see this and raise DispatchDuplicateCallError,
+        # then classify the stale-pending call as retryable crash-recovery.
+        attempt_row = db.query_one(
+            """INSERT INTO order_call_attempts (order_id, tenant_id, attempt_no, call_id, created_at)
+               VALUES (%s, %s, 1, %s, now())
+               ON CONFLICT (order_id, attempt_no) DO UPDATE
+                   SET call_id = EXCLUDED.call_id
+               RETURNING id""",
+            (order_id, tenant_id, call_id),
+        )
+        attempt_id = int(attempt_row["id"] if isinstance(attempt_row, dict) else attempt_row[0])
+
+        # dispatch_order_call will hit DispatchDuplicateCallError (linked attempt exists)
         # and must classify the stale-pending call as retryable (not fresh-pending wait).
         result = dispatch_order_call(order_id, tenant_id, attempt_no=1)
 
         # Cleanup
+        db.execute("DELETE FROM order_call_attempts WHERE id = %s", (attempt_id,))
         db.execute("DELETE FROM calls WHERE id = %s", (call_id,))
         db.execute("DELETE FROM orders WHERE id = %s", (order_id,))
         db.execute("DELETE FROM wallets WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM flows WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
 
     assert not result.accepted, "Stale-pending should not return accepted=True"
@@ -1015,7 +1069,7 @@ def _tenant_order_with_sip(app):
         db.execute(
             """INSERT INTO customer_number_assignments (tenant_id, phone_number_id, is_primary)
                VALUES (%s, %s, true)
-               ON CONFLICT (phone_number_id, tenant_id) DO NOTHING""",
+               ON CONFLICT (phone_number_id) WHERE unassigned_at IS NULL DO NOTHING""",
             (tenant_id, pn_id),
         )
 
@@ -1056,6 +1110,7 @@ def _tenant_order_with_sip(app):
         db.execute("DELETE FROM api_keys WHERE tenant_id = %s",                (tenant_id,))
         db.execute("DELETE FROM users WHERE tenant_id = %s",                   (tenant_id,))
         db.execute("DELETE FROM service_heartbeats WHERE instance_id LIKE %s", ("%@%",))
+        db.execute("DELETE FROM flows WHERE tenant_id = %s",                   (tenant_id,))
         db.execute("DELETE FROM tenants WHERE id = %s",                        (tenant_id,))
 
 
@@ -1090,6 +1145,7 @@ def test_crash_after_calls_row_before_ack(app, _tenant_order_with_sip):
         **os.environ,
         "FLASK_ENV":                "testing",
         "MOCK_SIP_PROVIDER":        "",   # disabled — reach call_runner.start_call()
+        "MOCK_TTS_PROVIDER":        "1",
         "ENABLE_CALL_WORKER":       "true",
         "ENABLE_CALL_MONITOR":      "false",
         "CALL_WORKER_POLL_SECONDS": "0.5",
@@ -1100,7 +1156,8 @@ def test_crash_after_calls_row_before_ack(app, _tenant_order_with_sip):
         env=worker_a_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=cwd,
     )
     try:

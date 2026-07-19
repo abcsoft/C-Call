@@ -217,7 +217,7 @@ def _dispatch_job(app, job: dict) -> None:
             mark_failed(conn, job_id, result.error_code, result.safe_message)
             conn.execute(
                 "UPDATE orders SET order_status='FAILED', updated_at=now() "
-                "WHERE id=%s AND order_status='CALL_QUEUED'",
+                "WHERE id=%s AND order_status IN ('CALL_QUEUED', 'CALLING')",
                 (order_id,),
             )
 

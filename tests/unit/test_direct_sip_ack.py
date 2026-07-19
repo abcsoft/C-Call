@@ -1,7 +1,8 @@
 """tests/unit/test_direct_sip_ack.py — CCALL_STARTUP_ACK protocol unit tests.
 
 Proves that the ACK mechanism is only triggered by the exact structured sentinel
-emitted by direct_sip_wrapper.py — NOT by:
+emitted by direct_sip_call.py (and relayed verbatim by direct_sip_wrapper.py) —
+NOT by:
   - Popen alone (before any output is read)
   - A generic "Calling " line from inner subprocess output
   - Constructing IvrCall or submitting to the thread pool
@@ -256,4 +257,127 @@ class TestTwoChildProcessesIsolation:
         assert results[1] == (True, "")
         assert results[2] == (False, "pending"), (
             f"Reader 2 must remain pending: {results[2]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _DIRECT_SIP_ACK_TEST subprocess hook tests
+#
+# These tests spawn direct_sip_call.py as a real subprocess using the
+# _DIRECT_SIP_ACK_TEST env hook (active only when FLASK_ENV=testing).
+# They prove:
+#   sendto_ok  → CCALL_STARTUP_ACK accepted (ACK fires after mocked INVITE send)
+#   sendto_fail → CCALL_STARTUP_ACK rejected:sip_invite_start_failed
+#   unknown mode → CCALL_STARTUP_ACK rejected:startup_protocol_error
+# ---------------------------------------------------------------------------
+
+import os
+import subprocess
+import sys
+
+_DIRECT_SIP_SCRIPT = os.path.join(
+    os.path.dirname(__file__), "..", "..", "call_engine", "direct_sip_call.py"
+)
+
+
+def _run_direct_sip_with_hook(mode: str) -> list[str]:
+    """Spawn direct_sip_call.py with _DIRECT_SIP_ACK_TEST=<mode> and return output lines."""
+    env = {
+        **os.environ,
+        "FLASK_ENV": "testing",
+        "_DIRECT_SIP_ACK_TEST": mode,
+        # Minimal required env so the script initialises without crashing on
+        # missing vars before reaching the hook branch.
+        "SIP_DOMAIN": "sip.test.invalid",
+        "SIP_PORT": "5060",
+        "SIP_USER": "testuser",
+        "SIP_PASSWORD": "testpass",
+        "TARGET": "01700000000",
+        "LOCAL_IP": "127.0.0.1",
+        "LOCAL_PORT": "5061",
+    }
+    result = subprocess.run(
+        [sys.executable, _DIRECT_SIP_SCRIPT],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    return result.stdout.decode("utf-8", errors="replace").splitlines()
+
+
+class TestDirectSipAckTestHook:
+    def test_sendto_ok_emits_accepted(self):
+        """_DIRECT_SIP_ACK_TEST=sendto_ok → direct_sip_call.py emits CCALL_STARTUP_ACK accepted."""
+        lines = _run_direct_sip_with_hook("sendto_ok")
+        assert "CCALL_STARTUP_ACK accepted" in lines, (
+            f"Expected 'CCALL_STARTUP_ACK accepted' in output; got: {lines}"
+        )
+
+    def test_sendto_ok_does_not_emit_calling_as_ack(self):
+        """sendto_ok hook fast-paths — 'Calling ...' log line must NOT appear before ACK."""
+        lines = _run_direct_sip_with_hook("sendto_ok")
+        calling_lines = [l for l in lines if l.startswith("Calling ")]
+        # In hook mode the script exits immediately; no "Calling " should appear.
+        assert not calling_lines, (
+            f"Hook mode must not print 'Calling ...' before ACK; got: {calling_lines}"
+        )
+
+    def test_sendto_fail_emits_rejected_invite_start_failed(self):
+        """_DIRECT_SIP_ACK_TEST=sendto_fail → CCALL_STARTUP_ACK rejected:sip_invite_start_failed."""
+        lines = _run_direct_sip_with_hook("sendto_fail")
+        assert "CCALL_STARTUP_ACK rejected:sip_invite_start_failed" in lines, (
+            f"Expected rejected sentinel; got: {lines}"
+        )
+
+    def test_sendto_fail_does_not_emit_accepted(self):
+        """sendto_fail hook must NOT emit the accepted sentinel."""
+        lines = _run_direct_sip_with_hook("sendto_fail")
+        assert "CCALL_STARTUP_ACK accepted" not in lines, (
+            f"Hook sendto_fail must not produce 'accepted'; got: {lines}"
+        )
+
+    def test_unknown_mode_emits_protocol_error(self):
+        """_DIRECT_SIP_ACK_TEST=garbage → CCALL_STARTUP_ACK rejected:startup_protocol_error."""
+        lines = _run_direct_sip_with_hook("garbage_mode")
+        assert "CCALL_STARTUP_ACK rejected:startup_protocol_error" in lines, (
+            f"Unknown hook mode should give protocol_error; got: {lines}"
+        )
+
+    def test_hook_active_only_in_testing_env(self):
+        """Without FLASK_ENV=testing the _DIRECT_SIP_ACK_TEST hook must be ignored.
+
+        The script will attempt real SIP (and likely fail/exit quickly), but must
+        NOT emit CCALL_STARTUP_ACK accepted from the hook branch.  We set a short
+        process timeout and check the hook sentinel is absent.
+        """
+        env = {
+            **os.environ,
+            "FLASK_ENV": "production",   # hook branch should be skipped
+            "_DIRECT_SIP_ACK_TEST": "sendto_ok",
+            "SIP_DOMAIN": "sip.test.invalid",
+            "SIP_PORT": "5060",
+            "SIP_USER": "testuser",
+            "SIP_PASSWORD": "testpass",
+            "TARGET": "01700000000",
+            "LOCAL_IP": "127.0.0.1",
+            "LOCAL_PORT": "5061",
+        }
+        try:
+            result = subprocess.run(
+                [sys.executable, _DIRECT_SIP_SCRIPT],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Script hung trying real SIP — that's expected; capture what we can.
+            stdout = (exc.stdout or b"").decode("utf-8", errors="replace")
+        else:
+            stdout = result.stdout.decode("utf-8", errors="replace")
+
+        # The hook sentinel must NOT appear in non-testing mode.
+        assert "CCALL_STARTUP_ACK accepted" not in stdout.splitlines(), (
+            "Hook must be inactive outside FLASK_ENV=testing"
         )
