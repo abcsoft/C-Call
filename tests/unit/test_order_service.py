@@ -154,14 +154,14 @@ def test_queue_confirmation_call_failures(app, test_setup, monkeypatch):
 
         # Test invalid IDs — typed exceptions replace bare ValueError
         with pytest.raises(DispatchOrderNotFoundError):
-            queue_confirmation_call(999999, tenant_id)
+            queue_confirmation_call(999999, tenant_id, attempt_no=1)
         with pytest.raises(DispatchOrderNotFoundError):
-            queue_confirmation_call(order_id, 999999)
+            queue_confirmation_call(order_id, 999999, attempt_no=1)
 
         # Test missing caller ID CLI (delete all CLIs)
         db.execute("DELETE FROM phone_numbers")
         with pytest.raises(DispatchNoCallerIdError):
-            queue_confirmation_call(order_id, tenant_id)
+            queue_confirmation_call(order_id, tenant_id, attempt_no=1)
 
 def test_queue_confirmation_call_exception(app, test_setup, monkeypatch):
     """Test exception recovery when call_runner throws an error."""
@@ -185,7 +185,7 @@ def test_queue_confirmation_call_exception(app, test_setup, monkeypatch):
         
         from app.exceptions import DispatchStartupRejectedError, DispatchSipUnavailableError
         with pytest.raises((DispatchStartupRejectedError, DispatchSipUnavailableError)):
-            queue_confirmation_call(order_id, tenant_id)
+            queue_confirmation_call(order_id, tenant_id, attempt_no=1)
 
 def test_update_status_from_call_outcomes(app, test_setup, monkeypatch):
     """Test all outcome mappings, billing calculations, and retries in update_status_from_call."""
@@ -304,7 +304,7 @@ def test_manual_recall_controls(app, test_setup, monkeypatch):
     tenant_id = test_setup
     
     # Mock queue_confirmation_call to return 88
-    monkeypatch.setattr("app.services.order_service.queue_confirmation_call", lambda oid, tid: 88)
+    monkeypatch.setattr("app.services.order_service.queue_confirmation_call", lambda oid, tid, attempt_no: 88)
     
     with app.app_context():
         # Setup an order in CALLING state (recall forbidden)
@@ -381,11 +381,11 @@ def test_additional_service_methods(app, test_setup, monkeypatch):
         from app.exceptions import DispatchDuplicateCallError
 
         # 1st call dispatches successfully
-        call_id_1 = queue_confirmation_call(res_wrap["id"], tenant_id)
+        call_id_1 = queue_confirmation_call(res_wrap["id"], tenant_id, attempt_no=1)
         assert call_id_1 == call_id
-        # 2nd call hits crash-recovery guard — attempt already has a call
+        # 2nd call hits crash-recovery guard — attempt_no=1 already has a call
         with pytest.raises(DispatchDuplicateCallError):
-            queue_confirmation_call(res_wrap["id"], tenant_id)
+            queue_confirmation_call(res_wrap["id"], tenant_id, attempt_no=1)
         
         # Test update_status_from_call with missing order
         from app.services.order_service import update_status_from_call
@@ -442,7 +442,7 @@ def test_additional_service_methods(app, test_setup, monkeypatch):
         assert order_invalid is not None
         
         # Test queue_confirmation_call settings JSON parsing failure coverage
-        queue_confirmation_call(order_invalid["id"], tenant_id)
+        queue_confirmation_call(order_invalid["id"], tenant_id, attempt_no=1)
         
         # Restore original get_tenant_by_id
         monkeypatch.setattr("app.services.order_service.get_tenant_by_id", original_get_tenant)
