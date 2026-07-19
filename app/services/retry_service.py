@@ -275,18 +275,30 @@ def process_due_retries() -> int:
                     # Raise to roll back the (empty) transaction — no changes were made.
                     raise _SkipOrder()
 
+                # Create attempt row before job so order_call_attempt_id is non-null.
+                attempt_row = conn.execute(
+                    """INSERT INTO order_call_attempts (order_id, tenant_id, attempt_no, created_at)
+                       VALUES (%s, %s, %s, now())
+                       ON CONFLICT (order_id, attempt_no) DO UPDATE
+                           SET created_at = order_call_attempts.created_at
+                       RETURNING id""",
+                    (order_id, tenant_id, next_attempt_no),
+                ).fetchone()
+                attempt_id = int(attempt_row["id"] if isinstance(attempt_row, dict) else attempt_row[0])
+
                 # Insert durable job — idempotent if already queued for this attempt.
                 enqueue_order_call(
                     conn,
                     order_id=order_id,
                     tenant_id=tenant_id,
                     attempt_no=next_attempt_no,
+                    order_call_attempt_id=attempt_id,
                 )
-                # Increment attempt counter only after job is safely committed.
+                # Set attempt_count to the new attempt number (authoritative).
                 conn.execute(
-                    "UPDATE orders SET attempt_count = attempt_count + 1, updated_at = now() "
+                    "UPDATE orders SET attempt_count = %s, updated_at = now() "
                     "WHERE id = %s AND tenant_id = %s",
-                    (order_id, tenant_id),
+                    (next_attempt_no, order_id, tenant_id),
                 )
 
             logger.info(

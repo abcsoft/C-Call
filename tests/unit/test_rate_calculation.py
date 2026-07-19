@@ -17,8 +17,8 @@ def test_rate_calculations(app):
         assert estimate_charge(tenant_id) == Decimal("0.80")
         
         # calculate_charge for different talk times
-        # 0s talk time -> min_charge (0.80)
-        assert calculate_charge(0, tenant_id) == Decimal("0.80")
+        # 0s talk time -> 0 (call was not answered; billing based on connection evidence)
+        assert calculate_charge(0, tenant_id) == Decimal("0.00")
         # 45s talk time -> 1 min -> 0.80
         assert calculate_charge(45, tenant_id) == Decimal("0.80")
         # 60s talk time -> 1 min -> 0.80
@@ -182,11 +182,13 @@ def test_pulse_billing_and_failed_calls(app):
             (tenant_id, order["id"], order["phone"])
         )
         
-        # Create a call attempt link
+        # Link call_id to the pre-created attempt row (attempt_no=1 was created in create_order).
         db.execute(
             """
             INSERT INTO order_call_attempts (order_id, tenant_id, call_id, attempt_no, result)
             VALUES (%s, %s, %s, 1, 'initiated')
+            ON CONFLICT (order_id, attempt_no) DO UPDATE
+                SET call_id = EXCLUDED.call_id, result = EXCLUDED.result
             """,
             (order["id"], tenant_id, call_id)
         )

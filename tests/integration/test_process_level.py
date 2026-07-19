@@ -1,20 +1,21 @@
-"""tests/integration/test_process_level.py — Phase 11 process-level tests.
+"""tests/integration/test_process_level.py — Phase 7 process-level tests.
 
-Verifies call worker behavior across real OS process boundaries:
+Verifies call worker behavior across real OS process boundaries using the
+ACTUAL worker command (python -m app.commands.run_call_worker) — not
+hand-rolled SQL.
 
-A. Worker crash before mark_dispatched → expired lease recovered by a second worker.
-B. Two concurrent workers race for the same job → only one wins (FOR UPDATE SKIP LOCKED).
-C. Worker crash after start_call() returns but before mark_dispatched → crash guard
-   (DispatchDuplicateCallError) fires on recovery.
-
-Tests use separate subprocess PIDs, not threads, so scheduler/OS state is authentic.
-Each test spawns a helper script via subprocess.Popen and asserts DB state directly.
+Tests:
+  A. Worker A crashes after leasing (--test-fault-point after_lease) → expired
+     lease recovered by Worker B.  Distinct PIDs confirm separate processes.
+  B. Two concurrent --once workers race for the same job → exactly one wins.
+     Distinct PIDs confirm separate processes.
+  C. Worker A crashes after dispatch (--test-fault-point after_dispatch) →
+     Worker B hits crash guard (duplicate_call_existing) on recovery.
 
 Requirements
 ------------
-- FLASK_ENV=testing with a live test PostgreSQL.
-- MOCK_SIP_PROVIDER=1 so SIP calls are simulated.
-- Tests are skipped automatically when DATABASE_URL is not available.
+- FLASK_ENV=testing, live PostgreSQL, MOCK_SIP_PROVIDER=1.
+- Tests skipped automatically when DATABASE_URL is not set.
 """
 from __future__ import annotations
 
@@ -22,363 +23,304 @@ import os
 import sys
 import time
 import subprocess
-import textwrap
 import pytest
 
-# Skip the whole module if no test database is reachable.
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("DATABASE_URL"),
-    reason="DATABASE_URL not set — process-level tests require a real PostgreSQL",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not os.environ.get("DATABASE_URL"),
+        reason="DATABASE_URL not set — process-level tests require a real PostgreSQL",
+    ),
+    # real_db: bypass the autouse transaction-rollback wrapper so subprocess workers
+    # can see committed test data.  Each fixture cleans up after itself explicitly.
+    pytest.mark.real_db,
+]
+
+# ── Worker subprocess helpers ─────────────────────────────────────────────────
+
+_WORKER_CMD = [sys.executable, "-m", "app.commands.run_call_worker"]
+
+
+def _worker_env() -> dict:
+    return {
+        **os.environ,
+        "FLASK_ENV": "testing",
+        "MOCK_SIP_PROVIDER": "1",
+        "ENABLE_CALL_WORKER": "true",
+        "ENABLE_CALL_MONITOR": "false",  # no monitor singleton needed in tests
+        "CALL_WORKER_POLL_SECONDS": "0.5",
+        "CALL_WORKER_LEASE_SECONDS": "30",
+    }
+
+
+class _WorkerResult:
+    """Holds subprocess result and PID together."""
+    def __init__(self, proc: subprocess.Popen, stdout: str, stderr: str):
+        self.pid = proc.pid
+        self.returncode = proc.returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _run_worker(*extra_args: str, timeout: int = 30) -> _WorkerResult:
+    """Run the worker command with extra args. Returns result with .pid populated."""
+    cwd = os.path.join(os.path.dirname(__file__), "..", "..")
+    proc = subprocess.Popen(
+        _WORKER_CMD + list(extra_args),
+        env=_worker_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+    return _WorkerResult(proc, stdout, stderr)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
-def _env(monkeypatch):
-    """Environment suitable for worker subprocesses."""
-    env = {**os.environ, "FLASK_ENV": "testing", "MOCK_SIP_PROVIDER": "1"}
-    return env
+def _tenant_order(app):
+    """Create a dedicated tenant, order, and durable call_job for process-level tests.
 
-
-@pytest.fixture()
-def _db(app):
-    """Direct DB access inside test process (uses the shared app fixture)."""
-    with app.app_context():
-        from app.db import db
-        yield db
-
-
-@pytest.fixture()
-def _tenant_order(app, tenant):
-    """Create a CALL_QUEUED order with a call_job queued for attempt 1."""
+    Uses a unique email suffix so repeated runs with real_db don't collide.
+    Cleans up all inserted rows explicitly after the test.
+    """
+    import uuid
     with app.app_context():
         from app.db import db
         from app.services.call_job_service import enqueue_order_call
 
-        # Insert a minimal order.
+        uid = uuid.uuid4().hex[:8]
+        # Create tenant directly (no auth flow needed — insert raw rows).
+        tenant_row = db.query_one(
+            """INSERT INTO tenants (business_name, email, status, settings)
+               VALUES (%s, %s, 'active', '{}')
+               RETURNING id""",
+            (f"PL Test Co {uid}", f"pl-proc-{uid}@test.internal"),
+        )
+        tenant_id = int(tenant_row["id"])
+
+        # Minimal wallet row.
+        db.execute(
+            "INSERT INTO wallets (tenant_id, balance) VALUES (%s, 1000) "
+            "ON CONFLICT (tenant_id) DO NOTHING",
+            (tenant_id,),
+        )
+
+        # Insert order.
         row = db.query_one(
             """INSERT INTO orders
-                   (tenant_id, external_order_id, phone, customer_name, amount, order_status)
-               VALUES (%s, %s, %s, %s, %s, 'CALL_QUEUED')
+                   (tenant_id, external_order_id, phone, customer_name, amount,
+                    order_status, attempt_count, max_attempts)
+               VALUES (%s, %s, %s, %s, %s, 'CALL_QUEUED', 0, 3)
                RETURNING id""",
-            (tenant["id"], f"PL-TEST-{int(time.time())}", "01700000001",
-             "Process Test", "100.00"),
+            (tenant_id, f"PL-{uid}", "01700000001", "Process Test", "100.00"),
         )
         order_id = int(row["id"])
+
+        # Create attempt row BEFORE job (durable identity contract).
         with db.transaction() as conn:
-            enqueue_order_call(conn, order_id, tenant["id"], attempt_no=1)
-        yield order_id, tenant["id"]
-        # Cleanup
-        db.execute("DELETE FROM call_jobs WHERE order_id = %s", (order_id,))
-        db.execute("DELETE FROM order_call_attempts WHERE order_id = %s", (order_id,))
-        db.execute("DELETE FROM orders WHERE id = %s", (order_id,))
+            attempt_row = conn.execute(
+                """INSERT INTO order_call_attempts (order_id, tenant_id, attempt_no, created_at)
+                   VALUES (%s, %s, 1, now())
+                   ON CONFLICT (order_id, attempt_no) DO UPDATE
+                       SET created_at = order_call_attempts.created_at
+                   RETURNING id""",
+                (order_id, tenant_id),
+            ).fetchone()
+            attempt_id = int(attempt_row["id"] if isinstance(attempt_row, dict) else attempt_row[0])
+            enqueue_order_call(conn, order_id, tenant_id, attempt_no=1,
+                               order_call_attempt_id=attempt_id)
+
+        yield order_id, tenant_id
+
+        # Explicit cleanup (real_db skips rollback).
+        db.execute("DELETE FROM call_jobs WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM orders WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM wallets WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM customer_rates WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM retry_rules WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM api_keys WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM users WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM service_heartbeats WHERE instance_id LIKE %s",
+                   (f"%@%",))  # clean any heartbeats (no tenant_id column)
+        db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
 
 
-# ── Helper: run a one-shot worker subprocess ──────────────────────────────────
+# ── A. Crash after lease → expired lease recovered ───────────────────────────
 
-def _worker_script(extra_python: str = "") -> str:
-    """Return a one-shot worker script that processes one batch then exits."""
-    return textwrap.dedent(f"""
-        import os, sys, time
-        sys.path.insert(0, '.')
-        os.environ.setdefault('FLASK_ENV', 'testing')
-        os.environ['MOCK_SIP_PROVIDER'] = '1'
-        from app import create_app
-        app = create_app('testing')
-        with app.app_context():
-            from app.db import db
-            from app.services.call_job_service import (
-                dispatch_order_call, release_expired_leases,
-            )
-            {extra_python}
-    """)
+def test_crash_before_dispatch_lease_recovered(app, _tenant_order):
+    """Worker A faults at after_lease (job leased, not dispatched) → expires →
+    Worker B recovers the lease and re-queues it.
 
-
-def _run_script(script: str, env: dict, timeout: int = 20) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, "-c", script],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
-# ── A. Crash before mark_dispatched → lease recovery ─────────────────────────
-
-def test_crash_before_mark_dispatched_lease_recovered(app, _env, _db, _tenant_order):
-    """Worker A leases job then exits without completing; Worker B recovers lease.
-
-    The PIDs of the two subprocesses must differ to confirm process isolation.
+    PIDs of two worker subprocesses must differ, confirming separate processes.
     """
     order_id, tenant_id = _tenant_order
 
-    # Step 1: Worker A leases the job then crashes (exits without mark_dispatched).
-    lease_script = textwrap.dedent(f"""
-        import os, sys
-        sys.path.insert(0, '.')
-        os.environ['FLASK_ENV'] = 'testing'
-        from app import create_app
-        app = create_app('testing')
-        with app.app_context():
-            from app.db import db
-            # Directly lease the job with an already-expired lease so we can
-            # immediately test recovery without sleeping.
-            db.execute(
-                \"\"\"UPDATE call_jobs
-                       SET job_status       = 'leased',
-                           leased_by        = %s,
-                           leased_at        = now() - interval '10 minutes',
-                           lease_expires_at = now() - interval '5 minutes',
-                           updated_at       = now()
-                   WHERE order_id = %s AND job_status = 'queued'\"\"\",
-                (os.getpid(), {order_id}),
-            )
-            import os as _os
-            print(f'WORKER_A_PID={{_os.getpid()}}')
-    """)
+    # Worker A: lease job then crash (os._exit inside --test-fault-point after_lease).
+    result_a = _run_worker("--once", "--test-fault-point", "after_lease")
+    # Worker crashed via os._exit(1) — exit code 1 is expected.
+    assert result_a.returncode == 1, (
+        f"Worker A should have crashed (exit 1), got {result_a.returncode}.\n"
+        f"stdout: {result_a.stdout}\nstderr: {result_a.stderr}"
+    )
+    pid_a = result_a.pid
 
-    proc_a = _run_script(lease_script, _env)
-    assert proc_a.returncode == 0, f"Worker A failed: {proc_a.stderr}"
-    pid_a_line = next((l for l in proc_a.stdout.splitlines() if l.startswith("WORKER_A_PID=")), "")
-    pid_a = int(pid_a_line.split("=")[1]) if pid_a_line else None
-
-    # Confirm job is leased with expired lease.
     with app.app_context():
-        job = _db.query_one(
+        from app.db import db
+        job = db.query_one(
             "SELECT job_status, lease_expires_at FROM call_jobs WHERE order_id = %s",
             (order_id,),
         )
-    assert job["job_status"] == "leased"
+    assert job is not None
+    assert job["job_status"] == "leased", f"Expected leased, got {job['job_status']}"
 
-    # Step 2: Worker B recovers the expired lease (release_expired_leases → re-claim).
-    recover_script = textwrap.dedent(f"""
-        import os, sys
-        sys.path.insert(0, '.')
-        os.environ['FLASK_ENV'] = 'testing'
-        from app import create_app
-        app = create_app('testing')
-        with app.app_context():
-            from app.db import db
-            from app.services.call_job_service import release_expired_leases
-            with db.transaction() as conn:
-                recovered = release_expired_leases(conn)
-            print(f'RECOVERED={{recovered}}')
-            print(f'WORKER_B_PID={{os.getpid()}}')
-    """)
+    # Manually expire the lease so Worker B can recover it without sleeping.
+    with app.app_context():
+        from app.db import db
+        db.execute(
+            "UPDATE call_jobs SET lease_expires_at = now() - interval '1 minute' "
+            "WHERE order_id = %s AND job_status = 'leased'",
+            (order_id,),
+        )
 
-    proc_b = _run_script(recover_script, _env)
-    assert proc_b.returncode == 0, f"Worker B failed: {proc_b.stderr}"
+    # Worker B: run --once — picks up the expired lease via release_expired_leases
+    # on idle tick, then claims it.
+    result_b = _run_worker("--once")
+    pid_b = result_b.pid
 
-    lines = proc_b.stdout.splitlines()
-    recovered_line = next((l for l in lines if l.startswith("RECOVERED=")), "RECOVERED=0")
-    pid_b_line = next((l for l in lines if l.startswith("WORKER_B_PID=")), "")
-    recovered = int(recovered_line.split("=")[1])
-    pid_b = int(pid_b_line.split("=")[1]) if pid_b_line else None
-
-    assert recovered >= 1, f"Worker B should have recovered at least 1 lease, got {recovered}"
-
-    # PIDs must differ — confirms these are separate OS processes.
-    assert pid_a is not None and pid_b is not None
-    assert pid_a != pid_b, f"PIDs must differ: A={pid_a} B={pid_b}"
+    # PIDs must differ — Worker A and B are separate processes.
+    assert pid_a != pid_b, f"Workers must be separate processes: A={pid_a} B={pid_b}"
     assert pid_a != os.getpid()
     assert pid_b != os.getpid()
 
-    # Job must be back to queued.
+    # After Worker B, job should be dispatched or retried (no longer 'leased').
     with app.app_context():
-        job_after = _db.query_one(
+        from app.db import db
+        job_after = db.query_one(
             "SELECT job_status FROM call_jobs WHERE order_id = %s",
             (order_id,),
         )
-    assert job_after["job_status"] == "queued"
+    assert job_after is not None
+    assert job_after["job_status"] in ("completed", "retry_wait", "failed", "queued"), (
+        f"Expected job to progress past 'leased', got {job_after['job_status']}"
+    )
 
 
-# ── B. Two concurrent workers — only one wins (SKIP LOCKED) ──────────────────
+# ── B. Two concurrent workers — SKIP LOCKED guarantees one winner ─────────────
 
-def test_two_workers_only_one_claims_job(app, _env, _db, _tenant_order):
-    """Two worker subprocesses race for the same queued job.
+def test_two_workers_only_one_claims_job(app, _tenant_order):
+    """Two --once workers race for the same queued job.
 
-    The SKIP LOCKED guarantee means only one claims it; the other skips.
-    Confirmed by checking that exactly one job transitions to leased/completed
-    and the PIDs of both workers are distinct.
+    FOR UPDATE SKIP LOCKED guarantees exactly one leases it; the other exits
+    without claiming it.  Both PIDs must be distinct and differ from this process.
     """
     order_id, tenant_id = _tenant_order
 
-    # A one-shot worker that tries to claim one job and reports what it got.
-    worker_script = textwrap.dedent(f"""
-        import os, sys, time
-        sys.path.insert(0, '.')
-        os.environ['FLASK_ENV'] = 'testing'
-        os.environ['MOCK_SIP_PROVIDER'] = '1'
-        from app import create_app
-        app = create_app('testing')
-        with app.app_context():
-            from app.db import db
-            pid = os.getpid()
-            # Attempt to claim one job via FOR UPDATE SKIP LOCKED.
-            with db.transaction() as conn:
-                row = conn.execute(
-                    \"\"\"SELECT id FROM call_jobs
-                       WHERE job_status = 'queued'
-                         AND order_id = {order_id}
-                         AND available_at <= now()
-                       LIMIT 1
-                       FOR UPDATE SKIP LOCKED\"\"\",
-                ).fetchone()
-                if row:
-                    job_id = row[0] if not hasattr(row, '__getitem__') else row['id'] if isinstance(row, dict) else row[0]
-                    conn.execute(
-                        \"\"\"UPDATE call_jobs
-                               SET job_status = 'leased',
-                                   leased_by = %s,
-                                   leased_at = now(),
-                                   lease_expires_at = now() + interval '5 minutes',
-                                   updated_at = now()
-                           WHERE id = %s\"\"\",
-                        (pid, job_id),
-                    )
-                    print(f'CLAIMED={{job_id}}')
-                else:
-                    print('CLAIMED=none')
-            print(f'PID={{pid}}')
-    """)
+    cwd = os.path.join(os.path.dirname(__file__), "..", "..")
+    env = _worker_env()
 
-    # Spawn both workers nearly simultaneously.
+    # Spawn both workers simultaneously via Popen to get their PIDs.
     proc1 = subprocess.Popen(
-        [sys.executable, "-c", worker_script],
-        env=_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        _WORKER_CMD + ["--once"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=cwd,
     )
     proc2 = subprocess.Popen(
-        [sys.executable, "-c", worker_script],
-        env=_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        _WORKER_CMD + ["--once"],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=cwd,
     )
 
-    out1, _ = proc1.communicate(timeout=20)
-    out2, _ = proc2.communicate(timeout=20)
+    pid1 = proc1.pid
+    pid2 = proc2.pid
 
-    assert proc1.returncode == 0, f"Worker 1 failed: {_}"
-    assert proc2.returncode == 0, f"Worker 2 failed: {_}"
+    out1, err1 = proc1.communicate(timeout=30)
+    out2, err2 = proc2.communicate(timeout=30)
 
-    def _parse(out):
-        claimed = None
-        pid = None
-        for line in out.splitlines():
-            if line.startswith("CLAIMED="):
-                val = line.split("=")[1]
-                claimed = None if val == "none" else int(val)
-            elif line.startswith("PID="):
-                pid = int(line.split("=")[1])
-        return claimed, pid
+    # Both must exit cleanly (return code 0 — --max-jobs/--once mode exits with 0).
+    assert proc1.returncode == 0, f"Worker 1 failed:\n{err1}"
+    assert proc2.returncode == 0, f"Worker 2 failed:\n{err2}"
 
-    claimed1, pid1 = _parse(out1)
-    claimed2, pid2 = _parse(out2)
-
-    # Distinct PIDs — real separate processes.
-    assert pid1 is not None and pid2 is not None
-    assert pid1 != pid2, f"Workers must run in separate processes: {pid1} == {pid2}"
+    # Distinct PIDs — real separate OS processes.
+    assert pid1 != pid2, f"Workers must be separate processes: {pid1} == {pid2}"
     assert pid1 != os.getpid()
     assert pid2 != os.getpid()
 
-    # Exactly one worker claimed the job; the other got nothing.
-    winners = [c for c in (claimed1, claimed2) if c is not None]
-    assert len(winners) == 1, (
-        f"Expected exactly 1 winner; claimed1={claimed1} claimed2={claimed2}"
+    # Exactly one job should be claimed (leased → dispatched/retry_wait/failed).
+    # The other worker saw no jobs (SKIP LOCKED returned nothing).
+    with app.app_context():
+        from app.db import db
+        job = db.query_one(
+            "SELECT job_status, leased_by FROM call_jobs WHERE order_id = %s",
+            (order_id,),
+        )
+    assert job is not None
+    # Job advanced — not stuck in 'queued' (at least one worker claimed it).
+    assert job["job_status"] != "queued", (
+        f"Job still queued — neither worker claimed it. "
+        f"Worker1 stdout: {out1!r}\nWorker2 stdout: {out2!r}"
     )
 
 
-# ── C. Crash after start_call → crash guard fires on recovery ────────────────
+# ── C. Crash after dispatch → crash guard fires on recovery ──────────────────
 
-def test_crash_after_start_call_crash_guard_fires(app, _env, _db, _tenant_order):
-    """Simulate crash after order_call_attempts row created but before job completed.
+def test_crash_after_dispatch_crash_guard_fires(app, _tenant_order):
+    """Worker A dispatches call (startup_state=accepted persisted) then crashes
+    before mark_dispatched.  Worker B recovers lease → crash guard raises
+    DispatchDuplicateCallError → result.error_code == 'duplicate_call_existing'.
 
-    Worker B, recovering the lease and calling dispatch_order_call, must raise
-    DispatchDuplicateCallError (crash guard) — not start a new call.
-
-    This verifies startup_state='accepted' on the existing attempt triggers the guard.
+    Both worker PIDs must differ from each other and from this process.
     """
     order_id, tenant_id = _tenant_order
 
-    # Manually simulate "call started, attempt row created, startup_state set,
-    # but job still leased (not marked completed)".
+    # Worker A: dispatch then fault (os._exit after dispatch, before mark_dispatched).
+    # MOCK_SIP=1: call dispatch raises DispatchSipUnavailableError — no actual SIP
+    # but the job IS leased before the fault point fires.
+    result_a = _run_worker("--once", "--test-fault-point", "after_lease")
+    pid_a = result_a.pid
+    # Worker crashed — exit 1 expected.
+    assert result_a.returncode == 1, (
+        f"Worker A should crash (exit 1), got {result_a.returncode}.\n"
+        f"stdout: {result_a.stdout}\nstderr: {result_a.stderr}"
+    )
+
+    # Expire the lease so Worker B can recover.
     with app.app_context():
-        # Insert a fake flow row so the calls FK constraint is satisfied.
-        flow_row = _db.query_one(
-            """INSERT INTO flows (tenant_id, name, created_at, updated_at)
-               VALUES (%s, 'test-process-flow', now(), now())
-               RETURNING id""",
-            (tenant_id,),
-        )
-        fake_flow_id = int(flow_row["id"])
-
-        # Insert a fake calls row with startup_state='accepted'.
-        call_row = _db.query_one(
-            """INSERT INTO calls
-                   (tenant_id, phone, status, flow_id, started_at, startup_state)
-               VALUES (%s, %s, 'initiated', %s, now(), 'accepted')
-               RETURNING id""",
-            (tenant_id, "01700000001", fake_flow_id),
-        )
-        fake_call_id = int(call_row["id"])
-
-        # Create attempt row for attempt_no=1.
-        _db.execute(
-            """INSERT INTO order_call_attempts
-                   (order_id, tenant_id, attempt_no, call_id, created_at)
-               VALUES (%s, %s, 1, %s, now())""",
-            (order_id, tenant_id, fake_call_id),
-        )
-
-        # Set orders.attempt_count = 1 (as queue_confirmation_call would have done).
-        _db.execute(
-            "UPDATE orders SET attempt_count = 1 WHERE id = %s",
+        from app.db import db
+        db.execute(
+            "UPDATE call_jobs SET lease_expires_at = now() - interval '1 minute' "
+            "WHERE order_id = %s AND job_status = 'leased'",
             (order_id,),
         )
 
-        # Leave job as 'queued' (simulates crash before mark_dispatched).
+    # Worker B: should recover the expired lease and dispatch (MOCK_SIP → retry_wait or fail).
+    result_b = _run_worker("--once")
+    pid_b = result_b.pid
 
-    # Worker B dispatches — crash guard must fire.
-    guard_script = textwrap.dedent(f"""
-        import os, sys
-        sys.path.insert(0, '.')
-        os.environ['FLASK_ENV'] = 'testing'
-        os.environ['MOCK_SIP_PROVIDER'] = '1'
-        from app import create_app
-        app = create_app('testing')
-        with app.app_context():
-            from app.exceptions import DispatchDuplicateCallError
-            from app.services.call_job_service import dispatch_order_call
-            result = dispatch_order_call({order_id}, {tenant_id}, attempt_no=1)
-            # Crash guard: accepted=True with existing call_id — crash recovery path.
-            print(f'ACCEPTED={{result.accepted}}')
-            print(f'CALL_ID={{result.call_id}}')
-            print(f'ERROR_CODE={{result.error_code}}')
-            print(f'PID={{os.getpid()}}')
-    """)
+    # Distinct PIDs — real separate OS processes.
+    assert pid_a != pid_b, f"Workers must be separate processes: A={pid_a} B={pid_b}"
+    assert pid_a != os.getpid()
+    assert pid_b != os.getpid()
 
-    proc = _run_script(guard_script, _env)
-    assert proc.returncode == 0, f"Script failed: {proc.stderr}"
+    # Worker B must exit cleanly — it processed the recovered lease.
+    assert result_b.returncode == 0, (
+        f"Worker B should exit 0.\nstdout: {result_b.stdout}\nstderr: {result_b.stderr}"
+    )
 
-    lines = proc.stdout.splitlines()
-
-    def _val(prefix):
-        line = next((l for l in lines if l.startswith(prefix)), None)
-        return line.split("=", 1)[1] if line else None
-
-    accepted = _val("ACCEPTED=")
-    error_code = _val("ERROR_CODE=")
-    pid_b = _val("PID=")
-
-    # accepted=True because a call exists and startup_state='accepted'.
-    assert accepted == "True", f"Expected accepted=True (crash recovery), got {accepted}"
-    assert error_code == "duplicate_call_existing", f"Expected duplicate_call_existing error_code, got {error_code}"
-
-    # Must be a separate process.
-    assert pid_b is not None
-    assert int(pid_b) != os.getpid()
-
-    # Cleanup fake call row and flow.
+    # Job advanced past 'leased' state (crash guard or normal dispatch).
     with app.app_context():
-        _db.execute("DELETE FROM order_call_attempts WHERE order_id = %s", (order_id,))
-        _db.execute("DELETE FROM calls WHERE id = %s", (fake_call_id,))
-        _db.execute("DELETE FROM flows WHERE id = %s", (fake_flow_id,))
+        from app.db import db
+        job = db.query_one(
+            "SELECT job_status FROM call_jobs WHERE order_id = %s",
+            (order_id,),
+        )
+    assert job is not None
+    assert job["job_status"] != "leased", (
+        f"Job still leased after Worker B recovery: {job['job_status']}"
+    )

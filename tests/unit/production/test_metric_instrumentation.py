@@ -196,3 +196,105 @@ class TestBackupSuccessTimestamp:
         # Simulate backup failure: script exits before writing the file
         # (the file should not exist)
         assert not prom_file.exists(), "Success timestamp must not exist after failed backup"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# C. Call queue dispatch metrics
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestCallQueueDispatchMetrics:
+    """Verify CALL_JOB_DISPATCH_SUCCESS, CALL_JOB_DISPATCH_FAILURE, and
+    EXPIRED_LEASES_RECOVERED counters are incremented by the worker dispatch path.
+
+    Tests patch the Prometheus counter objects and assert .inc() was called,
+    since we cannot easily reset Prometheus global state between test runs.
+    """
+
+    def test_dispatch_success_counter_incremented(self):
+        """Successful dispatch increments CALL_JOB_DISPATCH_SUCCESS."""
+        import app.monitoring as mon
+        from unittest.mock import patch, MagicMock
+
+        mock_result = MagicMock()
+        mock_result.accepted = True
+        mock_result.call_id = 42
+        mock_result.order_call_attempt_id = 7
+
+        mock_db = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = lambda s: s
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_db.transaction.return_value = mock_conn
+
+        # dispatch_order_call / mark_dispatched are imported from call_job_service inside _dispatch_job.
+        # db is also imported from app.db inside _dispatch_job.
+        with patch("app.services.call_job_service.dispatch_order_call", return_value=mock_result), \
+             patch("app.services.call_job_service.mark_dispatched"), \
+             patch("app.db.db", mock_db), \
+             patch.object(mon, "CALL_JOB_DISPATCH_SUCCESS") as mock_success, \
+             patch.object(mon, "CALL_JOB_DISPATCH_FAILURE"):
+            from app.commands.run_call_worker import _dispatch_job
+            fake_app = MagicMock()
+            job = {
+                "id": 1, "order_id": 10, "tenant_id": 5,
+                "attempt_no": 1, "attempts": 1, "max_attempts": 5,
+            }
+            _dispatch_job(fake_app, job)
+
+        mock_success.inc.assert_called_once()
+
+    def test_dispatch_failure_counter_incremented_with_error_code(self):
+        """Failed dispatch increments CALL_JOB_DISPATCH_FAILURE with error_code label."""
+        import app.monitoring as mon
+        from unittest.mock import patch, MagicMock
+
+        mock_result = MagicMock()
+        mock_result.accepted = False
+        mock_result.call_id = None
+        mock_result.order_call_attempt_id = None
+        mock_result.retryable = True
+        mock_result.error_code = "sip_unavailable"
+        mock_result.safe_message = "SIP trunk down"
+
+        mock_db = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = lambda s: s
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_db.transaction.return_value = mock_conn
+
+        mock_failure_counter = MagicMock()
+        mock_labeled = MagicMock()
+        mock_failure_counter.labels.return_value = mock_labeled
+
+        with patch("app.services.call_job_service.dispatch_order_call", return_value=mock_result), \
+             patch("app.services.call_job_service.mark_retry_wait"), \
+             patch("app.db.db", mock_db), \
+             patch.object(mon, "CALL_JOB_DISPATCH_SUCCESS"), \
+             patch.object(mon, "CALL_JOB_DISPATCH_FAILURE", mock_failure_counter):
+            from app.commands.run_call_worker import _dispatch_job
+            fake_app = MagicMock()
+            job = {
+                "id": 1, "order_id": 10, "tenant_id": 5,
+                "attempt_no": 1, "attempts": 1, "max_attempts": 5,
+            }
+            _dispatch_job(fake_app, job)
+
+        mock_failure_counter.labels.assert_called_once_with(error_code="sip_unavailable")
+        mock_labeled.inc.assert_called_once()
+
+    def test_expired_lease_counter_incremented_on_recovery(self):
+        """release_expired_leases recovering N leases → EXPIRED_LEASES_RECOVERED.inc(N)."""
+        import app.monitoring as mon
+        from unittest.mock import patch, MagicMock
+
+        mock_conn = MagicMock()
+        mock_result = MagicMock()
+        mock_result.rowcount = 3
+        mock_conn.execute.return_value = mock_result
+
+        with patch("app.services.call_job_service.logger"), \
+             patch.object(mon, "EXPIRED_LEASES_RECOVERED") as mock_counter:
+            from app.services.call_job_service import release_expired_leases
+            count = release_expired_leases(mock_conn)
+
+        assert count == 3

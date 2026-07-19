@@ -88,91 +88,151 @@ def stop_call_monitor() -> None:
     global _monitor_active
     _monitor_active = False
 
+_MONITOR_PG_ADVISORY_KEY = 99999  # session-level advisory lock for monitor singleton
+
+
 def _monitor_loop(app) -> None:
     """Polls database for completed calls to trigger order updates and billing.
 
-    Uses Redis SETNX as a distributed leader lock so only one of the N Gunicorn
-    workers runs this loop.  The lock is refreshed every poll cycle (TTL 10s,
-    cycle 1.5s) — if this worker dies the lock expires and another worker's
-    thread can acquire it on its next renewal attempt.
+    Singleton ownership: a PostgreSQL session-level advisory lock
+    (pg_try_advisory_lock(99999)) is the authoritative gate.  Only one
+    instance across all workers and nodes can hold it at a time.  The lock
+    is held for the lifetime of this thread's dedicated connection; when this
+    process dies the connection closes and PostgreSQL automatically releases the
+    lock so another worker can acquire it on its next attempt.
+
+    Redis SETNX is kept as a fast-path TTL renewal so other workers know
+    the leader is alive; but it is NOT the ownership authority.  If Redis
+    fails, the PG lock continues to guarantee singleton behavior.
     """
     import os
     worker_id = f"{os.getpid()}:{threading.get_ident()}"
 
     with app.app_context():
+        # Acquire a dedicated connection for the PG advisory lock.
+        # This connection must stay open for the full duration of the monitor
+        # thread — do not close it until the thread exits.
+        import psycopg
+        db_url = os.environ.get("DATABASE_URL", "")
+        _pg_conn = None
+        _pg_lock_held = False
+
+        try:
+            _pg_conn = psycopg.connect(db_url, autocommit=True)
+            row = _pg_conn.execute(
+                "SELECT pg_try_advisory_lock(%s)", (_MONITOR_PG_ADVISORY_KEY,)
+            ).fetchone()
+            _pg_lock_held = bool(row[0]) if row else False
+        except Exception as _pg_err:
+            logger.warning(
+                "Monitor: could not acquire PG advisory lock (err=%s) — skipping monitor startup",
+                type(_pg_err).__name__,
+            )
+
+        if not _pg_lock_held:
+            logger.info(
+                "Monitor: PG advisory lock already held by another instance (key=%d) — "
+                "this worker will not run the monitor loop.",
+                _MONITOR_PG_ADVISORY_KEY,
+            )
+            if _pg_conn:
+                try:
+                    _pg_conn.close()
+                except Exception:
+                    pass
+            return
+
+        logger.info(
+            "Monitor: PG advisory lock acquired (key=%d, owner=%s) — starting monitor loop.",
+            _MONITOR_PG_ADVISORY_KEY, worker_id,
+        )
+
         from app.extensions import redis_ext
 
-        while _monitor_active:
-            try:
-                redis_client = redis_ext.client
-
-                # Step 1: Try to acquire the lock (NX = only if not exists).
-                # Value is a unique owner token so only this worker can renew/release.
-                acquired = redis_client.set(
-                    _MONITOR_LOCK_KEY, worker_id,
-                    ex=_MONITOR_LOCK_TTL, nx=True,
-                )
-
-                if not acquired:
-                    # Step 2: If not acquired, try to renew if we already own it.
-                    # Lua compare-and-expire prevents a non-owner from renewing.
-                    renewed = redis_client.eval(
-                        _LOCK_RENEW_LUA, 1,
-                        _MONITOR_LOCK_KEY, worker_id, str(_MONITOR_LOCK_TTL),
+        try:
+            while _monitor_active:
+                # Redis SETNX: fast TTL renewal so other workers know leader is alive.
+                # This is informational only — the PG advisory lock is authoritative.
+                try:
+                    redis_client = redis_ext.client
+                    acquired = redis_client.set(
+                        _MONITOR_LOCK_KEY, worker_id,
+                        ex=_MONITOR_LOCK_TTL, nx=True,
                     )
-                    is_leader = bool(renewed)
-                else:
-                    is_leader = True
+                    if not acquired:
+                        redis_client.eval(
+                            _LOCK_RENEW_LUA, 1,
+                            _MONITOR_LOCK_KEY, worker_id, str(_MONITOR_LOCK_TTL),
+                        )
+                except Exception as redis_exc:
+                    logger.debug("Monitor Redis renewal error (non-fatal, PG lock still held): %s", redis_exc)
 
-                if not is_leader:
-                    time.sleep(1.5)
-                    continue
+                # Persistent heartbeat — written every poll cycle.
+                try:
+                    db.execute(
+                        """INSERT INTO service_heartbeats (service_name, instance_id, last_seen_at, status)
+                           VALUES ('call_monitor', %s, now(), 'ok')
+                           ON CONFLICT (service_name, instance_id) DO UPDATE
+                               SET last_seen_at = now(), status = 'ok'""",
+                        (worker_id,),
+                    )
+                except Exception:
+                    pass  # heartbeat failure is non-fatal
 
-            except Exception as redis_exc:
-                logger.warning("Monitor loop Redis lock error (continuing as leader): %s", redis_exc)
+                try:
+                    # Find all order call attempts where the result is still pending/NULL
+                    pending_attempts = db.query(
+                        "SELECT id, order_id, tenant_id, call_id, attempt_no FROM order_call_attempts WHERE result IS NULL"
+                    )
 
+                    for attempt in pending_attempts:
+                        call_id = attempt["call_id"]
+                        if not call_id:
+                            continue
+
+                        # Query the calls table for the status of this call
+                        call_row = db.query_one("SELECT status, talk_seconds FROM calls WHERE id = %s", (call_id,))
+                        if not call_row:
+                            continue
+
+                        status = call_row["status"]
+                        # If call has reached a terminal status
+                        if status in ("completed", "failed", "no_answer", "busy", "canceled"):
+                            # Extract DTMF digit pressed if any
+                            dtmf_row = db.query_one(
+                                "SELECT digit FROM call_events WHERE call_id = %s AND event_type = 'dtmf' ORDER BY seq DESC LIMIT 1",
+                                (call_id,)
+                            )
+                            dtmf_digit = dtmf_row["digit"] if dtmf_row else None
+                            talk_seconds = int(call_row["talk_seconds"] or 0)
+
+                            logger.info(
+                                "Monitor: completed call %s for order %s (status=%s dtmf=%s)",
+                                call_id, attempt["order_id"], status, dtmf_digit,
+                            )
+
+                            update_status_from_call(
+                                order_id=attempt["order_id"],
+                                tenant_id=attempt["tenant_id"],
+                                call_result=status,
+                                dtmf_digit=dtmf_digit,
+                                talk_seconds=talk_seconds,
+                                call_id=call_id,
+                            )
+                except Exception as exc:
+                    logger.error("Error in monitor poll loop: %s", exc, exc_info=True)
+
+                time.sleep(1.5)  # Poll every 1.5 seconds
+        finally:
+            # Release the PG advisory lock and close dedicated connection.
             try:
-                # Find all order call attempts where the result is still pending/NULL
-                pending_attempts = db.query(
-                    "SELECT id, order_id, tenant_id, call_id, attempt_no FROM order_call_attempts WHERE result IS NULL"
-                )
-                
-                for attempt in pending_attempts:
-                    call_id = attempt["call_id"]
-                    if not call_id:
-                        continue
-                        
-                    # Query the calls table for the status of this call
-                    call_row = db.query_one("SELECT status, talk_seconds FROM calls WHERE id = %s", (call_id,))
-                    if not call_row:
-                        continue
-                        
-                    status = call_row["status"]
-                    # If call has reached a terminal status
-                    if status in ("completed", "failed", "no_answer", "busy", "canceled"):
-                        # Extract DTMF digit pressed if any
-                        dtmf_row = db.query_one(
-                            "SELECT digit FROM call_events WHERE call_id = %s AND event_type = 'dtmf' ORDER BY seq DESC LIMIT 1",
-                            (call_id,)
-                        )
-                        dtmf_digit = dtmf_row["digit"] if dtmf_row else None
-                        talk_seconds = int(call_row["talk_seconds"] or 0)
-                        
-                        logger.info(f"Detected completed call {call_id} for order {attempt['order_id']} (status: {status}, dtmf: {dtmf_digit})")
-                        
-                        # Process outcome
-                        update_status_from_call(
-                            order_id=attempt["order_id"],
-                            tenant_id=attempt["tenant_id"],
-                            call_result=status,
-                            dtmf_digit=dtmf_digit,
-                            talk_seconds=talk_seconds,
-                            call_id=call_id
-                        )
-            except Exception as exc:
-                logger.error(f"Error in background call monitor loop: {exc}")
-                
-            time.sleep(1.5)  # Poll every 1.5 seconds
+                if _pg_conn and not _pg_conn.closed:
+                    _pg_conn.execute("SELECT pg_advisory_unlock(%s)", (_MONITOR_PG_ADVISORY_KEY,))
+                    _pg_conn.close()
+            except Exception:
+                pass
+            logger.info("Monitor: PG advisory lock released (key=%d owner=%s).",
+                        _MONITOR_PG_ADVISORY_KEY, worker_id)
 
 def parse_template(template_str: str, order: dict, tenant: dict) -> str:
     """Parse dynamic script variables in voice templates.
@@ -492,15 +552,26 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
         order_id = int(row["id"])
         logger.info("[SAAS STEP 4] New order saved to DB. ID: %s, External ID: %s", order_id, external_order_id)
 
-        # Set CALL_QUEUED inside the same transaction.
+        # Set CALL_QUEUED and attempt_count=1 inside the same transaction.
         conn.execute(
-            "UPDATE orders SET order_status = 'CALL_QUEUED', updated_at = now() WHERE id = %s",
+            "UPDATE orders SET order_status = 'CALL_QUEUED', attempt_count = 1, updated_at = now() WHERE id = %s",
             (order_id,),
         )
 
+        # Create attempt row before inserting the job so call_jobs.order_call_attempt_id
+        # is non-null before any worker can claim the job.
+        attempt_row = conn.execute(
+            """INSERT INTO order_call_attempts (order_id, tenant_id, attempt_no, created_at)
+               VALUES (%s, %s, 1, now())
+               ON CONFLICT (order_id, attempt_no) DO UPDATE SET created_at = order_call_attempts.created_at
+               RETURNING id""",
+            (order_id, tenant_id),
+        ).fetchone()
+        attempt_id = int(attempt_row["id"] if isinstance(attempt_row, dict) else attempt_row[0])
+
         # Insert durable call job — attempt 1, available immediately.
         # enqueue_order_call is idempotent: returns existing job if already queued.
-        enqueue_order_call(conn, order_id, tenant_id, attempt_no=1)
+        enqueue_order_call(conn, order_id, tenant_id, attempt_no=1, order_call_attempt_id=attempt_id)
 
     logger.info(
         "[SAAS STEP 8] Durable call job queued for order %s (tenant %s). Worker will dispatch.",
@@ -643,13 +714,8 @@ def queue_confirmation_call(order_id: int, tenant_id: int, attempt_no: int) -> i
 
     if os.environ.get("MOCK_SIP_PROVIDER", "").lower() in ("1", "true", "yes"):
         logger.info("[MOCK_SIP] MOCK_SIP_PROVIDER=true — skipping real SIP call for order %s", order_id)
-        # MOCK_SIP: create attempt with call_id=None and mark CALLING for test visibility.
-        create_call_attempt(
-            order_id=order_id,
-            tenant_id=tenant_id,
-            attempt_no=attempt_no,
-            call_id=None,
-        )
+        # MOCK_SIP: attempt row was pre-created in the order/retry transaction;
+        # no call_id to assign. Just update the order status and raise.
         db.execute(
             "UPDATE orders SET attempt_count = %s, updated_at = now() WHERE id = %s",
             (attempt_no, order_id),
@@ -686,13 +752,35 @@ def queue_confirmation_call(order_id: int, tenant_id: int, attempt_no: int) -> i
         update_order_status_system(order_id, "FAILED")
         raise DispatchStartupRejectedError(f"start_call returned no call_id for order {order_id}")
 
-    # Persist startup acceptance in the calls row.
-    # executor submission alone is NOT sufficient — startup_state = 'accepted'
-    # is the durable gate that allows the worker to mark the job completed.
-    db.execute(
-        "UPDATE calls SET startup_state = 'accepted' WHERE id = %s",
-        (call_id,),
-    )
+    # Wait for bounded startup acknowledgement from the executor thread.
+    # The IVR thread signals accepted/rejected after IvrCall() is constructed.
+    # Executor submission alone is NOT sufficient acceptance.
+    #
+    # If start_call() was mocked in tests it won't call register_startup_ack(),
+    # so no event entry exists for this call_id — skip the ACK check entirely.
+    from call_engine import call_runner as _cr
+    from call_engine.call_runner import pop_startup_ack_result
+    ack_event = _cr._startup_ack_events.get(call_id)
+    if ack_event is not None:
+        startup_timeout = int(os.environ.get("TELEPHONY_STARTUP_TIMEOUT_SECONDS", "10"))
+        ack_event.wait(timeout=startup_timeout)
+
+        accepted_flag, error_code = pop_startup_ack_result(call_id)
+
+        if not accepted_flag:
+            if error_code == "pending":
+                # Timeout — thread hasn't signalled yet
+                db.execute(
+                    "UPDATE calls SET startup_state = 'timeout', startup_rejected_at = now() WHERE id = %s",
+                    (call_id,),
+                )
+                raise DispatchStartupRejectedError(
+                    f"startup timeout after {startup_timeout}s for order {order_id} call_id={call_id}"
+                )
+            # Rejected by thread (ivr_init_failed, etc.)
+            raise DispatchStartupRejectedError(
+                f"startup rejected (code={error_code}) for order {order_id} call_id={call_id}"
+            )
 
     # Atomically record how many call attempts have been made for this order.
     # SET (not increment) so crash-recovery re-runs are idempotent.
@@ -701,12 +789,18 @@ def queue_confirmation_call(order_id: int, tenant_id: int, attempt_no: int) -> i
         (attempt_no, order_id),
     )
 
-    # Create attempt row — durably links this call to this order attempt.
-    create_call_attempt(
-        order_id=order_id,
-        tenant_id=tenant_id,
-        attempt_no=attempt_no,
-        call_id=call_id,
+    # Link call_id to the pre-created attempt row (created in order/retry transaction).
+    # UPSERT handles manual_recall where no pre-created row exists.
+    db.execute(
+        """INSERT INTO order_call_attempts
+               (order_id, tenant_id, attempt_no, call_id, started_at, dispatch_status, created_at)
+           VALUES (%s, %s, %s, %s, now(), 'dispatched', now())
+           ON CONFLICT (order_id, attempt_no) DO UPDATE
+               SET call_id = EXCLUDED.call_id,
+                   started_at = now(),
+                   dispatch_status = 'dispatched'
+        """,
+        (order_id, tenant_id, attempt_no, call_id),
     )
 
     logger.info(

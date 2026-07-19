@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import random
 from dataclasses import dataclass
 from typing import Optional
@@ -55,6 +56,7 @@ def enqueue_order_call(
     available_at: Optional[datetime.datetime] = None,
     max_attempts: int = DEFAULT_MAX_DISPATCH_ATTEMPTS,
     priority: int = 0,
+    order_call_attempt_id: Optional[int] = None,
 ) -> dict:
     """Insert an order-call job idempotently. Returns the job row dict.
 
@@ -95,10 +97,10 @@ def enqueue_order_call(
     row = conn.execute(
         """INSERT INTO call_jobs
                (order_id, tenant_id, attempt_no, priority, available_at,
-                max_attempts, job_status, job_type, updated_at)
-           VALUES (%s, %s, %s, %s, %s, %s, 'queued', 'order_call', now())
+                max_attempts, job_status, job_type, order_call_attempt_id, updated_at)
+           VALUES (%s, %s, %s, %s, %s, %s, 'queued', 'order_call', %s, now())
            RETURNING id, order_id, tenant_id, attempt_no, job_status, available_at""",
-        (order_id, tenant_id, attempt_no, priority, available_at, max_attempts),
+        (order_id, tenant_id, attempt_no, priority, available_at, max_attempts, order_call_attempt_id),
     ).fetchone()
 
     d = _row_to_dict(row)
@@ -345,25 +347,72 @@ def dispatch_order_call(order_id: int, tenant_id: int, attempt_no: int) -> "Disp
                     existing_call_id = int(part.split("=")[1])
         except Exception:
             pass
-        # Only mark accepted if that call has startup_state='accepted'.
-        # If it doesn't (crash before the UPDATE), treat as retryable so the worker
-        # does not mark the job complete over a call that may never have started.
-        startup_ok = False
+        # Classify crash-recovery based on startup_state of the existing call.
+        startup_state = None
+        startup_accepted_at = None
         if existing_call_id:
             row = db.query_one(
-                "SELECT startup_state FROM calls WHERE id = %s", (existing_call_id,)
+                "SELECT startup_state, startup_accepted_at, started_at FROM calls WHERE id = %s",
+                (existing_call_id,),
             )
-            startup_ok = bool(row and row.get("startup_state") == "accepted")
-        if startup_ok:
+            if row:
+                startup_state = row.get("startup_state")
+                startup_accepted_at = row.get("startup_accepted_at")
+
+        if startup_state == "accepted":
+            # Call is (or was) running — complete the job.
             return DispatchResult(
                 accepted=True,
                 call_id=existing_call_id,
                 order_call_attempt_id=None,
                 retryable=False,
                 error_code=DispatchDuplicateCallError.error_code,
-                safe_message="Existing call found for this attempt — crash recovery",
+                safe_message="Existing accepted call found — crash recovery",
             )
-        # Call exists but startup_state not persisted — treat as retryable startup failure.
+
+        if startup_state == "pending":
+            # Startup in progress (or worker crashed during startup window).
+            # Only retry once the call is safely classified as stale.
+            import datetime
+            stale_after = int(os.environ.get("TELEPHONY_STARTUP_TIMEOUT_SECONDS", "10")) + 30
+            if startup_accepted_at is None:
+                # No accepted_at — check how long it's been pending.
+                call_started = row.get("started_at") if row else None
+                if call_started:
+                    age_seconds = (datetime.datetime.now(datetime.timezone.utc) - call_started).total_seconds()
+                    if age_seconds < stale_after:
+                        logger.info(
+                            "dispatch_order_call: call_id=%s still pending (age=%.0fs < stale_after=%ds) — re-waiting",
+                            existing_call_id, age_seconds, stale_after,
+                        )
+                        return DispatchResult(
+                            accepted=False, call_id=None, order_call_attempt_id=None,
+                            retryable=True,
+                            error_code="startup_pending",
+                            safe_message="Startup still in progress — short retry",
+                        )
+            # Stale pending — safe to retry.
+            logger.warning(
+                "dispatch_order_call: call_id=%s has stale startup_state='pending' — retrying",
+                existing_call_id,
+            )
+            return DispatchResult(
+                accepted=False, call_id=None, order_call_attempt_id=None,
+                retryable=True,
+                error_code=DispatchStartupRejectedError.error_code,
+                safe_message="Crash recovery: stale pending startup",
+            )
+
+        if startup_state in ("rejected", "timeout"):
+            # Startup was definitively rejected — retryable dispatch failure.
+            return DispatchResult(
+                accepted=False, call_id=None, order_call_attempt_id=None,
+                retryable=True,
+                error_code=DispatchStartupRejectedError.error_code,
+                safe_message=f"Crash recovery: startup_{startup_state}",
+            )
+
+        # startup_state is NULL — crash before ACK mechanism could run.
         logger.warning(
             "dispatch_order_call: crash-recovery call_id=%s missing startup_state — retrying",
             existing_call_id,
@@ -372,7 +421,7 @@ def dispatch_order_call(order_id: int, tenant_id: int, attempt_no: int) -> "Disp
             accepted=False, call_id=None, order_call_attempt_id=None,
             retryable=True,
             error_code=DispatchStartupRejectedError.error_code,
-            safe_message="Crash recovery: startup_state not accepted",
+            safe_message="Crash recovery: startup_state not persisted",
         )
     except (DispatchOrderNotFoundError, DispatchTenantMismatchError,
             DispatchTerminalOrderError, DispatchNoCallerIdError,

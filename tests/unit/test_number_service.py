@@ -301,5 +301,5 @@ def test_cli_pool_assignment_scenarios(app):
         )
 
         with pytest.raises(DispatchNoCallerIdError):
-            queue_confirmation_call(order_id, tenant_live)
+            queue_confirmation_call(order_id, tenant_live, attempt_no=1)
 

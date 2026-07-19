@@ -37,6 +37,54 @@ _lock = threading.Lock()
 
 _delayed_removals = set()
 
+# ── Startup acknowledgement channel ────────────────────────────────────────────
+# Allows the queue worker (order_service.queue_confirmation_call) to wait for
+# bounded confirmation that the IVR executor task actually started its SIP
+# session before the job is marked completed.
+#
+# Lifecycle:
+#   1. order_service.queue_confirmation_call() calls register_startup_ack(call_id)
+#      to allocate a threading.Event keyed by call_id.
+#   2. _run_ivr_thread signals the event via signal_startup_ack() after IvrCall()
+#      is constructed (object init itself does not block on network — it succeeds
+#      unless the executor thread has not started yet, which the event covers).
+#   3. order_service waits on the event for TELEPHONY_STARTUP_TIMEOUT_SECONDS.
+#   4. Timeout → startup_state='timeout', treated as retryable.
+#   5. The event is removed from the dict when the wait completes (success or timeout).
+
+_startup_ack_lock = threading.Lock()
+_startup_ack_events: dict[int, threading.Event] = {}
+_startup_ack_results: dict[int, tuple[bool, str]] = {}  # call_id → (accepted, error_code)
+
+
+def register_startup_ack(call_id: int) -> threading.Event:
+    """Register a startup acknowledgement event for call_id. Called by order_service before
+    submitting to the executor. Returns the event so the caller can wait on it."""
+    ev = threading.Event()
+    with _startup_ack_lock:
+        _startup_ack_events[call_id] = ev
+        _startup_ack_results[call_id] = (False, "pending")
+    return ev
+
+
+def signal_startup_ack(call_id: int, accepted: bool, error_code: str = "") -> None:
+    """Signal the startup acknowledgement event for call_id. Called from _run_ivr_thread
+    when the IvrCall object is constructed (accepted=True) or when startup fails before
+    that point (accepted=False). Safe to call even if no event was registered."""
+    with _startup_ack_lock:
+        _startup_ack_results[call_id] = (accepted, error_code)
+        ev = _startup_ack_events.get(call_id)
+    if ev is not None:
+        ev.set()
+
+
+def pop_startup_ack_result(call_id: int) -> tuple[bool, str]:
+    """Return and remove the startup ack result. Returns (False, 'no_event') if
+    no event was registered (e.g. direct calls that bypass the queue worker)."""
+    with _startup_ack_lock:
+        _startup_ack_events.pop(call_id, None)
+        return _startup_ack_results.pop(call_id, (False, "no_event"))
+
 def _remove_call_delayed(call_id: int, status: str) -> None:
     # Update status to final state
     _live.update_active_call(call_id, status=status)
@@ -240,7 +288,26 @@ def _run_ivr_thread(call_id: int, target_dial: str, flow: Flow, sip: dict[str, s
             pass
 
     record = os.environ.get("RECORD_CALLS", "1") == "1"
-    call = IvrCall(target_dial, flow, sip, on_event, record=record, tenant_id=tenant_id)
+    try:
+        call = IvrCall(target_dial, flow, sip, on_event, record=record, tenant_id=tenant_id)
+    except Exception as _startup_exc:
+        # IvrCall construction failed (e.g. bad SIP config) — signal rejection before
+        # the calls row is updated so the queue worker does not mark the job complete.
+        signal_startup_ack(call_id, accepted=False, error_code="ivr_init_failed")
+        db.execute(
+            "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
+            "startup_error_code = %s WHERE id = %s",
+            (type(_startup_exc).__name__, call_id),
+        )
+        raise
+
+    # IvrCall object created — SIP session will begin inside call.run().
+    # Signal accepted now: the executor task is live and will handle the rest.
+    signal_startup_ack(call_id, accepted=True)
+    db.execute(
+        "UPDATE calls SET startup_state = 'accepted', startup_accepted_at = now() WHERE id = %s",
+        (call_id,),
+    )
 
     # Register call globally to enable UI cancellations
     _active_ivr_calls[call_id] = call
@@ -574,11 +641,15 @@ def start_call(number: str, flow_id: int, *, name: str = "", tenant_id: int | No
         contact_id = upsert_contact(normalized, name)
         call_id = db.insert_returning_id(
             """
-            INSERT INTO calls (contact_id, flow_id, number, status, attempt_no, call_type, tenant_id, order_id, caller_id, sip_gateway_id)
-            VALUES (?, ?, ?, 'initiated', ?, 'ivr', ?, ?, ?, ?)
+            INSERT INTO calls (contact_id, flow_id, number, status, attempt_no, call_type, tenant_id, order_id, caller_id, sip_gateway_id, startup_state)
+            VALUES (?, ?, ?, 'initiated', ?, 'ivr', ?, ?, ?, ?, 'pending')
             """,
             (contact_id, flow_id, normalized, _attempt_no(contact_id), tenant_id, order_id, caller_id, sip_gateway_id),
         )
+
+    # Register startup ack event before submitting to executor so the event is
+    # always available when the thread runs (even if it runs immediately).
+    register_startup_ack(call_id)
 
     _live.register_active_call(
         call_id, tenant_id=tenant_id, order_id=order_id, call_type="order_confirmation" if order_id else "ivr",

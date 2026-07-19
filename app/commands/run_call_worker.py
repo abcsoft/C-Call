@@ -33,6 +33,11 @@ Permanent (failed → order marked FAILED):
 Usage:
     ENABLE_CALL_WORKER=true FLASK_ENV=production python -m app.commands.run_call_worker
 
+    # Testing only (FLASK_ENV=testing required):
+    python -m app.commands.run_call_worker --once
+    python -m app.commands.run_call_worker --max-jobs 3
+    python -m app.commands.run_call_worker --test-fault-point after_lease
+
 Environment:
     ENABLE_CALL_WORKER=true         required
     WORKER_ID                       optional (defaults to pid@hostname)
@@ -41,9 +46,14 @@ Environment:
     CALL_WORKER_BATCH_SIZE          optional (default 1)
     DATABASE_URL                    required
     REDIS_URL                       required
+
+Test fault points (FLASK_ENV=testing only):
+    after_lease      — crash after leasing job, before dispatch
+    after_dispatch   — crash after successful dispatch, before mark_dispatched
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import signal
@@ -122,6 +132,16 @@ _TERMINAL_ORDER_STATUSES = frozenset({
 })
 
 
+_TEST_FAULT_POINT: str | None = None  # set by --test-fault-point (testing only)
+
+
+def _raise_if_fault(point: str) -> None:
+    """Simulate a process crash at a named point — testing only."""
+    if _TEST_FAULT_POINT == point:
+        logger.warning("test-fault-point=%s — simulating crash", point)
+        os._exit(1)
+
+
 def _dispatch_job(app, job: dict) -> None:
     """Execute one leased job inside app context.
 
@@ -146,9 +166,12 @@ def _dispatch_job(app, job: dict) -> None:
     attempts     = job["attempts"]      # incremented in _lease_job
     max_attempts = job["max_attempts"]
 
+    _raise_if_fault("after_lease")
+
     result = dispatch_order_call(order_id, tenant_id, attempt_no)
 
     if result.accepted and result.call_id:
+        _raise_if_fault("after_dispatch")
         with db.transaction() as conn:
             mark_dispatched(conn, job_id, result.call_id, result.order_call_attempt_id)
         CALL_JOB_DISPATCH_SUCCESS.inc()
@@ -164,7 +187,22 @@ def _dispatch_job(app, job: dict) -> None:
         job_id, order_id, attempt_no, result.error_code, result.retryable, result.safe_message,
     )
 
-    if result.error_code in ("terminal_order", "tenant_mismatch"):
+    # Mark the pre-created attempt row as dispatch_failed so the monitor and
+    # billing service can distinguish "provider failed to start" from "no answer".
+    # Only set dispatch_failed when there is no call_id (no SIP dial occurred).
+    if not result.call_id:
+        try:
+            db.execute(
+                """UPDATE order_call_attempts
+                   SET dispatch_status = 'dispatch_failed'
+                   WHERE order_id = %s AND tenant_id = %s AND attempt_no = %s
+                     AND dispatch_status IS NULL""",
+                (order_id, tenant_id, attempt_no),
+            )
+        except Exception:
+            pass
+
+    if result.error_code in ("terminal_order", "tenant_mismatch", "duplicate_call_existing"):
         with db.transaction() as conn:
             mark_cancelled(conn, job_id)
         return
@@ -184,7 +222,45 @@ def _dispatch_job(app, job: dict) -> None:
 
 # ── Worker loop ───────────────────────────────────────────────────────────────
 
+_VALID_FAULT_POINTS = frozenset({"after_lease", "after_dispatch"})
+
+
 def main() -> None:
+    global _TEST_FAULT_POINT
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--once", action="store_true",
+                        help="Process at most one job then exit (testing only)")
+    parser.add_argument("--max-jobs", type=int, default=None,
+                        help="Exit after processing N jobs (testing only)")
+    parser.add_argument("--test-fault-point", default=None,
+                        help="Simulate crash at named point: after_lease | after_dispatch (testing only)")
+    parser.add_argument("--help", "-h", action="store_true")
+    args, _ = parser.parse_known_args()
+
+    if args.help:
+        parser.print_help()
+        sys.exit(0)
+
+    # Test-only options are disabled outside testing to prevent accidental use.
+    _is_testing = os.environ.get("FLASK_ENV", "").lower() in ("testing", "test")
+    if (args.once or args.max_jobs is not None or args.test_fault_point) and not _is_testing:
+        print(
+            "ERROR: --once / --max-jobs / --test-fault-point require FLASK_ENV=testing",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.test_fault_point:
+        if args.test_fault_point not in _VALID_FAULT_POINTS:
+            print(f"ERROR: unknown --test-fault-point '{args.test_fault_point}'. "
+                  f"Valid: {sorted(_VALID_FAULT_POINTS)}", file=sys.stderr)
+            sys.exit(1)
+        _TEST_FAULT_POINT = args.test_fault_point
+
+    max_jobs = 1 if args.once else args.max_jobs  # --once implies --max-jobs 1
+    jobs_processed = 0
+
     if os.environ.get("ENABLE_CALL_WORKER", "false").lower() != "true":
         print(
             "ENABLE_CALL_WORKER is not 'true'. "
@@ -257,10 +333,17 @@ def main() -> None:
         from app.monitoring import CALL_WORKER_LAST_POLL, EXPIRED_LEASES_RECOVERED
 
         while not _SHUTDOWN:
+            # Respect --max-jobs / --once limit.
+            if max_jobs is not None and jobs_processed >= max_jobs:
+                logger.info("call_worker: reached max-jobs=%d — exiting", max_jobs)
+                break
+
             try:
                 dispatched_in_batch = 0
                 for _ in range(batch_size):
                     if _SHUTDOWN:
+                        break
+                    if max_jobs is not None and jobs_processed >= max_jobs:
                         break
                     with db.transaction() as conn:
                         job = _lease_job(conn, worker_id, lease_seconds)
@@ -271,13 +354,28 @@ def main() -> None:
                         )
                         _dispatch_job(app, job)
                         dispatched_in_batch += 1
+                        jobs_processed += 1
                     else:
                         break  # no more jobs; stop this batch
 
                 # Update heartbeat timestamp (last successful poll tick).
                 CALL_WORKER_LAST_POLL.set_to_current_time()
+                try:
+                    db.execute(
+                        """INSERT INTO service_heartbeats (service_name, instance_id, last_seen_at, status)
+                           VALUES ('call_worker', %s, now(), 'ok')
+                           ON CONFLICT (service_name, instance_id) DO UPDATE
+                               SET last_seen_at = now(), status = 'ok'""",
+                        (worker_id,),
+                    )
+                except Exception:
+                    pass  # heartbeat failure is non-fatal
 
                 if dispatched_in_batch == 0:
+                    # In --once/--max-jobs mode with no job found, exit cleanly.
+                    if max_jobs is not None:
+                        logger.info("call_worker: no jobs available — exiting (--max-jobs mode)")
+                        break
                     # Release expired leases as part of idle maintenance.
                     try:
                         with db.transaction() as conn:

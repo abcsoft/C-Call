@@ -472,15 +472,26 @@ def test_call_monitor(app, monkeypatch):
     monkeypatch.setattr(os_mod.db, "query", mock_query)
     monkeypatch.setattr(os_mod.db, "query_one", mock_query_one)
     monkeypatch.setattr(os_mod, "update_status_from_call", mock_update_status)
-    
-    # Test start and stop monitor functions (starts thread but it is mocked by conftest fixture)
+
+    # Mock psycopg.connect so _monitor_loop skips the real PG advisory lock.
+    import unittest.mock as _mock
+    import psycopg as _psycopg
+
+    fake_pg_conn = _mock.MagicMock()
+    fake_pg_conn.closed = False
+    fake_cursor = _mock.MagicMock()
+    fake_cursor.fetchone.return_value = (True,)  # pg_try_advisory_lock → True (acquired)
+    fake_pg_conn.execute.return_value = fake_cursor
+    monkeypatch.setattr(_psycopg, "connect", lambda *a, **kw: fake_pg_conn)
+
+    # Test start and stop monitor functions (starts thread but thread skips PG lock via mock)
     os_mod.start_call_monitor(app)
     os_mod.start_call_monitor(app)
     os_mod.stop_call_monitor()
-    
-    # Run loop synchronously
+
+    # Run loop synchronously with mocked PG lock.
     os_mod._monitor_active = True
     os_mod._monitor_loop(app)
-    
+
     assert len(calls_processed) > 0
 
