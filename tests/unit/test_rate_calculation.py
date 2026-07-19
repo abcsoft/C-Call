@@ -17,8 +17,8 @@ def test_rate_calculations(app):
         assert estimate_charge(tenant_id) == Decimal("0.80")
         
         # calculate_charge for different talk times
-        # 0s talk time -> 0 (call was not answered; billing based on connection evidence)
-        assert calculate_charge(0, tenant_id) == Decimal("0.00")
+        # 0s talk time -> min_charge (0.80)
+        assert calculate_charge(0, tenant_id) == Decimal("0.80")
         # 45s talk time -> 1 min -> 0.80
         assert calculate_charge(45, tenant_id) == Decimal("0.80")
         # 60s talk time -> 1 min -> 0.80
