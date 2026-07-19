@@ -335,10 +335,9 @@ def dispatch_order_call(order_id: int, tenant_id: int, attempt_no: int) -> "Disp
         )
 
     try:
-        call_id = queue_confirmation_call(order_id, tenant_id)
+        call_id = queue_confirmation_call(order_id, tenant_id, attempt_no)
     except DispatchDuplicateCallError as exc:
-        # Crash-recovery: existing call — parse the call_id from the exception message.
-        # This is the only place we inspect exception state (it's our own typed exc).
+        # Crash-recovery: existing call — parse call_id from our own typed exception.
         existing_call_id = None
         try:
             for part in str(exc).split():
@@ -346,13 +345,34 @@ def dispatch_order_call(order_id: int, tenant_id: int, attempt_no: int) -> "Disp
                     existing_call_id = int(part.split("=")[1])
         except Exception:
             pass
+        # Only mark accepted if that call has startup_state='accepted'.
+        # If it doesn't (crash before the UPDATE), treat as retryable so the worker
+        # does not mark the job complete over a call that may never have started.
+        startup_ok = False
+        if existing_call_id:
+            row = db.query_one(
+                "SELECT startup_state FROM calls WHERE id = %s", (existing_call_id,)
+            )
+            startup_ok = bool(row and row.get("startup_state") == "accepted")
+        if startup_ok:
+            return DispatchResult(
+                accepted=True,
+                call_id=existing_call_id,
+                order_call_attempt_id=None,
+                retryable=False,
+                error_code=DispatchDuplicateCallError.error_code,
+                safe_message="Existing call found for this attempt — crash recovery",
+            )
+        # Call exists but startup_state not persisted — treat as retryable startup failure.
+        logger.warning(
+            "dispatch_order_call: crash-recovery call_id=%s missing startup_state — retrying",
+            existing_call_id,
+        )
         return DispatchResult(
-            accepted=True,  # A call WAS created (on a prior attempt) — job should complete
-            call_id=existing_call_id,
-            order_call_attempt_id=None,
-            retryable=False,
-            error_code=DispatchDuplicateCallError.error_code,
-            safe_message="Existing call found for this attempt — crash recovery",
+            accepted=False, call_id=None, order_call_attempt_id=None,
+            retryable=True,
+            error_code=DispatchStartupRejectedError.error_code,
+            safe_message="Crash recovery: startup_state not accepted",
         )
     except (DispatchOrderNotFoundError, DispatchTenantMismatchError,
             DispatchTerminalOrderError, DispatchNoCallerIdError,
@@ -382,6 +402,23 @@ def dispatch_order_call(order_id: int, tenant_id: int, attempt_no: int) -> "Disp
             retryable=True,
             error_code=DispatchInternalError.error_code,
             safe_message="Unexpected internal error",
+        )
+
+    # Verify startup_state was persisted before allowing worker to complete the job.
+    # executor submission alone is not sufficient (the thread may die immediately).
+    startup_row = db.query_one(
+        "SELECT startup_state FROM calls WHERE id = %s", (call_id,)
+    )
+    if not startup_row or startup_row.get("startup_state") != "accepted":
+        logger.warning(
+            "dispatch_order_call: call_id=%s startup_state not 'accepted' — treating as startup rejection",
+            call_id,
+        )
+        return DispatchResult(
+            accepted=False, call_id=None, order_call_attempt_id=None,
+            retryable=True,
+            error_code=DispatchStartupRejectedError.error_code,
+            safe_message="startup_state not persisted after start_call",
         )
 
     # Locate the attempt row that queue_confirmation_call created.

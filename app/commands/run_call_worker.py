@@ -230,9 +230,25 @@ def main() -> None:
     # Set ENABLE_CALL_MONITOR=true only in the scheduler (replicas=1) or a
     # dedicated singleton service.
     if os.environ.get("ENABLE_CALL_MONITOR", "false").lower() == "true":
-        from app.services.order_service import start_call_monitor
-        logger.info("call_worker: starting call monitor (ENABLE_CALL_MONITOR=true)")
-        start_call_monitor(app)
+        # Fail closed: if Redis is unavailable the monitor must NOT start.
+        # The monitor relies on Redis for distributed locking; without it a
+        # second instance could run concurrently and cause split-brain.
+        _redis_ok = False
+        try:
+            from app.extensions import redis_ext
+            redis_ext.client.ping()
+            _redis_ok = True
+        except Exception as _exc:
+            logger.error(
+                "call_worker: Redis unavailable — call monitor will NOT start "
+                "(fail-closed). Error type: %s", type(_exc).__name__,
+            )
+        if _redis_ok:
+            from app.services.order_service import start_call_monitor
+            logger.info("call_worker: starting call monitor (ENABLE_CALL_MONITOR=true, Redis OK)")
+            start_call_monitor(app)
+        else:
+            logger.warning("call_worker: call monitor skipped — Redis not reachable")
     else:
         logger.info("call_worker: call monitor disabled (ENABLE_CALL_MONITOR!=true)")
 

@@ -515,15 +515,21 @@ def create_order_and_queue(tenant_id: int, data: dict) -> dict:
 def get_order_by_external_id_service(tenant_id: int, external_order_id: str) -> dict | None:
     return get_order_by_external_id(tenant_id, external_order_id)
 
-def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
+def queue_confirmation_call(order_id: int, tenant_id: int, attempt_no: int) -> int:
     """Select phone number CLI, generate script audio, and launch the SIP IVR call.
+
+    attempt_no must come from the call_jobs row (authoritative source).
+    The function sets orders.attempt_count = attempt_no atomically and
+    creates the order_call_attempts row with the same value, so all three
+    counters stay in sync.
 
     Returns call_id (int > 0) on success.
 
     Raises typed DispatchXxxError exceptions (from app.exceptions) — never
     returns 0 or raises bare ValueError for expected failure conditions.
 
-    Called by the call worker (primary path) and by manual_recall().
+    Called by the call worker via dispatch_order_call() (primary path)
+    and by manual_recall().
     """
     from app.exceptions import (
         DispatchOrderNotFoundError, DispatchTerminalOrderError,
@@ -547,23 +553,24 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
         )
 
     # Guard: crash-after-call duplicate protection.
-    current_attempt_no = (order.get("attempt_count") or 0)
+    # Uses the explicit attempt_no from the job row — NOT order.attempt_count —
+    # so crash recovery finds the right attempt regardless of DB state.
     existing_attempt = db.query_one(
         """SELECT call_id FROM order_call_attempts
            WHERE order_id = %s AND tenant_id = %s AND attempt_no = %s
              AND call_id IS NOT NULL
            ORDER BY id DESC LIMIT 1""",
-        (order_id, tenant_id, current_attempt_no),
+        (order_id, tenant_id, attempt_no),
     )
     if existing_attempt and existing_attempt["call_id"]:
         existing_call_id = int(existing_attempt["call_id"])
         logger.info(
             "queue_confirmation_call: call already exists for order %s attempt %s "
             "call_id=%s — crash-recovery path",
-            order_id, current_attempt_no, existing_call_id,
+            order_id, attempt_no, existing_call_id,
         )
         raise DispatchDuplicateCallError(
-            f"order_id={order_id} attempt={current_attempt_no} existing_call_id={existing_call_id}"
+            f"order_id={order_id} attempt={attempt_no} existing_call_id={existing_call_id}"
         )
 
     # Select caller ID CLI
@@ -640,8 +647,12 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
         create_call_attempt(
             order_id=order_id,
             tenant_id=tenant_id,
-            attempt_no=order["attempt_count"],
+            attempt_no=attempt_no,
             call_id=None,
+        )
+        db.execute(
+            "UPDATE orders SET attempt_count = %s, updated_at = now() WHERE id = %s",
+            (attempt_no, order_id),
         )
         update_order_status_system(order_id, "CALLING")
         raise DispatchSipUnavailableError("MOCK_SIP_PROVIDER=true — no real SIP call placed")
@@ -675,17 +686,32 @@ def queue_confirmation_call(order_id: int, tenant_id: int) -> int:
         update_order_status_system(order_id, "FAILED")
         raise DispatchStartupRejectedError(f"start_call returned no call_id for order {order_id}")
 
+    # Persist startup acceptance in the calls row.
+    # executor submission alone is NOT sufficient — startup_state = 'accepted'
+    # is the durable gate that allows the worker to mark the job completed.
+    db.execute(
+        "UPDATE calls SET startup_state = 'accepted' WHERE id = %s",
+        (call_id,),
+    )
+
+    # Atomically record how many call attempts have been made for this order.
+    # SET (not increment) so crash-recovery re-runs are idempotent.
+    db.execute(
+        "UPDATE orders SET attempt_count = %s, updated_at = now() WHERE id = %s",
+        (attempt_no, order_id),
+    )
+
     # Create attempt row — durably links this call to this order attempt.
     create_call_attempt(
         order_id=order_id,
         tenant_id=tenant_id,
-        attempt_no=order["attempt_count"],
+        attempt_no=attempt_no,
         call_id=call_id,
     )
 
     logger.info(
         "queue_confirmation_call: order %s attempt %s call_id=%s — dispatched",
-        order_id, order["attempt_count"], call_id,
+        order_id, attempt_no, call_id,
     )
     update_order_status_system(order_id, "CALLING")
     return call_id
@@ -969,8 +995,10 @@ def manual_recall(order_id: int, tenant_id: int) -> int:
         raise InsufficientBalanceError(get_balance(tenant_id), min_charge)
 
     update_order_status_system(order_id, "CALL_QUEUED")
-    call_id = queue_confirmation_call(order_id, tenant_id)
-    increment_order_attempts(tenant_id, order_id)
+    # attempt_no = one beyond however many have been made so far.
+    # queue_confirmation_call will SET orders.attempt_count = attempt_no atomically.
+    attempt_no = (order.get("attempt_count") or 0) + 1
+    call_id = queue_confirmation_call(order_id, tenant_id, attempt_no)
     return call_id
 
 

@@ -639,10 +639,11 @@ def test_crash_after_call_creation_no_duplicate(flask_app, test_tenant, raw_conn
     ).fetchone()
     oid = order_row[0]
 
-    # Create a fake calls row
+    # Create a fake calls row with startup_state='accepted' so crash-recovery
+    # considers this call valid and returns accepted=True.
     call_row = raw_conn.execute(
-        """INSERT INTO calls (flow_id, tenant_id, number, status, started_at)
-           VALUES (NULL, %s, '01700000099', 'calling', now())
+        """INSERT INTO calls (flow_id, tenant_id, number, status, started_at, startup_state)
+           VALUES (NULL, %s, '01700000099', 'calling', now(), 'accepted')
            RETURNING id""",
         (test_tenant,),
     ).fetchone()
