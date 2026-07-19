@@ -39,17 +39,21 @@ def _print_findings(findings: list[Finding]) -> None:
 def scan_staged() -> list[Finding]:
     result = subprocess.run(
         ["git", "diff", "--cached", "--unified=0"],
-        capture_output=True, text=True,
+        capture_output=True,
     )
     if result.returncode != 0:
         print("WARNING: could not get staged diff", file=sys.stderr)
         return []
 
+    # Explicit UTF-8 decode with errors="replace" so Bengali or other non-ASCII
+    # characters in staged files do not crash the scanner on Windows cp1252.
+    diff_text = result.stdout.decode("utf-8", errors="replace")
+
     findings: list[Finding] = []
     current_file = "staged"
     line_no = 0
 
-    for line in result.stdout.splitlines():
+    for line in diff_text.splitlines():
         if line.startswith("+++ b/"):
             current_file = line[6:]
             line_no = 0

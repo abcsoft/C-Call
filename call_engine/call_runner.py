@@ -430,24 +430,70 @@ def _run_direct_subprocess(call_id: int, dial_target: str, audio_path: str, repe
         return False
 
     ACTIVE_CALLS.inc()
+    _direct_startup_timeout = int(os.environ.get("TELEPHONY_STARTUP_TIMEOUT_SECONDS", "10"))
+    _startup_ack_signalled = False
     proc: subprocess.Popen | None = None
     try:
         with log_file_path.open("ab", buffering=0) as log_f:
-            proc = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(BASE_DIR / "direct_sip_call.py"),
-                    dial_target,
-                    str(audio_path),
-                    str(repeat_count),
-                    str(max_seconds)
-                ],
-                env=env,
-                stdout=log_f,
-                stderr=log_f,
-            )
+            try:
+                proc = subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(BASE_DIR / "direct_sip_call.py"),
+                        dial_target,
+                        str(audio_path),
+                        str(repeat_count),
+                        str(max_seconds)
+                    ],
+                    env=env,
+                    stdout=log_f,
+                    stderr=log_f,
+                )
+            except OSError as _popen_err:
+                signal_startup_ack(call_id, accepted=False, error_code="subprocess_start_failed")
+                _startup_ack_signalled = True
+                db.execute(
+                    "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
+                    "startup_error_code = 'subprocess_start_failed' WHERE id = ?", (call_id,)
+                )
+                raise
+
             _active_direct_procs[call_id] = (proc, cancel_event)
             _live.set_cancel_handler(call_id, lambda cid=call_id: cancel_call(cid))
+
+            # Wait for direct_sip_call.py to emit "Calling " — this line is
+            # printed right before the SIP INVITE is sent, confirming the
+            # telephony layer is running.  Popen alone is not sufficient.
+            _startup_deadline = time.monotonic() + _direct_startup_timeout
+            while not _startup_ack_signalled:
+                chunk = _read_new_log()
+                if b"Calling " in chunk:
+                    signal_startup_ack(call_id, accepted=True)
+                    _startup_ack_signalled = True
+                    db.execute(
+                        "UPDATE calls SET startup_state = 'accepted', startup_accepted_at = now() WHERE id = ?",
+                        (call_id,),
+                    )
+                    break
+                # Check if process already exited before startup signal.
+                rc = proc.poll()
+                if rc is not None:
+                    signal_startup_ack(call_id, accepted=False, error_code="startup_process_exited")
+                    _startup_ack_signalled = True
+                    db.execute(
+                        "UPDATE calls SET startup_state = 'rejected', startup_rejected_at = now(), "
+                        "startup_error_code = 'startup_process_exited' WHERE id = ?", (call_id,)
+                    )
+                    break
+                if time.monotonic() > _startup_deadline:
+                    signal_startup_ack(call_id, accepted=False, error_code="startup_timeout")
+                    _startup_ack_signalled = True
+                    db.execute(
+                        "UPDATE calls SET startup_state = 'timeout', startup_rejected_at = now(), "
+                        "startup_error_code = 'startup_timeout' WHERE id = ?", (call_id,)
+                    )
+                    break
+                time.sleep(0.1)
 
             # Poll instead of one blocking wait() — lets us tail the log
             # for the answer signal and tick talk_seconds only after it.
@@ -550,6 +596,8 @@ def _run_direct_subprocess(call_id: int, dial_target: str, audio_path: str, repe
                 (elapsed, call_id)
             )
     except subprocess.TimeoutExpired:
+        if not _startup_ack_signalled:
+            signal_startup_ack(call_id, accepted=False, error_code="startup_timeout")
         if proc is not None:
             proc.kill()
         elapsed = int(time.monotonic() - start_time)
@@ -567,6 +615,8 @@ def _run_direct_subprocess(call_id: int, dial_target: str, audio_path: str, repe
             (elapsed, call_id)
         )
     except Exception as exc:
+        if not _startup_ack_signalled:
+            signal_startup_ack(call_id, accepted=False, error_code="startup_internal_error")
         elapsed = int(time.monotonic() - start_time)
         status = 'failed'
         talk_seconds = 0
@@ -705,11 +755,17 @@ def start_direct_call(number: str, audio_name: str, repeat_count: int, message_t
         call_id = db.insert_returning_id(
             """
             INSERT INTO calls
-                (contact_id, number, status, attempt_no, call_type, audio_mode, repeat_count, audio_name, message, tenant_id, order_id, caller_id, sip_gateway_id)
-            VALUES (?, ?, 'initiated', ?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?)
+                (contact_id, number, status, attempt_no, call_type, audio_mode, repeat_count, audio_name, message, tenant_id, order_id, caller_id, sip_gateway_id, startup_state)
+            VALUES (?, ?, 'initiated', ?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             """,
             (contact_id, normalized, _attempt_no(contact_id), audio_mode, repeat_count, audio_name, message_text, tenant_id, order_id, caller_id, sip_gateway_id),
         )
+
+    # Register startup ACK event before submitting so the event exists before
+    # the thread runs.  direct_sip_call.py prints "Calling <number>" to stdout
+    # once SIP initialization completes; _run_direct_subprocess watches for that
+    # line and signals accepted=True.  Popen alone is not sufficient.
+    register_startup_ack(call_id)
 
     _live.register_active_call(
         call_id, tenant_id=tenant_id, order_id=order_id, call_type="direct",

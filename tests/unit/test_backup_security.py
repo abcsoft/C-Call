@@ -70,14 +70,14 @@ def make_archive(tmp_path: Path, contents: dict) -> Path:
 def run_verifier(archive: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(VERIFIER), str(archive)],
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8", errors="replace",
     )
 
 
 def run_scanner(*extra_args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCANNER)] + list(extra_args),
-        capture_output=True, text=True,
+        capture_output=True, encoding="utf-8", errors="replace",
     )
 
 
