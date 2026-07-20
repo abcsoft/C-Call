@@ -13,6 +13,9 @@ DEFAULT_BILLING_PULSE_SECONDS = 60
 DEFAULT_MINIMUM_BILLABLE_SECONDS = 60
 DEFAULT_CHARGE_FAILED_CALLS = False
 
+# Statuses that represent pre-connection failure (no carrier cost incurred)
+_PRE_CONNECTION_STATUSES = frozenset({"no_answer", "busy", "failed", "unreachable", "timeout"})
+
 
 def get_tenant_rate(tenant_id: int) -> dict[str, any]:
     """Retrieve call rates for the tenant, checking customer_rates override,
@@ -20,7 +23,7 @@ def get_tenant_rate(tenant_id: int) -> dict[str, any]:
     """
     from app.extensions import redis_ext
     import json
-    
+
     cache_key = f"tenant:rate:{tenant_id}"
     try:
         cached = redis_ext.client.get(cache_key)
@@ -42,8 +45,8 @@ def get_tenant_rate(tenant_id: int) -> dict[str, any]:
     # 1. Check customer_rates first (per-tenant override)
     row = db.query_one(
         """
-        SELECT rate_per_min, rate_per_call, min_charge, 
-               billing_pulse_seconds, minimum_billable_seconds, charge_failed_calls 
+        SELECT rate_per_min, rate_per_call, min_charge,
+               billing_pulse_seconds, minimum_billable_seconds, charge_failed_calls
         FROM customer_rates WHERE tenant_id = %s
         """,
         (tenant_id,)
@@ -63,9 +66,9 @@ def get_tenant_rate(tenant_id: int) -> dict[str, any]:
     if not rates:
         plan_row = db.query_one(
             """
-            SELECT p.name, p.feature_flags 
-            FROM tenants t 
-            JOIN plans p ON t.plan_id = p.id 
+            SELECT p.name, p.feature_flags
+            FROM tenants t
+            JOIN plans p ON t.plan_id = p.id
             WHERE t.id = %s
             """,
             (tenant_id,)
@@ -152,11 +155,14 @@ def calculate_charge_and_duration(talk_seconds: int, tenant_id: int, call_result
     Returns: (charge_amount, billable_seconds)
     """
     rates = get_tenant_rate(tenant_id)
-    
-    # 1. Determine if this call should be charged
-    # Failed / no-answer calls should not deduct talk-time charge unless charge_failed_calls=true
-    is_failed_call = (call_result != "completed")
-    
+
+    # 1. Determine if this call should be charged.
+    # Pre-connection failures (no carrier cost) are not billed unless charge_failed_calls=True.
+    # "canceled" (remote BYE) is billable only when talk_seconds > 0 (connection evidence).
+    is_failed_call = call_result in _PRE_CONNECTION_STATUSES
+    if call_result == "canceled" and talk_seconds <= 0:
+        is_failed_call = True
+
     if is_failed_call and not rates["charge_failed_calls"]:
         return Decimal("0.0000"), 0
 
@@ -171,19 +177,19 @@ def calculate_charge_and_duration(talk_seconds: int, tenant_id: int, call_result
     pulse = rates["billing_pulse_seconds"]
     if pulse is None or pulse <= 0:
         pulse = 60  # 0 or null is treated as 60 seconds (1 minute pulse)
-        
+
     if talk_seconds <= 0:
         rounded_seconds = 0
     else:
         rounded_seconds = math.ceil(talk_seconds / float(pulse)) * pulse
-        
+
     # Apply minimum billable seconds constraint
     billable_seconds = max(rounded_seconds, rates["minimum_billable_seconds"])
-    
+
     # Calculate charge: (billable_seconds / 60) * rate_per_min
     minutes = Decimal(str(billable_seconds)) / Decimal("60.0")
     charge = minutes * rates["rate_per_min"]
-    
+
     # Cap at min_charge
     final_charge = max(charge, rates["min_charge"])
     return round(final_charge, 4), billable_seconds
