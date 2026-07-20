@@ -150,11 +150,17 @@ def get_tenant_rate(tenant_id: int) -> dict[str, any]:
     return rates
 
 
-def calculate_charge_and_duration(talk_seconds: int, tenant_id: int, call_result: str = "completed") -> tuple[Decimal, int]:
+def calculate_charge_and_duration(
+    talk_seconds: int,
+    tenant_id: int,
+    call_result: str = "completed",
+    rates: dict | None = None,
+) -> tuple[Decimal, int]:
     """Calculate the call charge and billable seconds based on talk duration, tenant rate, and pulse rules.
     Returns: (charge_amount, billable_seconds)
     """
-    rates = get_tenant_rate(tenant_id)
+    if rates is None:
+        rates = get_tenant_rate(tenant_id)
 
     # 1. Determine if this call should be charged.
     # Pre-connection failures (no carrier cost) are not billed unless charge_failed_calls=True.
