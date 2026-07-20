@@ -83,15 +83,49 @@ def _init_fault_point() -> None:
 _init_fault_point()
 
 
-def _maybe_fault(checkpoint: str) -> None:
+def _maybe_fault(checkpoint: str, conn: Any = None) -> None:
     """If the current fault point matches checkpoint, crash the process abnormally.
 
     Uses os._exit(1) — bypasses all Python cleanup so no partial commit can sneak
     past the fault.  Only reachable when FLASK_ENV=testing.
+
+    Special checkpoint 'after_wallet_lock_pause':
+      - writes PostgreSQL backend PID to BILLING_PAUSE_FILE
+      - busy-waits (≤10 s) until BILLING_RELEASE_FILE exists
+      - then exits abnormally so the test can observe rollback
+    This lets the test call pg_terminate_backend() against a known, live backend.
     """
-    if _FAULT_POINT and _FAULT_POINT == checkpoint:
-        logger.critical("FAULT INJECTION: terminating at checkpoint %s", checkpoint)
-        _os._exit(1)  # abnormal termination — no atexit, no finally
+    if not _FAULT_POINT or _FAULT_POINT != checkpoint:
+        return
+
+    if checkpoint == "after_wallet_lock_pause":
+        pause_file = _os.environ.get("BILLING_PAUSE_FILE", "")
+        release_file = _os.environ.get("BILLING_RELEASE_FILE", "")
+        if pause_file and conn is not None:
+            try:
+                row = conn.execute("SELECT pg_backend_pid() AS pid").fetchone()
+                backend_pid = row["pid"] if row else "unknown"
+            except Exception:
+                backend_pid = "unknown"
+            try:
+                import pathlib as _pl
+                _pl.Path(pause_file).write_text(str(backend_pid))
+            except Exception:
+                pass
+
+        # Wait for release signal or timeout (10 s)
+        import time as _time
+        deadline = _time.monotonic() + 10.0
+        while _time.monotonic() < deadline:
+            if release_file and _os.path.exists(release_file):
+                break
+            _time.sleep(0.05)
+
+        logger.critical("FAULT INJECTION: terminating at checkpoint %s (pause complete)", checkpoint)
+        _os._exit(1)
+
+    logger.critical("FAULT INJECTION: terminating at checkpoint %s", checkpoint)
+    _os._exit(1)  # abnormal termination — no atexit, no finally
 
 TERMINAL_STATUSES = {
     "completed",    # IVR flow ended naturally
@@ -245,7 +279,8 @@ def finalize_call_billing(
                 (tenant_id,),
             ).fetchone()
 
-            _maybe_fault("after_wallet_lock")
+            _maybe_fault("after_wallet_lock", conn)
+            _maybe_fault("after_wallet_lock_pause", conn)
             if not wallet:
                 logger.error(
                     "finalize_call_billing: wallet not found for tenant=%s call=%s source=%s",

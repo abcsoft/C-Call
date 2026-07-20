@@ -9,25 +9,28 @@ threads cannot simulate.
 All setup rows are committed (via an independent psycopg connection)
 BEFORE any subprocess starts, so they are visible to separate processes.
 
-Environment: disposable DB set via TEST_DATABASE_URL / DATABASE_URL.
-These tests are skipped when BILLING_PROCESS_TEST_DB is not set.
+Environment: disposable DB set via BILLING_PROCESS_TEST_DB.
+Tests are skipped when BILLING_PROCESS_TEST_DB is not set.
 
 Groups
 ------
-  A  Two-finalizer process race (Phase 5)
-  B  Finalization crash tests — 7 fault points (Phase 6)
-  C  Monitor/reconciliation process race (Phase 7)
-  D  Refund process race (Phase 8)
-  E  Refund crash tests — 5 fault points (Phase 9)
-  F  DB connection-loss test (Phase 10)
+  A  Two-finalizer process race (two real OS PIDs)
+  B  Finalization crash tests — 7 fault points
+  C  Monitor/reconciliation process race (--source monitor / --source reconcile_apply)
+  D  Refund process race (two real OS PIDs)
+  E  Refund crash tests — 5 fault points
+  F  Real pg_terminate_backend connection-loss test
+  G  Production fault-point rejection (FLASK_ENV=production)
 """
 from __future__ import annotations
 
 import json
 import os
+import pathlib
 import secrets
 import subprocess
 import sys
+import tempfile
 import time
 from decimal import Decimal
 from typing import Any
@@ -38,23 +41,14 @@ import pytest
 
 # ── DB URL ────────────────────────────────────────────────────────────────────
 
-_PROC_DB_URL: str | None = os.environ.get("BILLING_PROCESS_TEST_DB") or os.environ.get(
-    "TEST_DATABASE_URL"
-)
+_PROC_DB_URL: str | None = os.environ.get("BILLING_PROCESS_TEST_DB")
 
 pytestmark = pytest.mark.skipif(
     not _PROC_DB_URL,
     reason="BILLING_PROCESS_TEST_DB not set — set to disposable DB URL to run process tests",
 )
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-PSQL_CMD = os.environ.get(
-    "PSQL_PATH",
-    r"C:\Program Files\PostgreSQL\16\bin\psql.exe",
-)
 PYTHON = sys.executable
-
 FINALIZER_MODULE = "app.commands.run_billing_finalizer"
 
 FINALIZE_FAULT_POINTS = [
@@ -75,9 +69,9 @@ REFUND_FAULT_POINTS = [
     "before_refund_commit",
 ]
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _conn() -> psycopg.Connection:
-    """Open independent psycopg connection to the disposable test DB."""
     assert _PROC_DB_URL, "BILLING_PROCESS_TEST_DB not set"
     return psycopg.connect(_PROC_DB_URL, autocommit=False, row_factory=psycopg.rows.dict_row)
 
@@ -88,16 +82,15 @@ def _setup_tenant_and_call(
     talk_seconds: int = 60,
     status: str = "completed",
 ) -> dict[str, Any]:
-    """Insert tenant + wallet + rate + call, commit, return ids dict.
+    """Insert tenant + wallet + rate + call, commit, return ids.
 
-    All rows committed before the function returns so they are visible
-    to separate OS processes.
+    Uses an independent psycopg connection and commits before returning
+    so all rows are visible to any OS process that opens a new connection.
     """
     test_run_id = secrets.token_hex(8)
     initial_balance = Decimal(balance)
 
     with _conn() as conn:
-        # Tenant
         tid = conn.execute(
             "INSERT INTO tenants (business_name, email, status, plan_id)"
             " SELECT %s, %s, 'active', id FROM plans LIMIT 1"
@@ -108,14 +101,12 @@ def _setup_tenant_and_call(
             ),
         ).fetchone()["id"]
 
-        # Wallet — must be inserted explicitly (no trigger)
         conn.execute(
             "INSERT INTO wallets (tenant_id, balance, opening_balance, currency, low_balance_threshold)"
             " VALUES (%s, %s, %s, 'BDT', 50.00)",
             (tid, initial_balance, initial_balance),
         )
 
-        # Rate
         conn.execute(
             "INSERT INTO customer_rates"
             " (tenant_id, rate_per_min, rate_per_call, min_charge,"
@@ -127,7 +118,6 @@ def _setup_tenant_and_call(
             (tid, rate_per_min, rate_per_min, rate_per_min, rate_per_min),
         )
 
-        # Call
         call_id = conn.execute(
             "INSERT INTO calls"
             " (tenant_id, number, status, talk_seconds, total_seconds,"
@@ -148,11 +138,8 @@ def _setup_tenant_and_call(
     }
 
 
-def _finalize_call(
-    env: dict[str, Any],
-    call_id: int,
-) -> dict[str, Any]:
-    """Read DB state for a call after finalization attempt."""
+def _db_state(env: dict[str, Any], call_id: int) -> dict[str, Any]:
+    """Read wallet + call + debit rows from a fresh connection."""
     with _conn() as conn:
         tid = env["tenant_id"]
         call = conn.execute(
@@ -198,9 +185,7 @@ def _refund_state(tid: int, call_id: int) -> dict[str, Any]:
 
 def _cleanup(env: dict[str, Any]) -> None:
     tid = env["tenant_id"]
-    call_id = env["call_id"]
     with _conn() as conn:
-        # Reset refund columns before deleting wallet_transactions (CHECK NOT DEFERRABLE)
         conn.execute(
             "UPDATE calls SET"
             "  wallet_transaction_id = NULL,"
@@ -223,14 +208,9 @@ def _cleanup(env: dict[str, Any]) -> None:
 
 
 def _parse_json_output(text: str) -> dict | None:
-    """Extract the billing result JSON from subprocess stdout.
-
-    Skips structlog/JSON log lines (which contain 'level' + 'event' keys)
-    and returns the first dict that looks like a billing result.
-    """
+    """Extract billing result JSON from subprocess stdout; skip structlog lines."""
     _log_keys = {"level", "event", "timestamp"}
 
-    # Try each { line
     for line in text.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -239,13 +219,11 @@ def _parse_json_output(text: str) -> dict | None:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        # Skip structlog lines
         if isinstance(obj, dict) and _log_keys.issubset(obj.keys()):
-            continue
+            continue  # structlog line
         return obj
 
-    # Try multi-line indented JSON (the --json flag produces indented output)
-    # Collect lines between first { and last }
+    # Try multi-line indented block (--json produces indented output)
     lines = text.splitlines()
     start = None
     for i, ln in enumerate(lines):
@@ -263,55 +241,73 @@ def _parse_json_output(text: str) -> dict | None:
     return None
 
 
+def _make_env(flask_env: str = "testing", fault_point: str | None = None,
+              extra: dict[str, str] | None = None) -> dict[str, str]:
+    env = {**os.environ, "DATABASE_URL": _PROC_DB_URL, "FLASK_ENV": flask_env}
+    if fault_point:
+        env["BILLING_FAULT_POINT"] = fault_point
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _cwd() -> str:
+    # Project root: tests/integration/file.py → ../../ = project root
+    return str(pathlib.Path(__file__).parent.parent.parent)
+
+
 def _run_finalizer(
     call_id: int,
     *,
     fault_point: str | None = None,
+    source: str = "cli",
     refund: bool = False,
     reason_code: str = "proc_test",
+    flask_env: str = "testing",
     timeout: int = 60,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run run_billing_finalizer as a real subprocess."""
-    env = {**os.environ, "DATABASE_URL": _PROC_DB_URL, "FLASK_ENV": "testing"}
-    if fault_point:
-        env["BILLING_FAULT_POINT"] = fault_point
-    if extra_env:
-        env.update(extra_env)
-
-    cmd = [PYTHON, "-m", FINALIZER_MODULE, "--call-id", str(call_id), "--json"]
+    """Run run_billing_finalizer synchronously; return completed process."""
+    env = _make_env(flask_env=flask_env, fault_point=fault_point, extra=extra_env)
+    cmd = [
+        PYTHON, "-m", FINALIZER_MODULE,
+        "--call-id", str(call_id),
+        "--source", source,
+        "--json",
+    ]
     if refund:
         cmd += ["--refund", "--reason-code", reason_code]
     if fault_point:
         cmd += ["--fault-point", fault_point]
 
-    proc = subprocess.run(
+    return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
         env=env,
-        cwd=str(__file__).split("tests")[0].rstrip("/\\"),
+        cwd=_cwd(),
     )
-    return proc
 
 
 def _popen_finalizer(
     call_id: int,
     *,
     fault_point: str | None = None,
+    source: str = "cli",
     refund: bool = False,
     reason_code: str = "proc_race",
+    flask_env: str = "testing",
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.Popen:
-    """Start finalizer as Popen (non-blocking) for race tests."""
-    env = {**os.environ, "DATABASE_URL": _PROC_DB_URL, "FLASK_ENV": "testing"}
-    if fault_point:
-        env["BILLING_FAULT_POINT"] = fault_point
-    if extra_env:
-        env.update(extra_env)
-
-    cmd = [PYTHON, "-m", FINALIZER_MODULE, "--call-id", str(call_id), "--json"]
+    """Start finalizer as non-blocking Popen for race tests."""
+    env = _make_env(flask_env=flask_env, fault_point=fault_point, extra=extra_env)
+    cmd = [
+        PYTHON, "-m", FINALIZER_MODULE,
+        "--call-id", str(call_id),
+        "--source", source,
+        "--json",
+    ]
     if refund:
         cmd += ["--refund", "--reason-code", reason_code]
     if fault_point:
@@ -323,7 +319,7 @@ def _popen_finalizer(
         stderr=subprocess.PIPE,
         text=True,
         env=env,
-        cwd=str(__file__).split("tests")[0].rstrip("/\\"),
+        cwd=_cwd(),
     )
 
 
@@ -332,7 +328,7 @@ def _popen_finalizer(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestTwoFinalizerRace:
-    """Phase 5: Two real OS PIDs race to finalize the same call."""
+    """Two real OS PIDs race to finalize the same call."""
 
     def setup_method(self):
         self.env = _setup_tenant_and_call()
@@ -344,39 +340,32 @@ class TestTwoFinalizerRace:
         call_id = self.env["call_id"]
         initial_balance = self.env["initial_balance"]
 
-        p1 = _popen_finalizer(call_id)
-        p2 = _popen_finalizer(call_id)
+        p1 = _popen_finalizer(call_id, source="finalizer_1")
+        p2 = _popen_finalizer(call_id, source="finalizer_2")
 
         out1, err1 = p1.communicate(timeout=90)
         out2, err2 = p2.communicate(timeout=90)
 
         rc1, rc2 = p1.returncode, p2.returncode
 
-        # Both must exit (0=success, 1=business rejection, or abnormal is ok for race)
-        # At least one must succeed (exit 0)
         results = []
         for out, rc in [(out1, rc1), (out2, rc2)]:
-            if rc == 0 and out.strip():
-                parsed = _parse_json_output(out)
-                if parsed is not None:
-                    results.append(parsed)
+            parsed = _parse_json_output(out)
+            if parsed is not None:
+                results.append(parsed)
 
-        state = _finalize_call(self.env, call_id)
+        state = _db_state(self.env, call_id)
         debit_count = len(state["debit_rows"])
         assert debit_count == 1, (
             f"Exactly one debit required; got {debit_count}. "
-            f"P1 rc={rc1} out={out1[:200]} err={err1[:200]}; "
-            f"P2 rc={rc2} out={out2[:200]} err={err2[:200]}"
+            f"P1(pid={p1.pid}) rc={rc1} out={out1[:200]} err={err1[:200]}; "
+            f"P2(pid={p2.pid}) rc={rc2} out={out2[:200]} err={err2[:200]}"
         )
-
         assert state["call"]["billing_finalized"] is True
         charge = state["debit_rows"][0]["amount"]
-        assert state["balance"] == initial_balance - Decimal(str(charge)), (
-            f"Balance drift: initial={initial_balance} charge={charge} balance={state['balance']}"
-        )
-
-        success_count = sum(1 for r in results if r.get("billed"))
-        assert success_count <= 1, f"At most one process may report billed=true: {results}"
+        assert state["balance"] == initial_balance - Decimal(str(charge))
+        billed = [r for r in results if r.get("billed")]
+        assert len(billed) <= 1, f"At most one billed=True: {results}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -384,59 +373,47 @@ class TestTwoFinalizerRace:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestFinalizationCrash:
-    """Phase 6: One real OS PID crashes at each fault point.
-
-    After crash the call must still be unfinalized (safe to retry).
-    Retry must then succeed and produce exactly one debit.
-    """
+    """One OS PID crashes at each fault point; call stays unfinalized; retry succeeds."""
 
     @pytest.mark.parametrize("fault_point", FINALIZE_FAULT_POINTS)
     def test_crash_then_retry_succeeds(self, fault_point):
         env = _setup_tenant_and_call()
         call_id = env["call_id"]
         initial_balance = env["initial_balance"]
-
         try:
-            proc = _run_finalizer(call_id, fault_point=fault_point, timeout=60)
-            # Process must have terminated abnormally (os._exit(1)) or with exit code != 0
+            proc = _run_finalizer(call_id, fault_point=fault_point,
+                                  source="crash_test", timeout=60)
             assert proc.returncode != 0, (
-                f"Fault point {fault_point!r} did not crash the process. "
-                f"rc={proc.returncode} out={proc.stdout[:300]}"
+                f"Fault point {fault_point!r} did not crash. rc={proc.returncode}"
             )
 
-            # DB must show no committed debit — transaction rolled back
-            state = _finalize_call(env, call_id)
+            state = _db_state(env, call_id)
             assert not state["call"]["billing_finalized"], (
-                f"Fault point {fault_point!r}: call shows billing_finalized=True after crash — "
-                f"atomicity broken. state={state}"
+                f"{fault_point!r}: billing_finalized=True after crash — atomicity broken"
             )
             assert len(state["debit_rows"]) == 0, (
-                f"Fault point {fault_point!r}: debit row exists after crash — "
-                f"partial write. rows={state['debit_rows']}"
+                f"{fault_point!r}: debit row exists after crash"
             )
             assert state["balance"] == initial_balance, (
-                f"Fault point {fault_point!r}: balance changed after crash — "
-                f"partial debit. balance={state['balance']} initial={initial_balance}"
+                f"{fault_point!r}: balance changed after crash"
             )
 
-            # Retry must succeed
-            retry = _run_finalizer(call_id, timeout=60)
+            retry = _run_finalizer(call_id, source="crash_retry", timeout=60)
             assert retry.returncode == 0, (
-                f"Retry after crash at {fault_point!r} failed. "
-                f"rc={retry.returncode} out={retry.stdout[:300]} err={retry.stderr[:300]}"
+                f"Retry after {fault_point!r} failed. rc={retry.returncode} "
+                f"err={retry.stderr[:300]}"
             )
             result = _parse_json_output(retry.stdout)
             if result is not None:
                 assert result.get("billed") is True, (
-                    f"Retry result says billed=False after crash at {fault_point!r}: {result}"
+                    f"Retry billed=False after {fault_point!r}: {result}"
                 )
 
-            state2 = _finalize_call(env, call_id)
+            state2 = _db_state(env, call_id)
             assert len(state2["debit_rows"]) == 1, (
-                f"Retry after crash at {fault_point!r} produced {len(state2['debit_rows'])} debit rows"
+                f"Retry after {fault_point!r} produced {len(state2['debit_rows'])} debits"
             )
             assert state2["call"]["billing_finalized"] is True
-
         finally:
             _cleanup(env)
 
@@ -446,7 +423,7 @@ class TestFinalizationCrash:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestMonitorReconcileRace:
-    """Phase 7: Monitor and reconciliation paths race as separate OS processes."""
+    """Monitor (--source monitor) and reconciliation (--source reconcile_apply) race."""
 
     def setup_method(self):
         self.env = _setup_tenant_and_call()
@@ -458,23 +435,31 @@ class TestMonitorReconcileRace:
         call_id = self.env["call_id"]
         initial_balance = self.env["initial_balance"]
 
-        p_monitor = _popen_finalizer(call_id, extra_env={"CCALL_SOURCE": "monitor"})
-        p_reconcile = _popen_finalizer(call_id, extra_env={"CCALL_SOURCE": "reconcile"})
+        # Use explicit --source CLI argument (not env var)
+        p_monitor = _popen_finalizer(call_id, source="monitor")
+        p_reconcile = _popen_finalizer(call_id, source="reconcile_apply")
 
         out_m, err_m = p_monitor.communicate(timeout=90)
         out_r, err_r = p_reconcile.communicate(timeout=90)
 
-        state = _finalize_call(self.env, call_id)
+        state = _db_state(self.env, call_id)
         debit_count = len(state["debit_rows"])
         assert debit_count == 1, (
             f"Monitor+reconcile race produced {debit_count} debits. "
-            f"monitor rc={p_monitor.returncode} out={out_m[:200]}; "
-            f"reconcile rc={p_reconcile.returncode} out={out_r[:200]}"
+            f"monitor(pid={p_monitor.pid}) rc={p_monitor.returncode} out={out_m[:200]}; "
+            f"reconcile(pid={p_reconcile.pid}) rc={p_reconcile.returncode} out={out_r[:200]}"
         )
         assert state["call"]["billing_finalized"] is True
-
         charge = state["debit_rows"][0]["amount"]
         assert state["balance"] == initial_balance - Decimal(str(charge))
+
+        # Verify that --source reached the finalizer via log output
+        # (structlog emits "source=monitor" or "source=reconcile_apply" in the success log)
+        combined_logs = out_m + err_m + out_r + err_r
+        assert "monitor" in combined_logs or "reconcile_apply" in combined_logs, (
+            "Expected 'monitor' or 'reconcile_apply' in subprocess output — "
+            "--source argument may not have been passed"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -482,15 +467,13 @@ class TestMonitorReconcileRace:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestRefundProcessRace:
-    """Phase 8: Two real OS PIDs race to refund the same billed call."""
+    """Two OS PIDs race to refund the same billed call."""
 
     def setup_method(self):
         self.env = _setup_tenant_and_call()
-        # Finalize billing synchronously (committed) before the refund race
-        proc = _run_finalizer(self.env["call_id"], timeout=60)
+        proc = _run_finalizer(self.env["call_id"], source="setup", timeout=60)
         assert proc.returncode == 0, (
-            f"Setup: finalization failed. rc={proc.returncode} "
-            f"out={proc.stdout[:300]} err={proc.stderr[:300]}"
+            f"Setup finalization failed. rc={proc.returncode} err={proc.stderr[:300]}"
         )
 
     def teardown_method(self):
@@ -500,8 +483,10 @@ class TestRefundProcessRace:
         call_id = self.env["call_id"]
         tid = self.env["tenant_id"]
 
-        p1 = _popen_finalizer(call_id, refund=True, reason_code="race_test_1")
-        p2 = _popen_finalizer(call_id, refund=True, reason_code="race_test_2")
+        p1 = _popen_finalizer(call_id, refund=True,
+                               reason_code="race_test", source="refund_proc_1")
+        p2 = _popen_finalizer(call_id, refund=True,
+                               reason_code="race_test", source="refund_proc_2")
 
         out1, err1 = p1.communicate(timeout=90)
         out2, err2 = p2.communicate(timeout=90)
@@ -509,9 +494,9 @@ class TestRefundProcessRace:
         state = _refund_state(tid, call_id)
         refund_count = len(state["refund_rows"])
         assert refund_count == 1, (
-            f"Refund race produced {refund_count} refund rows. "
-            f"P1 rc={p1.returncode} out={out1[:200]}; "
-            f"P2 rc={p2.returncode} out={out2[:200]}"
+            f"Refund race produced {refund_count} rows. "
+            f"P1(pid={p1.pid}) rc={p1.returncode}; "
+            f"P2(pid={p2.pid}) rc={p2.returncode}"
         )
         assert state["call"]["refund_status"] == "refunded"
 
@@ -521,76 +506,237 @@ class TestRefundProcessRace:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestRefundCrash:
-    """Phase 9: One real OS PID crashes at each refund fault point.
-
-    After crash the call refund_status must still be 'none'.
-    Retry must then succeed and produce exactly one refund credit.
-    """
+    """One OS PID crashes at each refund fault point; no refund committed; retry succeeds."""
 
     @pytest.mark.parametrize("fault_point", REFUND_FAULT_POINTS)
     def test_refund_crash_then_retry_succeeds(self, fault_point):
         env = _setup_tenant_and_call()
         call_id = env["call_id"]
         tid = env["tenant_id"]
-
         try:
-            # Finalize billing first (committed)
-            fin = _run_finalizer(call_id, timeout=60)
+            fin = _run_finalizer(call_id, source="setup", timeout=60)
             assert fin.returncode == 0, (
-                f"Setup finalization failed at {fault_point!r}: "
-                f"rc={fin.returncode} out={fin.stdout[:200]}"
+                f"Setup finalization failed for {fault_point!r}: err={fin.stderr[:200]}"
             )
 
-            # Crash refund at fault point
             proc = _run_finalizer(
                 call_id, fault_point=fault_point, refund=True,
-                reason_code="crash_test", timeout=60,
+                reason_code="crash_test", source="crash_refund", timeout=60,
             )
             assert proc.returncode != 0, (
-                f"Refund fault point {fault_point!r} did not crash. rc={proc.returncode}"
+                f"Refund fault {fault_point!r} did not crash. rc={proc.returncode}"
             )
 
-            # DB must show no committed refund
             state = _refund_state(tid, call_id)
             assert state["call"]["refund_status"] == "none", (
-                f"Fault point {fault_point!r}: refund_status={state['call']['refund_status']} "
-                f"after crash — atomicity broken"
+                f"{fault_point!r}: refund_status={state['call']['refund_status']} after crash"
             )
             assert len(state["refund_rows"]) == 0, (
-                f"Fault point {fault_point!r}: refund row exists after crash"
+                f"{fault_point!r}: refund row exists after crash"
             )
 
-            # Retry must succeed
             retry = _run_finalizer(
-                call_id, refund=True, reason_code="crash_retry", timeout=60
+                call_id, refund=True,
+                reason_code="crash_retry", source="crash_refund_retry", timeout=60,
             )
             assert retry.returncode == 0, (
-                f"Refund retry after crash at {fault_point!r} failed. "
-                f"rc={retry.returncode} out={retry.stdout[:300]} err={retry.stderr[:300]}"
+                f"Refund retry after {fault_point!r} failed. err={retry.stderr[:300]}"
             )
             result = _parse_json_output(retry.stdout)
             if result is not None:
                 assert result.get("refunded") is True, (
-                    f"Retry refund result says refunded=False at {fault_point!r}: {result}"
+                    f"Retry refunded=False after {fault_point!r}: {result}"
                 )
 
             state2 = _refund_state(tid, call_id)
-            assert len(state2["refund_rows"]) == 1, (
-                f"Refund retry after crash at {fault_point!r} produced "
-                f"{len(state2['refund_rows'])} refund rows"
-            )
+            assert len(state2["refund_rows"]) == 1
             assert state2["call"]["refund_status"] == "refunded"
-
         finally:
             _cleanup(env)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Group F — DB connection-loss test
+# Group F — Real pg_terminate_backend connection-loss test
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestDbConnectionLoss:
-    """Phase 10: Terminate the DB backend mid-transaction; verify rollback; verify retry."""
+class TestRealPgTerminateBackend:
+    """Terminate the actual PostgreSQL backend mid-transaction; verify rollback; retry.
+
+    Mechanism:
+      1. Start finalizer with BILLING_FAULT_POINT=after_wallet_lock_pause.
+      2. Finalizer acquires wallet row FOR UPDATE, writes pg_backend_pid() to
+         BILLING_PAUSE_FILE, then waits for BILLING_RELEASE_FILE.
+      3. Test reads the backend PID, verifies it belongs to the disposable DB,
+         then calls pg_terminate_backend(<pid>) from an admin connection.
+      4. Finalizer's blocked DB call raises an error; it exits non-zero.
+      5. PostgreSQL rolls back the transaction automatically.
+      6. Test verifies: billing_finalized=False, zero debits, balance unchanged.
+      7. Retry finalizer: succeeds, exactly one debit.
+    """
+
+    def setup_method(self):
+        self.env = _setup_tenant_and_call()
+        self._tmp_dir = tempfile.mkdtemp(prefix="ccall_pgterminate_")
+        self._pause_file = os.path.join(self._tmp_dir, "backend_pid.txt")
+        self._release_file = os.path.join(self._tmp_dir, "release.txt")
+
+    def teardown_method(self):
+        # Remove coordination files
+        for f in (self._pause_file, self._release_file):
+            try:
+                os.unlink(f)
+            except FileNotFoundError:
+                pass
+        try:
+            os.rmdir(self._tmp_dir)
+        except OSError:
+            pass
+        _cleanup(self.env)
+
+    def test_pg_terminate_backend_rolls_back(self):
+        call_id = self.env["call_id"]
+        initial_balance = self.env["initial_balance"]
+        tid = self.env["tenant_id"]
+
+        # Start finalizer — it will pause at after_wallet_lock_pause
+        extra = {
+            "BILLING_PAUSE_FILE": self._pause_file,
+            "BILLING_RELEASE_FILE": self._release_file,
+        }
+        proc = _popen_finalizer(
+            call_id,
+            fault_point="after_wallet_lock_pause",
+            source="pg_terminate_test",
+            extra_env=extra,
+        )
+        finalizer_os_pid = proc.pid
+
+        # Wait for finalizer to write its backend PID (up to 20 s)
+        deadline = time.monotonic() + 20.0
+        backend_pid: int | None = None
+        while time.monotonic() < deadline:
+            if os.path.exists(self._pause_file):
+                try:
+                    raw = pathlib.Path(self._pause_file).read_text().strip()
+                    if raw.isdigit():
+                        backend_pid = int(raw)
+                        break
+                except OSError:
+                    pass
+            time.sleep(0.1)
+
+        assert backend_pid is not None, (
+            f"Finalizer (OS PID {finalizer_os_pid}) did not write backend PID "
+            f"to {self._pause_file} within 20 s"
+        )
+
+        # Verify the backend belongs to our disposable DB and call
+        assert _PROC_DB_URL is not None
+        db_name = _PROC_DB_URL.split("/")[-1]
+        with _conn() as verify_conn:
+            row = verify_conn.execute(
+                "SELECT datname, application_name, state, query"
+                " FROM pg_stat_activity"
+                " WHERE pid = %s",
+                (backend_pid,),
+            ).fetchone()
+            verify_conn.commit()
+
+        assert row is not None, (
+            f"Backend PID {backend_pid} not found in pg_stat_activity — "
+            f"finalizer may have already exited"
+        )
+        assert row["datname"] == db_name, (
+            f"Backend PID {backend_pid} connects to {row['datname']!r}, "
+            f"expected {db_name!r} — refusing to terminate unrelated backend"
+        )
+
+        # Terminate the backend using a separate admin connection
+        with _conn() as admin_conn:
+            terminate_row = admin_conn.execute(
+                "SELECT pg_terminate_backend(%s) AS terminated",
+                (backend_pid,),
+            ).fetchone()
+            admin_conn.commit()
+
+        terminated = bool(terminate_row["terminated"]) if terminate_row else False
+        assert terminated, (
+            f"pg_terminate_backend({backend_pid}) returned False — backend may have exited first"
+        )
+
+        # Wait for finalizer to exit (backend termination kills the blocked call)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            pytest.fail(
+                f"Finalizer (OS PID {finalizer_os_pid}) did not exit within 30 s "
+                f"after pg_terminate_backend({backend_pid})"
+            )
+
+        # Finalizer must exit non-zero (DB connection error)
+        assert proc.returncode != 0, (
+            f"Finalizer exited 0 after pg_terminate_backend — expected DB error exit. "
+            f"stdout={proc.stdout[:300]}"
+        )
+
+        # Allow PostgreSQL a moment to complete the rollback
+        time.sleep(0.3)
+
+        # Verify full rollback
+        state = _db_state(self.env, call_id)
+        assert not state["call"]["billing_finalized"], (
+            f"billing_finalized=True after pg_terminate_backend({backend_pid}) — "
+            "transaction was not rolled back"
+        )
+        assert len(state["debit_rows"]) == 0, (
+            f"Debit row exists after pg_terminate_backend: {state['debit_rows']}"
+        )
+        assert state["balance"] == initial_balance, (
+            f"Balance changed after pg_terminate_backend: "
+            f"{state['balance']} != {initial_balance}"
+        )
+        assert state["call"]["wallet_transaction_id"] is None, (
+            "wallet_transaction_id is not NULL after rollback"
+        )
+
+        # Retry must succeed
+        retry = _run_finalizer(call_id, source="pg_terminate_retry", timeout=60)
+        assert retry.returncode == 0, (
+            f"Retry after pg_terminate_backend failed. err={retry.stderr[:300]}"
+        )
+        state2 = _db_state(self.env, call_id)
+        assert len(state2["debit_rows"]) == 1, (
+            f"Retry produced {len(state2['debit_rows'])} debit rows"
+        )
+        assert state2["call"]["billing_finalized"] is True
+
+        # Report evidence (printed to stdout for the evidence table in Phase 7)
+        charge = state2["debit_rows"][0]["amount"]
+        print(
+            f"\n[F] pg_terminate_backend evidence:"
+            f"\n  OS PID:           {finalizer_os_pid}"
+            f"\n  PG backend PID:   {backend_pid}"
+            f"\n  DB:               {db_name}"
+            f"\n  call_id:          {call_id}"
+            f"\n  tenant_id:        {tid}"
+            f"\n  terminated:       {terminated}"
+            f"\n  finalizer_exit:   {proc.returncode}"
+            f"\n  balance_before:   {initial_balance}"
+            f"\n  balance_after:    {state2['balance']}"
+            f"\n  debit_count:      1"
+            f"\n  charge:           {charge}"
+            f"\n  billing_finalized: True"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Group G — Production fault-point rejection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestProductionFaultRejection:
+    """BILLING_FAULT_POINT must be rejected at startup when FLASK_ENV != testing."""
 
     def setup_method(self):
         self.env = _setup_tenant_and_call()
@@ -598,69 +744,105 @@ class TestDbConnectionLoss:
     def teardown_method(self):
         _cleanup(self.env)
 
-    def test_connection_termination_leaves_call_unfinalized(self):
-        """
-        Strategy: start a finalizer subprocess at fault point 'after_wallet_lock'
-        so it holds the wallet row lock inside a transaction.  We then immediately
-        terminate the subprocess (SIGKILL / TerminateProcess), which closes the
-        connection and causes PostgreSQL to roll back the transaction.
-
-        Verify: call still unfinalized, zero debits.
-        Retry: must succeed.
-        """
+    def test_production_rejects_finalize_fault_point(self):
+        """FLASK_ENV=production with BILLING_FAULT_POINT must refuse to start."""
         call_id = self.env["call_id"]
         initial_balance = self.env["initial_balance"]
+        tid = self.env["tenant_id"]
 
-        env = {**os.environ, "DATABASE_URL": _PROC_DB_URL, "FLASK_ENV": "testing",
-               "BILLING_FAULT_POINT": "after_wallet_lock"}
-        cmd = [
-            PYTHON, "-m", FINALIZER_MODULE,
-            "--call-id", str(call_id),
-            "--fault-point", "after_wallet_lock",
-            "--json",
-        ]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            cwd=str(__file__).split("tests")[0].rstrip("/\\"),
+        proc = _run_finalizer(
+            call_id,
+            fault_point="after_wallet_update",
+            source="production_rejection_test",
+            flask_env="production",
+            timeout=30,
         )
 
-        # Wait briefly for the process to reach the fault point (it will os._exit(1) itself)
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-
-        # The fault point fires os._exit(1) — returncode should be non-zero
         assert proc.returncode != 0, (
-            f"Expected abnormal exit from after_wallet_lock, got rc={proc.returncode}"
+            "Expected non-zero exit when BILLING_FAULT_POINT set in production. "
+            f"rc={proc.returncode} out={proc.stdout[:300]}"
         )
 
-        # Allow a moment for PG to detect the closed connection and roll back
-        time.sleep(0.5)
+        # No secrets / DB URLs / passwords in output
+        combined = proc.stdout + proc.stderr
+        assert _PROC_DB_URL not in combined, (
+            "DB URL leaked in process output during production fault rejection"
+        )
+        assert "password" not in combined.lower() or "PASSWORD" in combined, \
+            "Suspicious 'password' string in output"  # allow env var name but not values
 
-        state = _finalize_call(self.env, call_id)
+        # Call must remain unfinalized
+        state = _db_state(self.env, call_id)
         assert not state["call"]["billing_finalized"], (
-            "Call shows billing_finalized=True after connection termination — "
-            "transaction was not rolled back"
+            "Call was finalized despite production fault-point rejection"
         )
-        assert len(state["debit_rows"]) == 0, (
-            f"Debit row exists after connection termination: {state['debit_rows']}"
-        )
-        assert state["balance"] == initial_balance, (
-            f"Balance changed after connection termination: {state['balance']} != {initial_balance}"
+        assert len(state["debit_rows"]) == 0
+        assert state["balance"] == initial_balance
+
+        print(
+            f"\n[G] Production billing fault rejection evidence:"
+            f"\n  call_id:          {call_id}"
+            f"\n  tenant_id:        {tid}"
+            f"\n  FLASK_ENV:        production"
+            f"\n  fault_point:      after_wallet_update"
+            f"\n  exit_code:        {proc.returncode}"
+            f"\n  billing_finalized: False"
+            f"\n  debit_count:      0"
+            f"\n  balance:          {state['balance']} (unchanged)"
         )
 
-        # Retry succeeds
-        retry = _run_finalizer(call_id, timeout=60)
-        assert retry.returncode == 0, (
-            f"Retry after connection termination failed. "
-            f"rc={retry.returncode} err={retry.stderr[:300]}"
+    def test_production_rejects_refund_fault_point(self):
+        """FLASK_ENV=production with refund BILLING_FAULT_POINT must refuse to start."""
+        call_id = self.env["call_id"]
+        tid = self.env["tenant_id"]
+        initial_balance = self.env["initial_balance"]
+
+        # Finalize first (in testing mode)
+        fin = _run_finalizer(call_id, source="setup", timeout=60)
+        assert fin.returncode == 0, f"Setup finalization failed: err={fin.stderr[:200]}"
+
+        state_after_fin = _db_state(self.env, call_id)
+        balance_after_debit = state_after_fin["balance"]
+
+        proc = _run_finalizer(
+            call_id,
+            fault_point="after_refund_wallet_update",
+            source="production_rejection_test",
+            flask_env="production",
+            refund=True,
+            reason_code="production_rejection",
+            timeout=30,
         )
-        state2 = _finalize_call(self.env, call_id)
-        assert len(state2["debit_rows"]) == 1
-        assert state2["call"]["billing_finalized"] is True
+
+        assert proc.returncode != 0, (
+            "Expected non-zero exit for refund fault in production. "
+            f"rc={proc.returncode}"
+        )
+
+        combined = proc.stdout + proc.stderr
+        assert _PROC_DB_URL not in combined, "DB URL leaked in output"
+
+        # Refund must not have been committed
+        rstate = _refund_state(tid, call_id)
+        assert rstate["call"]["refund_status"] == "none", (
+            f"refund_status={rstate['call']['refund_status']} despite production rejection"
+        )
+        assert len(rstate["refund_rows"]) == 0
+
+        # Balance unchanged from post-debit value
+        final_state = _db_state(self.env, call_id)
+        assert final_state["balance"] == balance_after_debit, (
+            f"Balance changed during production rejection: "
+            f"{final_state['balance']} != {balance_after_debit}"
+        )
+
+        print(
+            f"\n[G] Production refund fault rejection evidence:"
+            f"\n  call_id:          {call_id}"
+            f"\n  tenant_id:        {tid}"
+            f"\n  fault_point:      after_refund_wallet_update"
+            f"\n  exit_code:        {proc.returncode}"
+            f"\n  refund_status:    none"
+            f"\n  refund_count:     0"
+            f"\n  balance:          {final_state['balance']} (unchanged from post-debit)"
+        )

@@ -29,6 +29,7 @@ Fault points (FLASK_ENV=testing only)
 --------------------------------------
 Finalize:
   after_call_lock, after_charge_calculation, after_wallet_lock,
+  after_wallet_lock_pause (writes pg_backend_pid to BILLING_PAUSE_FILE, waits for BILLING_RELEASE_FILE),
   after_wallet_update, after_ledger_insert, after_call_billing_update,
   before_transaction_commit
 
