@@ -74,33 +74,45 @@ def _debit_count(db, tenant_id, call_id):
 
 # ── Scenario 1: Two threads race on one call ──────────────────────────────────
 
-def test_two_threads_race_exactly_one_debit(app, db_conn):
-    """Two threads call finalize_call_billing concurrently → one debit, one already_finalized."""
+@pytest.mark.real_db
+def test_two_threads_race_exactly_one_debit(app, committed_billing_case):
+    """Two threads call finalize_call_billing concurrently → one debit, one already_finalized.
+
+    Requires @real_db: threads must run truly concurrently on separate pool connections;
+    the barrier synchronisation requires both threads to be live at the same time.
+    Data committed before threads start so both pool connections can see it.
+    """
     from app.db import db
 
-    tid = _tenant(db)
-    call_id = _call(db, tid, talk_seconds=60, status="canceled")
-    initial_balance = get_balance(tid)
+    tid = committed_billing_case["tenant_id"]
+    call_id = committed_billing_case["call_id"]
+    initial_balance = committed_billing_case["initial_balance"]
 
     results = []
     errors = []
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=10)
 
     def run():
         with app.app_context():
             try:
-                barrier.wait()   # both threads start simultaneously
+                barrier.wait(timeout=10)
                 r = finalize_call_billing(call_id)
                 results.append(r)
+            except threading.BrokenBarrierError:
+                errors.append(RuntimeError("Barrier timed out — thread did not rendezvous"))
             except Exception as exc:
                 errors.append(exc)
 
-    t1 = threading.Thread(target=run)
-    t2 = threading.Thread(target=run)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1 = threading.Thread(target=run, daemon=True)
+    t2 = threading.Thread(target=run, daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=30)
 
-    # Errors are allowed only if they're serialization errors (psycopg rolls back)
+    if t1.is_alive() or t2.is_alive():
+        pytest.fail(f"Thread did not finish within 30s — possible deadlock. errors={errors}")
+
     for e in errors:
         assert isinstance(e, psycopg.errors.SerializationFailure) or "unique" in str(e).lower(), \
             f"Unexpected error type: {type(e).__name__}: {e}"
@@ -193,74 +205,113 @@ def test_repeat_finalization_after_success(app, db_conn):
 
 # ── Scenario 4: Monitor and reconciliation race on one terminal call ──────────
 
-def test_monitor_and_reconciliation_race(app, db_conn):
+@pytest.mark.real_db
+def test_monitor_and_reconciliation_race(app, committed_billing_case):
     """Monitor path and reconciliation path race on the same unfinalized terminal call.
 
-    Both call finalize_call_billing — exactly one debit results.
+    Both call finalize_call_billing concurrently — exactly one debit results.
+    Requires @real_db so threads run on separate pool connections with the barrier
+    synchronisation keeping both live at the same time.
     """
     from app.db import db
-    from scripts.reconcile_call_billing import detect_unfinalized_terminal_calls, _apply_class_a
 
-    tid = _tenant(db)
-    call_id = _call(db, tid, talk_seconds=60, status="completed")
-    initial_balance = get_balance(tid)
+    tid = committed_billing_case["tenant_id"]
+    call_id = committed_billing_case["call_id"]
+    initial_balance = committed_billing_case["initial_balance"]
 
     results = []
-    barrier = threading.Barrier(2)
+    errors = []
+    barrier = threading.Barrier(2, timeout=10)
 
     def run_monitor():
         with app.app_context():
-            barrier.wait()
-            r = finalize_call_billing(call_id, source="monitor")
-            results.append(("monitor", r))
+            try:
+                barrier.wait(timeout=10)
+                r = finalize_call_billing(call_id, source="monitor")
+                results.append(("monitor", r))
+            except threading.BrokenBarrierError:
+                errors.append(RuntimeError("Barrier timed out in monitor thread"))
+            except Exception as exc:
+                errors.append(exc)
 
     def run_reconcile():
         with app.app_context():
-            barrier.wait()
-            r = finalize_call_billing(call_id, source="reconcile")
-            results.append(("reconcile", r))
+            try:
+                barrier.wait(timeout=10)
+                r = finalize_call_billing(call_id, source="reconcile")
+                results.append(("reconcile", r))
+            except threading.BrokenBarrierError:
+                errors.append(RuntimeError("Barrier timed out in reconcile thread"))
+            except Exception as exc:
+                errors.append(exc)
 
-    t1 = threading.Thread(target=run_monitor)
-    t2 = threading.Thread(target=run_reconcile)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1 = threading.Thread(target=run_monitor, daemon=True)
+    t2 = threading.Thread(target=run_reconcile, daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=30)
+
+    if t1.is_alive() or t2.is_alive():
+        pytest.fail(f"Thread did not finish within 30s. errors={errors}")
+    assert not errors, f"Thread errors: {errors}"
 
     assert _debit_count(db, tid, call_id) == 1
     final_balance = get_balance(tid)
-    assert final_balance < initial_balance  # exactly one debit
-    # Second caller must have seen already_finalized
+    assert final_balance < initial_balance
     billed_count = sum(1 for _, r in results if r.get("billed"))
     assert billed_count == 1, f"Exactly one billed result required: {results}"
 
 
 # ── Scenario 5: Refund threads race ──────────────────────────────────────────
 
-def test_concurrent_refunds_exactly_one_credit(app, db_conn):
-    """Two threads race to refund the same call → exactly one refund credit."""
+@pytest.mark.real_db
+def test_concurrent_refunds_exactly_one_credit(app, committed_billing_case):
+    """Two threads race to refund the same call → exactly one refund credit.
+
+    Requires @real_db so both threads run on separate pool connections
+    with real PostgreSQL FOR UPDATE serialisation of the refund guard.
+    Billing is finalised synchronously before the race begins so the
+    debit row exists as committed data.
+    """
     from app.db import db
 
-    tid = _tenant(db)
-    call_id = _call(db, tid, talk_seconds=60, status="canceled")
-    finalize_call_billing(call_id)
-    balance_before_refund = get_balance(tid)
+    tid = committed_billing_case["tenant_id"]
+    call_id = committed_billing_case["call_id"]
+
+    # Finalise billing synchronously first (single connection, committed)
+    with app.app_context():
+        fr = finalize_call_billing(call_id)
+    assert fr["billed"] is True, f"Setup: billing must succeed, got {fr}"
 
     results = []
     errors = []
-    barrier = threading.Barrier(2)
+    barrier = threading.Barrier(2, timeout=10)
 
     def run_refund():
         with app.app_context():
             try:
-                barrier.wait()
+                barrier.wait(timeout=10)
                 r = refund_call_charge(call_id, reason_code="race_test", source="test")
                 results.append(r)
+            except threading.BrokenBarrierError:
+                errors.append(RuntimeError("Barrier timed out in refund thread"))
             except Exception as exc:
                 errors.append(exc)
 
-    t1 = threading.Thread(target=run_refund)
-    t2 = threading.Thread(target=run_refund)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
+    t1 = threading.Thread(target=run_refund, daemon=True)
+    t2 = threading.Thread(target=run_refund, daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=30)
+
+    if t1.is_alive() or t2.is_alive():
+        pytest.fail(f"Refund thread did not finish within 30s. errors={errors}")
+
+    for e in errors:
+        assert "unique" in str(e).lower() or isinstance(e, psycopg.errors.UniqueViolation), \
+            f"Unexpected error: {type(e).__name__}: {e}"
 
     refund_rows = db.query(
         "SELECT id FROM wallet_transactions WHERE tenant_id=%s AND ref_id=%s AND type='refund'",

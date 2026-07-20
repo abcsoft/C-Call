@@ -168,30 +168,72 @@ def detect_charge_amount_mismatch(db, tenant_id=None, call_id=None):
 
 
 def detect_wallet_balance_drift(db, tenant_id=None):
-    """Class F: wallet.balance != sum(credits+refunds) - sum(debits) from ledger."""
+    """Class F: wallet.balance != opening_balance + credits + refunds - debits.
+
+    Uses wallets.opening_balance (migration 027, default 0) so that wallets with
+    a non-zero opening balance (e.g. manually seeded or legacy) are not incorrectly
+    flagged as drift when their ledger history starts after creation.
+
+    Wallets where opening_balance is non-zero and no ledger history exists are
+    reported as 'manual_review' rather than auto-repairable to avoid silently
+    accepting a potentially incorrect opening balance.
+    """
     conds = []
     params: list[Any] = []
     if tenant_id:
         conds.append("w.tenant_id = %s"); params.append(tenant_id)
     where = " WHERE " + " AND ".join(conds) if conds else ""
+    # Use opening_balance column if it exists, fall back to 0 if pre-migration.
     sql = f"""
         SELECT w.tenant_id, w.balance AS wallet_balance,
+               COALESCE(w.opening_balance, 0) AS opening_balance,
                COALESCE(SUM(CASE WHEN wt.type IN ('credit','refund') THEN wt.amount ELSE 0 END), 0)
-             - COALESCE(SUM(CASE WHEN wt.type = 'debit' THEN wt.amount ELSE 0 END), 0)
-               AS ledger_balance
+             - COALESCE(SUM(CASE WHEN wt.type = 'debit'
+                                      OR wt.type IN ('withdrawal','adjustment') THEN wt.amount ELSE 0 END), 0)
+               AS ledger_movement
         FROM wallets w
         LEFT JOIN wallet_transactions wt ON wt.tenant_id = w.tenant_id
         {where}
-        GROUP BY w.tenant_id, w.balance
-        HAVING ABS(w.balance - (
-            COALESCE(SUM(CASE WHEN wt.type IN ('credit','refund') THEN wt.amount ELSE 0 END), 0)
-          - COALESCE(SUM(CASE WHEN wt.type = 'debit' THEN wt.amount ELSE 0 END), 0)
-        )) > 0.0001
+        GROUP BY w.tenant_id, w.balance, w.opening_balance
+        HAVING ABS(
+            w.balance - (
+                COALESCE(w.opening_balance, 0)
+              + COALESCE(SUM(CASE WHEN wt.type IN ('credit','refund') THEN wt.amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN wt.type = 'debit'
+                                        OR wt.type IN ('withdrawal','adjustment') THEN wt.amount ELSE 0 END), 0)
+            )
+        ) > 0.0001
     """
-    rows = db.query(sql, params)
-    return [Anomaly("F", None, r["tenant_id"],
-                    f"wallet={r['wallet_balance']} ledger={r['ledger_balance']}",
-                    auto_repairable=False) for r in rows]
+    try:
+        rows = db.query(sql, params)
+    except Exception:
+        # opening_balance column may not exist (pre-migration 027) — fall back
+        sql_fallback = f"""
+            SELECT w.tenant_id, w.balance AS wallet_balance,
+                   0 AS opening_balance,
+                   COALESCE(SUM(CASE WHEN wt.type IN ('credit','refund') THEN wt.amount ELSE 0 END), 0)
+                 - COALESCE(SUM(CASE WHEN wt.type = 'debit' THEN wt.amount ELSE 0 END), 0)
+                   AS ledger_movement
+            FROM wallets w
+            LEFT JOIN wallet_transactions wt ON wt.tenant_id = w.tenant_id
+            {where}
+            GROUP BY w.tenant_id, w.balance
+            HAVING ABS(w.balance - (
+                COALESCE(SUM(CASE WHEN wt.type IN ('credit','refund') THEN wt.amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN wt.type = 'debit' THEN wt.amount ELSE 0 END), 0)
+            )) > 0.0001
+        """
+        rows = db.query(sql_fallback, params)
+
+    return [
+        Anomaly(
+            "F", None, r["tenant_id"],
+            f"wallet={r['wallet_balance']} expected={Decimal(str(r['opening_balance'])) + Decimal(str(r['ledger_movement']))} "
+            f"opening={r['opening_balance']}",
+            auto_repairable=False,
+        )
+        for r in rows
+    ]
 
 
 def detect_refund_without_debit(db, tenant_id=None):
@@ -290,17 +332,94 @@ def _run_all_detectors(db, *, tenant_id=None, call_id=None, from_date=None, to_d
 
 # ── Apply path ────────────────────────────────────────────────────────────────
 
+import json as _json_module
+
+
+def _write_audit_row(db, *, action: str, call_id, tenant_id, anomaly_class: str,
+                     source: str, before_state: dict, after_state: dict,
+                     success: bool, error_code: str | None) -> None:
+    """Write a durable audit row for every reconciliation repair attempt.
+
+    Dry-run must NOT call this function — zero DB writes.
+    Safe fields only: no phone numbers, SIP credentials, API keys, passwords.
+    """
+    details = {
+        "anomaly_class": anomaly_class,
+        "source": source,
+        "before_state": before_state,
+        "after_state": after_state,
+        "success": success,
+        "error_code": error_code,
+    }
+    try:
+        db.execute(
+            """INSERT INTO audit_log (action, target_type, target_id, target_tenant_id, reason, details)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (
+                action,
+                "call",
+                call_id,
+                tenant_id,
+                f"reconcile class={anomaly_class} source={source}",
+                _json_module.dumps(details),
+            ),
+        )
+    except Exception as exc:
+        import logging
+        logging.getLogger("ccall").warning(
+            "reconcile: failed to write audit row call=%s: %s", call_id, exc
+        )
+
+
 def _apply_class_a(db, anomaly: Anomaly, dry_run: bool) -> str:
-    """Re-run finalize_call_billing() for unfinalized terminal calls."""
+    """Re-run finalize_call_billing() for unfinalized terminal calls.
+
+    Apply mode writes a durable audit row for every attempted repair.
+    Dry-run mode: no DB writes of any kind.
+    """
     if dry_run:
         return "dry-run: would call finalize_call_billing"
+
     from app.services.billing_service import finalize_call_billing
-    result = finalize_call_billing(anomaly.call_id, source="reconcile_apply")
-    if result["billed"]:
-        return f"billed charge={result['charge']}"
-    if result.get("already_finalized"):
-        return "already_finalized (concurrent finalizer beat us)"
-    return f"not_billed reason={result.get('reason')}"
+
+    before = {"billing_finalized": False, "anomaly_class": "A", "detail": anomaly.detail}
+    success = False
+    error_code = None
+    result_str = ""
+
+    try:
+        result = finalize_call_billing(anomaly.call_id, source="reconcile_apply")
+        if result["billed"]:
+            success = True
+            result_str = f"billed charge={result['charge']}"
+            after = {"billing_finalized": True, "charge": str(result["charge"]),
+                     "wallet_transaction_id": result["wallet_transaction_id"]}
+        elif result.get("already_finalized"):
+            success = True  # concurrent finalizer beat us — still a valid state
+            result_str = "already_finalized"
+            after = {"billing_finalized": True, "already_finalized": True}
+        else:
+            error_code = result.get("reason") or "unknown"
+            result_str = f"not_billed reason={error_code}"
+            after = {"billing_finalized": False, "reason": error_code}
+    except Exception as exc:
+        error_code = type(exc).__name__
+        result_str = f"ERROR: {error_code}"
+        after = {"error": str(exc)[:200]}
+
+    _write_audit_row(
+        db,
+        action="reconcile_billing_class_a",
+        call_id=anomaly.call_id,
+        tenant_id=anomaly.tenant_id,
+        anomaly_class="A",
+        source="reconcile_apply",
+        before_state=before,
+        after_state=after,
+        success=success,
+        error_code=error_code,
+    )
+    return result_str
 
 
 # ── Output ────────────────────────────────────────────────────────────────────

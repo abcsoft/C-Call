@@ -441,6 +441,105 @@ def auth_client(client, app):
 
 
 @pytest.fixture
+def committed_billing_case(app):
+    """Independent, committed tenant+wallet+call rows for concurrency/crash tests.
+
+    Required behavior:
+    1. Uses an independent psycopg connection (never the monkeypatched pool).
+    2. Inserts tenant, wallet, rate, and call rows.
+    3. Commits before yielding — every pool connection can see the data.
+    4. Yields {tenant_id, call_id, initial_balance, test_run_id}.
+    5. Cleans up all test-owned rows after yield, committed.
+    6. No shared-database manual cleanup needed.
+
+    Use with @pytest.mark.real_db so prevent_background_threads and db_conn
+    do not interfere with concurrency or subprocess tests.
+    """
+    import secrets
+    from decimal import Decimal
+    import psycopg
+    import psycopg.rows
+
+    test_run_id = secrets.token_hex(8)
+    initial_balance = Decimal("200.00")
+    rate_per_min = Decimal("0.80")
+    created: dict = {}
+
+    with psycopg.connect(
+        TEST_DATABASE_URL,
+        autocommit=False,
+        row_factory=psycopg.rows.dict_row,
+    ) as setup_conn:
+        with setup_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO tenants (business_name, email, status)"
+                " VALUES (%s, %s, 'active') RETURNING id",
+                (f"CBT_{test_run_id}", f"cbt_{test_run_id}@test.example"),
+            )
+            tid = cur.fetchone()["id"]
+            created["tenant_id"] = tid
+
+            cur.execute(
+                "INSERT INTO wallets (tenant_id, balance) VALUES (%s, %s) RETURNING id",
+                (tid, initial_balance),
+            )
+            created["wallet_id"] = cur.fetchone()["id"]
+
+            cur.execute(
+                "INSERT INTO customer_rates"
+                " (tenant_id, rate_per_min, rate_per_call, min_charge,"
+                "  billing_pulse_seconds, minimum_billable_seconds, charge_failed_calls)"
+                " VALUES (%s, %s, 0.00, %s, 60, 60, false)"
+                " ON CONFLICT (tenant_id) DO UPDATE SET"
+                "  rate_per_min = EXCLUDED.rate_per_min,"
+                "  min_charge   = EXCLUDED.min_charge",
+                (tid, rate_per_min, rate_per_min),
+            )
+
+            cur.execute(
+                "INSERT INTO calls"
+                " (tenant_id, number, status, talk_seconds, call_type)"
+                " VALUES (%s, '01700000000', 'completed', 60, 'ivr')"
+                " RETURNING id",
+                (tid,),
+            )
+            created["call_id"] = cur.fetchone()["id"]
+            created["initial_balance"] = initial_balance
+            created["test_run_id"] = test_run_id
+
+        setup_conn.commit()  # visible to all pool connections
+
+    yield created
+
+    # Cleanup — use a transaction with deferred FK checks
+    with psycopg.connect(TEST_DATABASE_URL, autocommit=False) as clean_conn:
+        tid = created["tenant_id"]
+        # Reset all FK and refund columns on calls before deleting wallet_transactions.
+        # Must clear refund_status → 'none' together with refund_transaction_id and
+        # refunded_at to satisfy CHECK constraints calls_refund_txn_required and
+        # calls_refund_timestamp_required (which are NOT DEFERRABLE).
+        clean_conn.execute(
+            "UPDATE calls SET"
+            "  wallet_transaction_id = NULL,"
+            "  refund_status         = 'none',"
+            "  refund_transaction_id = NULL,"
+            "  refunded_at           = NULL,"
+            "  refund_reason_code    = NULL,"
+            "  refund_source         = NULL"
+            " WHERE tenant_id = %s",
+            (tid,),
+        )
+        clean_conn.execute("DELETE FROM wallet_transactions WHERE tenant_id = %s", (tid,))
+        clean_conn.execute("DELETE FROM audit_log WHERE target_tenant_id = %s", (tid,))
+        clean_conn.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tid,))
+        clean_conn.execute("DELETE FROM calls WHERE tenant_id = %s", (tid,))
+        clean_conn.execute("DELETE FROM wallets WHERE tenant_id = %s", (tid,))
+        clean_conn.execute("DELETE FROM customer_rates WHERE tenant_id = %s", (tid,))
+        clean_conn.execute("DELETE FROM tenants WHERE id = %s", (tid,))
+        clean_conn.commit()
+
+
+@pytest.fixture
 def api_client(client, app):
     """Factory fixture to inject X-API-Key credentials into the request environment."""
     def _api(tenant_user_pair: tuple[dict, dict]):

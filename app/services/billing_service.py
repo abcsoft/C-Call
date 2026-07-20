@@ -35,10 +35,63 @@ import logging
 from decimal import Decimal
 from typing import Any
 
+import os as _os
+
 from app.db import db
 from app.services.rate_service import calculate_charge_and_duration
 
 logger = logging.getLogger("ccall")
+
+# ── Testing-only fault injection ──────────────────────────────────────────────
+# Set BILLING_FAULT_POINT=<name> in the environment to terminate the process
+# abnormally at the named checkpoint.  Only honoured when FLASK_ENV=testing.
+# Production use is rejected at startup.
+#
+# finalize_call_billing fault points:
+#   after_call_lock         — after SELECT call FOR UPDATE
+#   after_charge_calculation — after calculate_charge_and_duration()
+#   after_wallet_lock       — after SELECT wallet FOR UPDATE
+#   after_wallet_update     — after UPDATE wallets
+#   after_ledger_insert     — after INSERT wallet_transactions
+#   after_call_billing_update — after UPDATE calls billing_finalized=TRUE
+#   before_transaction_commit — immediately before the with-block exits
+#
+# refund_call_charge fault points:
+#   after_refund_wallet_lock   — after SELECT wallet FOR UPDATE
+#   after_refund_wallet_update — after UPDATE wallets (refund credit)
+#   after_refund_ledger_insert — after INSERT wallet_transactions (refund row)
+#   after_refund_state_update  — after UPDATE calls refund_status='refunded'
+#   before_refund_commit       — immediately before the with-block exits
+
+_FAULT_POINT: str | None = None
+
+def _init_fault_point() -> None:
+    global _FAULT_POINT
+    fp = _os.environ.get("BILLING_FAULT_POINT")
+    if not fp:
+        return
+    env = _os.environ.get("FLASK_ENV", "production")
+    if env != "testing":
+        raise RuntimeError(
+            f"BILLING_FAULT_POINT={fp!r} is set but FLASK_ENV={env!r}. "
+            "Fault injection is only permitted in testing environments. "
+            "This process will not start to prevent accidental production use."
+        )
+    _FAULT_POINT = fp
+    logger.warning("BILLING FAULT POINT ENABLED: %s (testing only)", fp)
+
+_init_fault_point()
+
+
+def _maybe_fault(checkpoint: str) -> None:
+    """If the current fault point matches checkpoint, crash the process abnormally.
+
+    Uses os._exit(1) — bypasses all Python cleanup so no partial commit can sneak
+    past the fault.  Only reachable when FLASK_ENV=testing.
+    """
+    if _FAULT_POINT and _FAULT_POINT == checkpoint:
+        logger.critical("FAULT INJECTION: terminating at checkpoint %s", checkpoint)
+        _os._exit(1)  # abnormal termination — no atexit, no finally
 
 TERMINAL_STATUSES = {
     "completed",    # IVR flow ended naturally
@@ -102,11 +155,12 @@ def finalize_call_billing(
         ).fetchone()
 
         if not call:
-            return {"billed": False, "call_id": call_id, **_defaults, "reason": "call_not_found", "error_code": "call_not_found"}
+            return {**_defaults, "billed": False, "call_id": call_id, "reason": "call_not_found", "error_code": "call_not_found"}
 
+        _maybe_fault("after_call_lock")
         tenant_id: int = call["tenant_id"]
         if tenant_id is None:
-            return {"billed": False, "call_id": call_id, **_defaults, "reason": "no_tenant", "error_code": "no_tenant"}
+            return {**_defaults, "billed": False, "call_id": call_id, "reason": "no_tenant", "error_code": "no_tenant"}
 
         # ── 2. Tenant ownership validation ────────────────────────────────────
         if expected_tenant_id is not None and tenant_id != expected_tenant_id:
@@ -146,10 +200,10 @@ def finalize_call_billing(
         status = call["status"]
         if status not in TERMINAL_STATUSES:
             return {
+                **_defaults,
                 "billed": False,
                 "call_id": call_id,
                 "tenant_id": tenant_id,
-                **_defaults,
                 "reason": "not_terminal",
                 "error_code": "not_terminal",
             }
@@ -180,6 +234,7 @@ def finalize_call_billing(
         charge, billable_seconds = calculate_charge_and_duration(
             talk_seconds, tenant_id, status, rates=snapshot_rates
         )
+        _maybe_fault("after_charge_calculation")
 
         txn_id: int | None = None
 
@@ -190,6 +245,7 @@ def finalize_call_billing(
                 (tenant_id,),
             ).fetchone()
 
+            _maybe_fault("after_wallet_lock")
             if not wallet:
                 logger.error(
                     "finalize_call_billing: wallet not found for tenant=%s call=%s source=%s",
@@ -201,10 +257,10 @@ def finalize_call_billing(
                 except Exception:
                     pass
                 return {
+                    **_defaults,
                     "billed": False,
                     "call_id": call_id,
                     "tenant_id": tenant_id,
-                    **_defaults,
                     "reason": "wallet_not_found",
                     "error_code": "wallet_not_found",
                 }
@@ -242,6 +298,7 @@ def finalize_call_billing(
                 "UPDATE wallets SET balance = %s, updated_at = now() WHERE tenant_id = %s",
                 (new_balance, tenant_id),
             )
+            _maybe_fault("after_wallet_update")
 
             # ── 9. Insert ledger row (same transaction) ───────────────────────
             # ref_id format 'call:{call_id}' matches the partial unique index
@@ -262,6 +319,7 @@ def finalize_call_billing(
                 ),
             ).fetchone()
             txn_id = int(txn_row["id"])
+            _maybe_fault("after_ledger_insert")
 
         # ── 10. Mark call finalized (same transaction — commits atomically) ───
         conn.execute(
@@ -271,12 +329,16 @@ def finalize_call_billing(
             (charge, billable_seconds, txn_id, call_id),
         )
 
+        _maybe_fault("after_call_billing_update")
+
         # ── 11. Update attempt record (same transaction) ──────────────────────
         conn.execute(
             "UPDATE order_call_attempts SET charge = %s, billable_seconds = %s,"
             " wallet_transaction_id = %s WHERE call_id = %s",
             (charge, billable_seconds, txn_id, call_id),
         )
+
+        _maybe_fault("before_transaction_commit")
 
     # ── Post-commit: metrics, cache invalidation, low balance alert ──────────
     try:
@@ -321,12 +383,20 @@ def refund_call_charge(
     reason_code: str,
     source: str,
 ) -> dict[str, Any]:
-    """Idempotent refund of a finalized call charge.
+    """Idempotent refund of a finalized call charge — atomic and durable.
 
-    Locks the call row and its original debit ledger row, validates that:
-      - The call was billed (billing_finalized=TRUE, charge > 0)
-      - No refund already exists for this call (ref_id='refund:call:{call_id}')
-    Then credits the wallet and marks the original debit's counter-entry.
+    Single transaction commits:
+      1. wallet credit (UPDATE wallets)
+      2. refund ledger row (INSERT wallet_transactions type='refund')
+      3. durable state on calls (refund_status, refund_transaction_id, refunded_at, ...)
+
+    All three commit together or none do.  A process crash at any point leaves
+    the call with refund_status='none', enabling safe retry via the durable state
+    check (step 4 below) rather than relying solely on the ledger scan.
+
+    The partial unique index wallet_transactions_call_refund_uniq provides
+    belt-and-suspenders: even if two concurrent refund attempts race past the
+    durable state check, only one INSERT succeeds.
 
     Returns a dict with keys:
       refunded (bool)
@@ -337,6 +407,12 @@ def refund_call_charge(
       wallet_transaction_id (int | None)   — original debit
       refund_transaction_id (int | None)   — new credit/refund row
       reason (str | None)
+
+    Error codes:
+      call_not_found      — call_id does not exist
+      no_original_debit   — call not billed (billing_finalized=FALSE or charge<=0)
+      already_refunded    — durable state shows refund already committed
+      wallet_not_found    — tenant has no wallet row
     """
     _defaults: dict[str, Any] = {
         "refund_amount": Decimal("0.0000"),
@@ -348,34 +424,81 @@ def refund_call_charge(
     }
 
     with db.transaction() as conn:
-        # Lock call row
+        # ── 1. Lock call row — serializes concurrent refund attempts ──────────
         call = conn.execute(
             "SELECT * FROM calls WHERE id = %s FOR UPDATE",
             (call_id,),
         ).fetchone()
 
         if not call:
-            return {"refunded": False, "call_id": call_id, **_defaults, "reason": "call_not_found"}
+            return {**_defaults, "refunded": False, "call_id": call_id, "reason": "call_not_found"}
 
         tenant_id: int = call["tenant_id"]
+
+        # ── 2. Validate original billing ──────────────────────────────────────
         if not call.get("billing_finalized") or not call.get("charge") or Decimal(str(call["charge"])) <= 0:
             return {
+                **_defaults,
                 "refunded": False,
                 "call_id": call_id,
                 "tenant_id": tenant_id,
-                **_defaults,
                 "reason": "no_original_debit",
             }
 
-        refund_ref = f"refund:call:{call_id}"
+        # ── 3. Verify original debit exists in ledger ─────────────────────────
+        debit_ref = f"call:{call_id}"
+        original_debit = conn.execute(
+            "SELECT id FROM wallet_transactions WHERE tenant_id = %s AND ref_id = %s AND type = 'debit'",
+            (tenant_id, debit_ref),
+        ).fetchone()
+        if not original_debit:
+            logger.error(
+                "refund_call_charge: billing_finalized=TRUE but no debit row call=%s tenant=%s",
+                call_id, tenant_id,
+            )
+            return {
+                **_defaults,
+                "refunded": False,
+                "call_id": call_id,
+                "tenant_id": tenant_id,
+                "reason": "no_debit_row",
+            }
 
-        # Check for existing refund (idempotency)
+        # ── 4. Check durable refund state (primary idempotency sentinel) ──────
+        # The durable state column is the authoritative check. It is set atomically
+        # with the ledger insert in step 8, so if refund_status='refunded' the
+        # entire refund transaction committed successfully.
+        has_durable_refund = call.get("refund_status") == "refunded"
+        if has_durable_refund:
+            return {
+                **_defaults,
+                "refunded": False,
+                "already_refunded": True,
+                "call_id": call_id,
+                "tenant_id": tenant_id,
+                "refund_amount": Decimal(str(call["charge"])),
+                "wallet_transaction_id": call["wallet_transaction_id"],
+                "refund_transaction_id": call.get("refund_transaction_id"),
+                "reason": "already_refunded",
+            }
+
+        # ── 5. Belt-and-suspenders: also check ledger for existing refund row ─
+        # Handles the edge case where durable state is 'none' but a ledger row
+        # exists (crash after ledger insert, before state update in an older code
+        # version, or manual DB repair).
+        refund_ref = f"refund:call:{call_id}"
         existing_refund = conn.execute(
             "SELECT id FROM wallet_transactions WHERE tenant_id = %s AND ref_id = %s AND type = 'refund'",
             (tenant_id, refund_ref),
         ).fetchone()
         if existing_refund:
+            logger.warning(
+                "refund_call_charge: ledger refund row exists but durable state missing "
+                "call=%s tenant=%s — returning already_refunded, not double-crediting",
+                call_id, tenant_id,
+            )
             return {
+                **_defaults,
                 "refunded": False,
                 "already_refunded": True,
                 "call_id": call_id,
@@ -388,21 +511,27 @@ def refund_call_charge(
 
         refund_amount = Decimal(str(call["charge"]))
 
-        # Lock wallet FOR UPDATE (same transaction)
+        # ── 6. Lock wallet FOR UPDATE (same transaction) ───────────────────────
         wallet = conn.execute(
             "SELECT id, balance FROM wallets WHERE tenant_id = %s FOR UPDATE",
             (tenant_id,),
         ).fetchone()
         if not wallet:
-            return {"refunded": False, "call_id": call_id, "tenant_id": tenant_id, **_defaults, "reason": "wallet_not_found"}
+            return {**_defaults, "refunded": False, "call_id": call_id, "tenant_id": tenant_id, "reason": "wallet_not_found"}
 
+        _maybe_fault("after_refund_wallet_lock")
         new_balance = Decimal(str(wallet["balance"])) + refund_amount
 
+        # ── 7. Credit wallet (same transaction) ───────────────────────────────
         conn.execute(
             "UPDATE wallets SET balance = %s, updated_at = now() WHERE tenant_id = %s",
             (new_balance, tenant_id),
         )
+        _maybe_fault("after_refund_wallet_update")
 
+        # ── 8. Insert refund ledger row (same transaction) ────────────────────
+        # partial unique index wallet_transactions_call_refund_uniq (migration 025)
+        # provides belt-and-suspenders against concurrent double-refund.
         refund_row = conn.execute(
             """INSERT INTO wallet_transactions
                    (wallet_id, tenant_id, type, amount, balance_after, description, ref_id)
@@ -418,7 +547,24 @@ def refund_call_charge(
             ),
         ).fetchone()
         refund_txn_id = int(refund_row["id"])
+        _maybe_fault("after_refund_ledger_insert")
 
+        # ── 9. Persist durable refund state on call row (same transaction) ────
+        # This is the authoritative idempotency sentinel for future retry attempts.
+        conn.execute(
+            """UPDATE calls
+               SET refund_status = 'refunded',
+                   refund_transaction_id = %s,
+                   refunded_at = now(),
+                   refund_reason_code = %s,
+                   refund_source = %s
+               WHERE id = %s""",
+            (refund_txn_id, reason_code, source, call_id),
+        )
+        _maybe_fault("after_refund_state_update")
+        _maybe_fault("before_refund_commit")
+
+    # ── Post-commit: metrics and cache invalidation ───────────────────────────
     try:
         from app.monitoring import WALLET_CALL_REFUND
         WALLET_CALL_REFUND.inc()

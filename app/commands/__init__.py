@@ -1,1 +1,1 @@
-# app/commands/__init__.py
+# app/commands package

@@ -550,3 +550,287 @@ class TestReconciliation:
         for a in anomalies:
             assert isinstance(a, Anomaly)
             assert a.anomaly_class in ("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K")
+
+
+# ── Phase 3: result-contract correctness tests ────────────────────────────────
+
+class TestResultContract:
+    """Verify every error-path return dict carries the real tenant_id, not None."""
+
+    def test_not_terminal_returns_tenant_id(self, app, db_conn):
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=0, status="calling")  # non-terminal
+        r = finalize_call_billing(call_id)
+        assert r["billed"] is False
+        assert r["error_code"] == "not_terminal"
+        assert r["tenant_id"] == tid, f"tenant_id must be {tid}, got {r['tenant_id']}"
+
+    def test_wallet_not_found_returns_tenant_id(self, app, db_conn):
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="completed")
+        # Delete wallet to trigger wallet_not_found
+        db.execute("DELETE FROM wallet_transactions WHERE tenant_id=%s", (tid,))
+        db.execute("DELETE FROM wallets WHERE tenant_id=%s", (tid,))
+        r = finalize_call_billing(call_id)
+        assert r["billed"] is False
+        assert r["error_code"] == "wallet_not_found"
+        assert r["tenant_id"] == tid, f"tenant_id must be {tid}, got {r['tenant_id']}"
+
+    def test_insufficient_balance_returns_tenant_id(self, app, db_conn):
+        from app.db import db
+        tid = _tenant(db, balance="0.01", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="completed")
+        r = finalize_call_billing(call_id)
+        assert r["billed"] is False
+        assert r["error_code"] == "insufficient_balance"
+        assert r["tenant_id"] == tid
+
+    def test_tenant_mismatch_returns_actual_tenant_id(self, app, db_conn):
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="completed")
+        r = finalize_call_billing(call_id, expected_tenant_id=tid + 9999)
+        assert r["billed"] is False
+        assert r["error_code"] == "tenant_mismatch"
+        assert r["tenant_id"] == tid, f"must return actual tenant {tid}, got {r['tenant_id']}"
+
+    def test_call_not_found_returns_none_tenant_id(self, app, db_conn):
+        r = finalize_call_billing(999999999)
+        assert r["billed"] is False
+        assert r["error_code"] == "call_not_found"
+        assert r["tenant_id"] is None  # intentional — no call, no tenant
+
+    def test_refund_no_original_debit_returns_tenant_id(self, app, db_conn):
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=0, status="no_answer")
+        finalize_call_billing(call_id)  # charge=0 → not billed
+        r = refund_call_charge(call_id, reason_code="test", source="test")
+        assert r["refunded"] is False
+        assert r["reason"] == "no_original_debit"
+        assert r["tenant_id"] == tid
+
+    def test_refund_wallet_not_found_returns_tenant_id(self, app, db_conn):
+        from app.db import db
+        from decimal import Decimal
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+
+        # We need: billing_finalized=TRUE AND debit row exists (steps 2+3 pass)
+        # BUT tenant's wallet is gone (step 6 returns wallet_not_found).
+        # wallet_transactions.wallet_id → wallets.id (NOT NULL FK) prevents deleting
+        # the wallet while any transaction row references it.  Work-around: insert
+        # the debit row manually pointing to a SECOND tenant's wallet, then delete
+        # our tenant's wallet (no FK reference remains to it).
+        tid2 = _tenant(db, balance="0.00", rate_per_min="0.80", pulse=60)
+        wallet2 = db.query_one("SELECT id FROM wallets WHERE tenant_id=%s", (tid2,))
+        charge = Decimal("0.80")
+        txn_id = db.insert_returning_id(
+            "INSERT INTO wallet_transactions"
+            "  (wallet_id, tenant_id, type, amount, balance_after, description, ref_id)"
+            " VALUES (%s, %s, 'debit', %s, 49.20, %s, %s) RETURNING id",
+            (wallet2["id"], tid, charge, f"Call {call_id}", f"call:{call_id}"),
+        )
+        db.execute(
+            "UPDATE calls SET billing_finalized=TRUE, charge=%s, wallet_transaction_id=%s"
+            " WHERE id=%s",
+            (charge, txn_id, call_id),
+        )
+        db.execute("DELETE FROM wallets WHERE tenant_id=%s", (tid,))
+        r = refund_call_charge(call_id, reason_code="test", source="test")
+        assert r["refunded"] is False
+        assert r["reason"] == "wallet_not_found"
+        assert r["tenant_id"] == tid
+
+    def test_refund_call_not_found_returns_none_tenant_id(self, app, db_conn):
+        r = refund_call_charge(999999999, reason_code="test", source="test")
+        assert r["refunded"] is False
+        assert r["reason"] == "call_not_found"
+        assert r["tenant_id"] is None
+
+
+# ── Phase 6: durable refund state tests ──────────────────────────────────────
+
+class TestDurableRefundState:
+
+    def test_successful_refund_sets_durable_state(self, app, db_conn):
+        """After refund, calls.refund_status='refunded' and refund_transaction_id set."""
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+        finalize_call_billing(call_id)
+        r = refund_call_charge(call_id, reason_code="test_durable", source="test")
+        assert r["refunded"] is True
+        row = db.query_one("SELECT refund_status, refund_transaction_id, refunded_at, refund_reason_code FROM calls WHERE id=%s", (call_id,))
+        assert row["refund_status"] == "refunded"
+        assert row["refund_transaction_id"] == r["refund_transaction_id"]
+        assert row["refunded_at"] is not None
+        assert row["refund_reason_code"] == "test_durable"
+
+    def test_duplicate_refund_blocked_by_durable_state(self, app, db_conn):
+        """Durable state check blocks second refund before even looking at ledger."""
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+        finalize_call_billing(call_id)
+        r1 = refund_call_charge(call_id, reason_code="first", source="test")
+        balance_after = get_balance(tid)
+        r2 = refund_call_charge(call_id, reason_code="second", source="test")
+        assert r2["refunded"] is False
+        assert r2["already_refunded"] is True
+        assert r2["refund_transaction_id"] == r1["refund_transaction_id"]
+        assert get_balance(tid) == balance_after  # no extra credit
+
+    def test_ledger_exists_but_durable_state_missing_blocked(self, app, db_conn):
+        """Ledger refund row exists but calls.refund_status='none' → still blocked, not double-credited."""
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+        finalize_call_billing(call_id)
+        # Manually insert ledger refund row WITHOUT setting durable state
+        wallet = db.query_one("SELECT id, balance FROM wallets WHERE tenant_id=%s", (tid,))
+        db.execute(
+            "INSERT INTO wallet_transactions (wallet_id, tenant_id, type, amount, balance_after, description, ref_id)"
+            " VALUES (%s, %s, 'refund', 0.80, %s, 'manual test', %s)",
+            (wallet["id"], tid, wallet["balance"], f"refund:call:{call_id}"),
+        )
+        balance_before = get_balance(tid)
+        r = refund_call_charge(call_id, reason_code="test", source="test")
+        assert r["refunded"] is False
+        assert r["already_refunded"] is True
+        assert get_balance(tid) == balance_before  # wallet NOT credited again
+
+    def test_durable_state_exists_but_ledger_missing_not_double_billed(self, app, db_conn):
+        """calls.refund_status='refunded' but no ledger row → already_refunded, no new credit."""
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+        finalize_call_billing(call_id)
+        # Force durable state to 'refunded' without actual ledger row
+        db.execute(
+            "UPDATE calls SET refund_status='refunded', refund_transaction_id=1, refunded_at=now()"
+            " WHERE id=%s",
+            (call_id,),
+        )
+        balance_before = get_balance(tid)
+        r = refund_call_charge(call_id, reason_code="test", source="test")
+        assert r["refunded"] is False
+        assert r["already_refunded"] is True
+        assert get_balance(tid) == balance_before
+
+    def test_missing_wallet_during_refund_leaves_call_unrefunded(self, app, db_conn):
+        """Wallet missing at refund time: call stays refund_status='none', no ledger row."""
+        from app.db import db
+        from decimal import Decimal
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+
+        # Same FK work-around as test_refund_wallet_not_found_returns_tenant_id:
+        # point the debit row at a second tenant's wallet so ours can be deleted.
+        tid2 = _tenant(db, balance="0.00", rate_per_min="0.80", pulse=60)
+        wallet2 = db.query_one("SELECT id FROM wallets WHERE tenant_id=%s", (tid2,))
+        charge = Decimal("0.80")
+        txn_id = db.insert_returning_id(
+            "INSERT INTO wallet_transactions"
+            "  (wallet_id, tenant_id, type, amount, balance_after, description, ref_id)"
+            " VALUES (%s, %s, 'debit', %s, 49.20, %s, %s) RETURNING id",
+            (wallet2["id"], tid, charge, f"Call {call_id}", f"call:{call_id}"),
+        )
+        db.execute(
+            "UPDATE calls SET billing_finalized=TRUE, charge=%s, wallet_transaction_id=%s"
+            " WHERE id=%s",
+            (charge, txn_id, call_id),
+        )
+        db.execute("DELETE FROM wallets WHERE tenant_id=%s", (tid,))
+        r = refund_call_charge(call_id, reason_code="test", source="test")
+        assert r["refunded"] is False
+        assert r["reason"] == "wallet_not_found"
+        row = db.query_one("SELECT refund_status FROM calls WHERE id=%s", (call_id,))
+        assert row["refund_status"] == "none"
+
+    def test_refund_without_original_debit_row_rejected(self, app, db_conn):
+        """billing_finalized=TRUE but debit ledger row deleted → no_debit_row."""
+        from app.db import db
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+        finalize_call_billing(call_id)
+        # Delete the debit ledger row (simulates anomaly B)
+        db.execute(
+            "DELETE FROM wallet_transactions WHERE tenant_id=%s AND ref_id=%s AND type='debit'",
+            (tid, f"call:{call_id}"),
+        )
+        r = refund_call_charge(call_id, reason_code="test", source="test")
+        assert r["refunded"] is False
+        assert r["reason"] == "no_debit_row"
+
+
+# ── Phase 13: metric operation tests ─────────────────────────────────────────
+
+class TestMetricIncrements:
+    """Verify Prometheus counters increment correctly through real billing paths."""
+
+    def _get_counter(self, metric, labels=None):
+        """Read current counter value."""
+        try:
+            if labels:
+                return metric.labels(**labels)._value.get()
+            return metric._value.get()
+        except Exception:
+            return 0.0
+
+    def test_new_billing_increments_finalized_counter(self, app, db_conn):
+        from app.db import db
+        from app.monitoring import CALL_BILLING_FINALIZED, WALLET_CALL_DEBIT
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="completed")
+        before_finalized = self._get_counter(CALL_BILLING_FINALIZED)
+        before_debit = self._get_counter(WALLET_CALL_DEBIT)
+        finalize_call_billing(call_id)
+        assert self._get_counter(CALL_BILLING_FINALIZED) == before_finalized + 1
+        assert self._get_counter(WALLET_CALL_DEBIT) == before_debit + 1
+
+    def test_duplicate_finalization_increments_already_finalized(self, app, db_conn):
+        from app.db import db
+        from app.monitoring import CALL_BILLING_ALREADY_FINALIZED, WALLET_CALL_DEBIT
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="completed")
+        finalize_call_billing(call_id)
+        before_already = self._get_counter(CALL_BILLING_ALREADY_FINALIZED)
+        before_debit = self._get_counter(WALLET_CALL_DEBIT)
+        finalize_call_billing(call_id)  # second call → already_finalized
+        assert self._get_counter(CALL_BILLING_ALREADY_FINALIZED) == before_already + 1
+        assert self._get_counter(WALLET_CALL_DEBIT) == before_debit  # no extra debit
+
+    def test_insufficient_balance_increments_failed_counter(self, app, db_conn):
+        from app.db import db
+        from app.monitoring import CALL_BILLING_FAILED, WALLET_INSUFFICIENT
+        tid = _tenant(db, balance="0.01", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="completed")
+        before_failed = self._get_counter(CALL_BILLING_FAILED, {"error_code": "insufficient_balance"})
+        before_insuf = self._get_counter(WALLET_INSUFFICIENT)
+        finalize_call_billing(call_id)
+        assert self._get_counter(CALL_BILLING_FAILED, {"error_code": "insufficient_balance"}) == before_failed + 1
+        assert self._get_counter(WALLET_INSUFFICIENT) == before_insuf + 1
+
+    def test_refund_increments_refund_counter(self, app, db_conn):
+        from app.db import db
+        from app.monitoring import WALLET_CALL_REFUND
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+        finalize_call_billing(call_id)
+        before_refund = self._get_counter(WALLET_CALL_REFUND)
+        refund_call_charge(call_id, reason_code="test", source="test")
+        assert self._get_counter(WALLET_CALL_REFUND) == before_refund + 1
+
+    def test_duplicate_refund_does_not_double_increment_refund_counter(self, app, db_conn):
+        from app.db import db
+        from app.monitoring import WALLET_CALL_REFUND
+        tid = _tenant(db, balance="50.00", rate_per_min="0.80", pulse=60)
+        call_id = _call(db, tid, talk_seconds=60, status="canceled")
+        finalize_call_billing(call_id)
+        refund_call_charge(call_id, reason_code="test", source="test")
+        before_refund = self._get_counter(WALLET_CALL_REFUND)
+        refund_call_charge(call_id, reason_code="test", source="test")  # duplicate
+        assert self._get_counter(WALLET_CALL_REFUND) == before_refund  # not incremented
