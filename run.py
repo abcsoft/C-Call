@@ -15,5 +15,6 @@ if __name__ == "__main__":
     app.run(
         host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", "5001")),
-        debug=app.config["DEBUG"]
+        debug=app.config["DEBUG"],
+        use_reloader=os.environ.get("FLASK_USE_RELOADER", "1") != "0",
     )

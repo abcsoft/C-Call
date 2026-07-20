@@ -420,31 +420,57 @@ def test_web_restart_job_survives_and_worker_picks_up(app):
         "MOCK_SIP_PROVIDER":  "1",
         "MOCK_TTS_PROVIDER":  "1",       # avoid real TTS network calls in subprocess
         "PORT":               str(port),
-        # Prevent Werkzeug dev-server reloader from spawning a child subprocess.
-        # Without this, the outer reloader AND inner HTTP server both inherit our
-        # pipes; the pipe buffer fills on Flask startup logs and the whole chain
-        # deadlocks.  WERKZEUG_RUN_MAIN=true tells Werkzeug it is already the
-        # inner process, so no child is spawned.
-        "WERKZEUG_RUN_MAIN":  "true",
+        # Disable the Werkzeug reloader so run.py does not fork a reloader child.
+        # Without this, the reloader parent and the HTTP-server child are two
+        # separate processes; terminate() only kills the parent, leaving the HTTP
+        # child alive and holding DB connections.  FLASK_USE_RELOADER=0 is read
+        # by run.py via os.environ and passed as use_reloader=False to app.run().
+        "FLASK_USE_RELOADER": "0",
+        # TestingConfig.SERVER_NAME defaults to "localhost"; HOST is 127.0.0.1.
+        # Bind the server to all loopback aliases and set SERVER_NAME to match
+        # the URL we poll.  We do not change HOST here — run.py reads HOST for
+        # the bind address; 127.0.0.1 binding accepts requests from localhost.
+        "SERVER_NAME":        f"localhost:{port}",
     }
 
-    # Use DEVNULL so Flask startup logs cannot fill a pipe buffer and block.
-    # Readiness is confirmed by polling the health endpoint over HTTP.
+    # Write Flask stdout/stderr to temp files so they can be captured in
+    # failure diagnostics without risk of pipe-buffer deadlock.
+    import tempfile
+    _flask_out = tempfile.NamedTemporaryFile(prefix="flask_out_", suffix=".log", delete=False)
+    _flask_err = tempfile.NamedTemporaryFile(prefix="flask_err_", suffix=".log", delete=False)
+    flask_out_path = _flask_out.name
+    flask_err_path = _flask_err.name
+    _flask_out.close()
+    _flask_err.close()
+
     flask_proc = subprocess.Popen(
         [sys.executable, "run.py"],
         env=flask_env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=open(flask_out_path, "wb"),
+        stderr=open(flask_err_path, "wb"),
         cwd=cwd,
     )
     flask_pid = flask_proc.pid
 
     try:
-        ready = _wait_for_http(f"http://127.0.0.1:{port}/health", timeout=30)
+        # TestingConfig sets SERVER_NAME=localhost so Flask only routes requests
+        # whose Host header matches; poll localhost (not 127.0.0.1) so Flask
+        # routes /health correctly and returns 200.
+        health_url = f"http://localhost:{port}/health"
+        ready = _wait_for_http(health_url, timeout=40)
         if not ready:
             flask_proc.kill()
             flask_proc.wait()
-            pytest.skip("Flask subprocess did not become ready in time — skipping")
+            try:
+                out_txt = open(flask_out_path, encoding="utf-8", errors="replace").read()[-2000:]
+                err_txt = open(flask_err_path, encoding="utf-8", errors="replace").read()[-2000:]
+            except Exception:
+                out_txt = err_txt = "(unreadable)"
+            pytest.fail(
+                f"Flask subprocess (pid={flask_pid}) did not become ready on "
+                f"{health_url} within 40 s.\n"
+                f"stdout tail:\n{out_txt}\nstderr tail:\n{err_txt}"
+            )
 
         # Create tenant + API key via DB so we can authenticate via HTTP.
         uid = uuid.uuid4().hex[:8]
@@ -467,9 +493,9 @@ def test_web_restart_job_survives_and_worker_picks_up(app):
                 (tenant_id,),
             )
             db.execute(
-                """INSERT INTO api_keys (tenant_id, key_hash, name, is_active)
-                   VALUES (%s, %s, 'test-key', true)""",
-                (tenant_id, key_hash),
+                """INSERT INTO api_keys (tenant_id, key_hash, key_prefix, name, is_active)
+                   VALUES (%s, %s, %s, 'test-key', true)""",
+                (tenant_id, key_hash, raw_key[:12]),
             )
 
         # POST /api/v1/orders → web process enqueues durable call_job.
@@ -482,7 +508,7 @@ def test_web_restart_job_survives_and_worker_picks_up(app):
             "store_name":    "Test Store",
         }).encode()
         req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/v1/orders",
+            f"http://localhost:{port}/api/v1/orders",
             data=payload,
             headers={"Content-Type": "application/json", "X-API-Key": raw_key},
             method="POST",
@@ -551,14 +577,21 @@ def test_web_restart_job_survives_and_worker_picks_up(app):
             "SELECT job_status FROM call_jobs WHERE tenant_id = %s",
             (tenant_id,),
         )
-        # Cleanup
+        # Cleanup — delete in FK-safe order
         db.execute("DELETE FROM call_jobs WHERE tenant_id = %s",             (tenant_id,))
+        db.execute("DELETE FROM calls WHERE tenant_id = %s",                 (tenant_id,))
         db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s",   (tenant_id,))
         db.execute("DELETE FROM orders WHERE tenant_id = %s",                (tenant_id,))
         db.execute("DELETE FROM wallets WHERE tenant_id = %s",               (tenant_id,))
+        db.execute("DELETE FROM flows WHERE tenant_id = %s",                 (tenant_id,))
         db.execute("DELETE FROM api_keys WHERE tenant_id = %s",              (tenant_id,))
         db.execute("DELETE FROM users WHERE tenant_id = %s",                 (tenant_id,))
         db.execute("DELETE FROM tenants WHERE id = %s",                      (tenant_id,))
+        # Clean up temp log files
+        import os as _os
+        for _p in (flask_out_path, flask_err_path):
+            try: _os.unlink(_p)
+            except Exception: pass
 
     assert job_final is not None
     assert job_final["job_status"] != "queued", (
