@@ -180,9 +180,13 @@ def _tenant_order(app):
         yield order_id, tenant_id
 
         # Explicit cleanup (real_db skips rollback).
+        # Order matters: delete child rows before parent rows to avoid FK violations.
+        # calls.tenant_id and wallet_transactions.wallet_id lack ON DELETE CASCADE.
         db.execute("DELETE FROM call_jobs WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM calls WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM orders WHERE tenant_id = %s", (tenant_id,))
+        db.execute("DELETE FROM wallet_transactions WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM wallets WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM customer_rates WHERE tenant_id = %s", (tenant_id,))
         db.execute("DELETE FROM retry_rules WHERE tenant_id = %s", (tenant_id,))

@@ -56,8 +56,15 @@ def test_validate_pool_phone_rejects_garbage():
 def test_select_caller_id(app):
     with app.app_context():
         tenant_id = create_tenant("CallerID Store", "callerid@store.com")
-        
-        # 1. Initially no numbers are available - returns None
+
+        # Clear any shared numbers committed by real_db fixtures in previous test runs.
+        # This runs inside the db_conn rollback transaction, so pre-existing committed
+        # shared numbers are hidden for the duration of this test and restored on rollback.
+        db.execute(
+            "UPDATE phone_numbers SET status = 'inactive' WHERE number_type = 'shared' AND status = 'active'"
+        )
+
+        # 1. Initially no numbers are available for this tenant - returns None
         assert select_caller_id(tenant_id) is None
         
         # Add a mock SIP provider

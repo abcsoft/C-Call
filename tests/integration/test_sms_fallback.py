@@ -92,6 +92,14 @@ def test_send_order_fallback_sms_success(app):
             "smslayer_api_key": "tenant-key",
             "sms_template": "Order {order_id} has amount {amount} callback {callback_number}"
         })
+        # Hide any shared numbers left by real_db fixtures — send_order_fallback_sms
+        # calls select_caller_id() first, so committed shared numbers would shadow the
+        # GLOBAL_CALLBACK_NUMBER fallback.  This UPDATE is inside the db_conn rollback
+        # transaction, so pre-existing shared numbers are restored after the test.
+        db.execute(
+            "UPDATE phone_numbers SET status = 'inactive'"
+            " WHERE number_type = 'shared' AND status = 'active'"
+        )
         db.set_setting("GLOBAL_CALLBACK_NUMBER", "09612345678")
         
         # Insert mock order
