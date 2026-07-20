@@ -141,7 +141,7 @@ def test_crash_after_call_lock_before_wallet_update(app, db_conn):
     from app.db import db
 
     tid = _tenant(db)
-    call_id = _call(db, tid, talk_seconds=60, status="canceled")
+    call_id = _call(db, tid, talk_seconds=60, status="completed")
     initial_balance = get_balance(tid)
 
     # Patch calculate_charge_and_duration to raise after the call lock is acquired
@@ -185,7 +185,7 @@ def test_repeat_finalization_after_success(app, db_conn):
     from app.db import db
 
     tid = _tenant(db)
-    call_id = _call(db, tid, talk_seconds=60, status="canceled")
+    call_id = _call(db, tid, talk_seconds=60, status="completed")
 
     r_first = finalize_call_billing(call_id)
     assert r_first["billed"] is True
