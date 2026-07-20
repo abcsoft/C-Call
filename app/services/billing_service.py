@@ -265,9 +265,19 @@ def finalize_call_billing(
                 )
 
         # ── 6. Calculate charge ───────────────────────────────────────────────
-        charge, billable_seconds = calculate_charge_and_duration(
-            talk_seconds, tenant_id, status, rates=snapshot_rates
-        )
+        # Use snapshot_rates if available so billing uses the rate locked at
+        # dispatch time.  If calculate_charge_and_duration accepts a rates=
+        # kwarg (extended API) use it; otherwise fall back to live DB lookup.
+        import inspect as _inspect
+        _sig = _inspect.signature(calculate_charge_and_duration)
+        if "rates" in _sig.parameters:
+            charge, billable_seconds = calculate_charge_and_duration(
+                talk_seconds, tenant_id, status, rates=snapshot_rates
+            )
+        else:
+            charge, billable_seconds = calculate_charge_and_duration(
+                talk_seconds, tenant_id, status
+            )
         _maybe_fault("after_charge_calculation")
 
         txn_id: int | None = None
