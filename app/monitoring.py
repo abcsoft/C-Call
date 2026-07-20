@@ -77,6 +77,38 @@ WALLET_INSUFFICIENT = Counter("ccall_wallet_insufficient_total", "Insufficient b
 WALLET_LOW_BALANCE_TENANTS = Gauge("ccall_wallet_low_balance_tenants", "Tenants with low wallet balance")
 # Platform aggregate — no per-tenant label (prevents unbounded cardinality)
 WALLET_BALANCE = Gauge("ccall_wallet_balance_bdt", "Total platform wallet balance BDT (sum across all tenants)")
+
+# ── Call billing (atomic finalization) ────────────────────────────────────────
+CALL_BILLING_FINALIZED = Counter(
+    "ccall_call_billing_finalized_total",
+    "Calls finalized with a new debit (billed=True)",
+)
+CALL_BILLING_ALREADY_FINALIZED = Counter(
+    "ccall_call_billing_already_finalized_total",
+    "finalize_call_billing() calls that found call already billed (idempotent no-op)",
+)
+CALL_BILLING_FAILED = Counter(
+    "ccall_call_billing_failed_total",
+    "finalize_call_billing() calls that could not bill (excluding already_finalized)",
+    ["error_code"],
+)
+WALLET_CALL_DEBIT = Counter(
+    "ccall_wallet_call_debit_total",
+    "Wallet debits originating from call finalization",
+)
+WALLET_CALL_REFUND = Counter(
+    "ccall_wallet_call_refund_total",
+    "Wallet refunds credited back for a call (refund_call_charge)",
+)
+BILLING_RECONCILIATION_ANOMALIES = Gauge(
+    "ccall_billing_reconciliation_anomalies",
+    "Unresolved billing anomalies detected by last reconciliation run",
+    ["anomaly_class"],
+)
+OLDEST_UNFINALIZED_TERMINAL_CALL_AGE = Gauge(
+    "ccall_oldest_unfinalized_terminal_call_age_seconds",
+    "Age in seconds of the oldest terminal call not yet billing-finalized",
+)
 RETRY_QUEUE_SIZE = Gauge("ccall_retry_queue_size", "Orders pending retry")
 
 # ── Backup ────────────────────────────────────────────────────────────────────
@@ -186,6 +218,26 @@ def update_gauge_metrics() -> None:
                     ts = float(line.split()[-1])
                     BACKUP_SUCCESS_TIMESTAMP.set(ts)
                     break
+    except Exception:
+        pass
+
+    # ── Oldest unfinalized terminal call ─────────────────────────────────────
+    try:
+        row = db.query_one(
+            """
+            SELECT EXTRACT(EPOCH FROM (now() - MIN(ended_at))) AS age_seconds
+            FROM calls
+            WHERE billing_finalized = FALSE
+              AND status IN (
+                  'completed','confirmed','cancelled','canceled',
+                  'failed','no_answer','busy','unreachable','timeout'
+              )
+              AND ended_at IS NOT NULL
+            """
+        )
+        OLDEST_UNFINALIZED_TERMINAL_CALL_AGE.set(
+            float(row["age_seconds"]) if row and row["age_seconds"] is not None else 0.0
+        )
     except Exception:
         pass
 

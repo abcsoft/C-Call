@@ -401,17 +401,21 @@ def test_additional_service_methods(app, test_setup, monkeypatch):
         order_db = db.query_one("SELECT order_status FROM orders WHERE id = %s", (order_id,))
         assert order_db["order_status"] == "CONFIRMED"
         
-        # Test update_status_from_call when wallet deduction fails
-        # Reset order and attempt
+        # Test update_status_from_call when billing finalization fails with a non-fatal error
+        # (billing_finalized=False path — insufficient_balance — does not raise, just returns billed=False)
+        # We simulate this by patching finalize_call_billing to return a failure dict.
         db.execute("UPDATE orders SET order_status = 'CALLING' WHERE id = %s", (order_id,))
         db.execute("UPDATE order_call_attempts SET result = NULL, call_id = %s WHERE order_id = %s", (call_id, order_id))
-        db.execute("UPDATE calls SET wallet_transaction_id = NULL WHERE id = %s", (call_id,))
-        # Mock wallet deduct to raise exception
-        def mock_deduct_fail(tenant_id, amount, description, ref_id=None):
-            raise RuntimeError("DB Pool Timeout")
-        monkeypatch.setattr("app.services.billing_service.deduct", mock_deduct_fail)
-        
-        # This call should catch the deduction error internally and still proceed to update order status
+        db.execute("UPDATE calls SET billing_finalized = FALSE, wallet_transaction_id = NULL WHERE id = %s", (call_id,))
+
+        def mock_finalize_fail(cid, **kwargs):
+            from decimal import Decimal
+            return {"billed": False, "already_finalized": False, "call_id": cid, "tenant_id": tenant_id,
+                    "charge": Decimal("0"), "billable_seconds": 0, "wallet_transaction_id": None,
+                    "reason": "insufficient_balance", "error_code": "insufficient_balance"}
+        monkeypatch.setattr("app.services.billing_service.finalize_call_billing", mock_finalize_fail)
+
+        # Order status update must still proceed even when billing returns a failure dict
         update_status_from_call(order_id, tenant_id, "completed", "2", 40, call_id)
         order_db = db.query_one("SELECT order_status FROM orders WHERE id = %s", (order_id,))
         assert order_db["order_status"] == "CANCELLED"
