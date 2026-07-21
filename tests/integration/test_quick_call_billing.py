@@ -63,7 +63,7 @@ def _call(db, tenant_id, *, talk_seconds=0, status="completed", dispatch_status=
     call_id = db.insert_returning_id(
         "INSERT INTO calls (tenant_id, number, status, talk_seconds, total_seconds,"
         " started_at, ended_at, call_type)"
-        " VALUES (%s, '01700000000', %s, %s, %s, now() - interval '1 minute', now(), 'ivr')"
+        " VALUES (%s, '01700000000', %s, %s, %s, '2026-07-20 12:00:00+00', '2026-07-20 12:01:00+00', 'ivr')"
         " RETURNING id",
         (tenant_id, status, talk_seconds, talk_seconds + 5),
     )
@@ -434,17 +434,21 @@ class TestFinalizeBilling:
         from app.services.wallet_service import credit
         tid = _tenant(db, balance="0.00", rate_per_min="0.80", pulse=60)
         credit(tid, Decimal("10.00"), "seed")
+        from app.services.rate_service import POLICY_VERSION
         snap = {
+            "policy_version": POLICY_VERSION,
+            "tenant_id": tid,
             "rate_per_min": "0.50",
             "rate_per_call": "0.00",
             "min_charge": "0.50",
             "billing_pulse_seconds": 60,
             "minimum_billable_seconds": 60,
             "charge_failed_calls": False,
+            "currency": "BDT",
         }
         call_id = db.insert_returning_id(
-            "INSERT INTO calls (tenant_id, number, status, talk_seconds, rate_snapshot)"
-            " VALUES (%s, '01700000000', 'completed', 60, %s) RETURNING id",
+            "INSERT INTO calls (tenant_id, number, status, talk_seconds, rate_snapshot, started_at)"
+            " VALUES (%s, '01700000000', 'completed', 60, %s, '2026-07-20 12:00:00+00') RETURNING id",
             (tid, json.dumps(snap)),
         )
         result = finalize_call_billing(call_id)

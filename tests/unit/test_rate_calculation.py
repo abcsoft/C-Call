@@ -17,8 +17,8 @@ def test_rate_calculations(app):
         assert estimate_charge(tenant_id) == Decimal("0.80")
         
         # calculate_charge for different talk times
-        # 0s talk time -> min_charge (0.80)
-        assert calculate_charge(0, tenant_id) == Decimal("0.80")
+        # 0s talk time -> 0 (call was not answered; billing based on connection evidence)
+        assert calculate_charge(0, tenant_id) == Decimal("0.00")
         # 45s talk time -> 1 min -> 0.80
         assert calculate_charge(45, tenant_id) == Decimal("0.80")
         # 60s talk time -> 1 min -> 0.80
@@ -176,9 +176,11 @@ def test_pulse_billing_and_failed_calls(app):
             "amount": 150.00
         })
         
-        # Insert a dummy call
+        # Insert a dummy call — use explicit pre-cutoff started_at so finalize_call_billing
+        # uses live-rate fallback (not fail-closed) for this legacy-path test.
         call_id = db.insert_returning_id(
-            "INSERT INTO calls (tenant_id, order_id, number, status) VALUES (%s, %s, %s, 'initiated') RETURNING id",
+            "INSERT INTO calls (tenant_id, order_id, number, status, started_at)"
+            " VALUES (%s, %s, %s, 'initiated', '2026-07-20 00:00:00+00') RETURNING id",
             (tenant_id, order["id"], order["phone"])
         )
         

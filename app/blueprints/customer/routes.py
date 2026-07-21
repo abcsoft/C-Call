@@ -186,6 +186,11 @@ def quick_call():
         if not check_balance(tenant_id, min_charge):
             raise ValueError("Insufficient wallet balance to place call.")
 
+        # Resolve immutable rate snapshot before SIP dispatch
+        from app.services.rate_service import resolve_billing_policy
+        _billing_policy = resolve_billing_policy(tenant_id, use_cache=False)
+        _rate_snapshot = _billing_policy.as_dict()
+
         from call_engine import call_runner
         if call_type == "flow":
             if not flow_id_str:
@@ -195,22 +200,23 @@ def quick_call():
                 flow_id = default_flow["id"]
             else:
                 flow_id = int(flow_id_str)
-                
+
             call_id = call_runner.start_call(
                 number=normalized_phone,
                 flow_id=flow_id,
                 tenant_id=tenant_id,
                 caller_id=caller_id,
                 sip_override=sip_override,
-                sip_gateway_id=sip_gateway_id
+                sip_gateway_id=sip_gateway_id,
+                rate_snapshot=_rate_snapshot,
             )
         else:
             if not message_text:
                 raise ValueError("Message text is required for direct TTS.")
-                
+
             from app.services.tts_service import generate_order_audio
             audio_name = generate_order_audio(tenant_id, message_text)
-            
+
             call_id = call_runner.start_direct_call(
                 number=normalized_phone,
                 audio_name=audio_name,
@@ -220,7 +226,8 @@ def quick_call():
                 tenant_id=tenant_id,
                 caller_id=caller_id,
                 sip_override=sip_override,
-                sip_gateway_id=sip_gateway_id
+                sip_gateway_id=sip_gateway_id,
+                rate_snapshot=_rate_snapshot,
             )
             
         return f"""

@@ -205,7 +205,7 @@ def test_update_status_from_call_outcomes(app, test_setup, monkeypatch):
                 (tenant_id, ext_id)
             )
             call_id = db.insert_returning_id(
-                "INSERT INTO calls (number, status, direction, talk_seconds, tenant_id, order_id) VALUES ('01700000000', 'calling', 'outbound', 0, %s, %s) RETURNING id",
+                "INSERT INTO calls (number, status, direction, talk_seconds, tenant_id, order_id, started_at) VALUES ('01700000000', 'calling', 'outbound', 0, %s, %s, '2026-07-20 00:00:00+00') RETURNING id",
                 (tenant_id, order_id)
             )
             attempt_id = db.insert_returning_id(
@@ -357,7 +357,7 @@ def test_additional_service_methods(app, test_setup, monkeypatch):
     with app.app_context():
         # Insert a dummy call to satisfy the foreign key constraint in attempts table
         call_id = db.insert_returning_id(
-            "INSERT INTO calls (number, status, direction, talk_seconds, tenant_id) VALUES ('01712345678', 'calling', 'outbound', 0, %s) RETURNING id",
+            "INSERT INTO calls (number, status, direction, talk_seconds, tenant_id, started_at) VALUES ('01712345678', 'calling', 'outbound', 0, %s, '2026-07-20 00:00:00+00') RETURNING id",
             (tenant_id,)
         )
         monkeypatch.setattr(call_runner, "start_call", lambda num, flow, name="", *args, **kwargs: call_id)

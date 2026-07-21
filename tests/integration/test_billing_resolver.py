@@ -375,13 +375,17 @@ def test_16_billing_uses_snapshot_rate(app):
         tid = _tenant("Snapshot Bill Co", "free")
         credit(tid, Decimal("10.00"), "seed")
         # Snapshot says 0.50/min but live rate is 0.80/min
+        from app.services.rate_service import POLICY_VERSION
         snap = {
+            "policy_version": POLICY_VERSION,
+            "tenant_id": tid,
             "rate_per_min": "0.50",
             "rate_per_call": "0.00",
             "min_charge": "0.50",
             "billing_pulse_seconds": 60,
             "minimum_billable_seconds": 60,
             "charge_failed_calls": False,
+            "currency": "BDT",
         }
         # Insert a completed call with snapshot
         call_id = db.insert_returning_id(
@@ -406,11 +410,12 @@ def test_17_billing_falls_back_to_live_rate_without_snapshot(app):
         _set_plan_billing("free", default_rate_per_min=Decimal("0.80"))
         invalidate_tenant_caches(tid)
         credit(tid, Decimal("10.00"), "seed")
-        # Insert call without rate_snapshot
+        # Insert call without rate_snapshot — use explicit pre-cutoff timestamp so
+        # the legacy fallback path is exercised (calls after the cutoff fail closed).
         call_id = db.insert_returning_id(
             """
-            INSERT INTO calls (tenant_id, number, status, talk_seconds)
-            VALUES (%s, '01712222222', 'completed', 60) RETURNING id
+            INSERT INTO calls (tenant_id, number, status, talk_seconds, started_at)
+            VALUES (%s, '01712222222', 'completed', 60, '2026-07-20 00:00:00+00') RETURNING id
             """,
             (tid,),
         )

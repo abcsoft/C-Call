@@ -707,6 +707,24 @@ def queue_confirmation_call(order_id: int, tenant_id: int, attempt_no: int) -> i
     if not flow_id:
         flow_id = _get_or_create_confirmation_flow(tenant_id, audio_filename)
 
+    # Resolve billing policy and create immutable rate snapshot before SIP dispatch.
+    # The snapshot is persisted in the calls row INSERT so it is durable before
+    # any telephony starts.  Retries for the same order MUST NOT re-resolve the
+    # policy — the snapshot from the first attempt is the authoritative rate.
+    from app.services.rate_service import resolve_billing_policy
+    try:
+        _billing_policy = resolve_billing_policy(tenant_id, use_cache=False)
+        _rate_snapshot = _billing_policy.as_dict()
+    except Exception as _bp_exc:
+        logger.error(
+            "queue_confirmation_call: failed to resolve billing policy "
+            "order=%s tenant=%s — %s",
+            order_id, tenant_id, _bp_exc,
+        )
+        raise DispatchSipUnavailableError(
+            f"billing policy resolution failed for tenant {tenant_id}"
+        ) from _bp_exc
+
     # Launch call
     from app.services.number_service import get_sip_trunk_for_caller_id, get_sip_provider_id_for_caller_id
     sip_override = get_sip_trunk_for_caller_id(caller_id)
@@ -733,6 +751,7 @@ def queue_confirmation_call(order_id: int, tenant_id: int, attempt_no: int) -> i
             caller_id=caller_id,
             sip_gateway_id=sip_gateway_id,
             sip_override=sip_override,
+            rate_snapshot=_rate_snapshot,
         )
     except RuntimeError as exc:
         safe_msg = str(exc) if "credentials" in str(exc).lower() else "SIP startup rejected"

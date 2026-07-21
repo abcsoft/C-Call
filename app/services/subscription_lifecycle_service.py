@@ -51,6 +51,7 @@ from app.models.subscription import (
     get_subscription_payment_by_idempotency,
 )
 from app.models.tenant import get_tenant_by_id, invalidate_tenant_caches
+from app.services.rate_service import invalidate_billing_policy_cache
 
 logger = logging.getLogger("ccall")
 _UTC = datetime.timezone.utc
@@ -136,6 +137,7 @@ def _update_tenant_status(tenant_id: int, new_status: str, sub_id: int | None = 
             (new_status, tenant_id),
         )
     invalidate_tenant_caches(tenant_id)
+    invalidate_billing_policy_cache(tenant_id)
 
 
 def _get_past_due_days() -> int:
@@ -184,6 +186,7 @@ def start_trial(tenant_id: int, plan_id: int | None = None) -> None:
         metadata={"trial_days": trial_days, "trial_ends_at": ends_at.isoformat()},
     )
     invalidate_tenant_caches(tenant_id)
+    invalidate_billing_policy_cache(tenant_id)
 
 
 def activate_subscription(
@@ -246,6 +249,7 @@ def activate_subscription(
     _update_tenant_status(tenant_id, "active", sub_id=sub_id)
     db.execute("UPDATE tenants SET plan_id = %s WHERE id = %s", (plan_id, tenant_id))
     invalidate_tenant_caches(tenant_id)
+    invalidate_billing_policy_cache(tenant_id)
 
     record_subscription_event(
         tenant_id=tenant_id,
@@ -499,6 +503,7 @@ def admin_reactivate_subscription(
 
     _update_tenant_status(tenant_id, "active", sub_id=sub_id)
     invalidate_tenant_caches(tenant_id)
+    invalidate_billing_policy_cache(tenant_id)
 
     record_subscription_event(
         tenant_id=tenant_id,
@@ -564,6 +569,7 @@ def admin_extend_subscription(
         raise ValueError("No active subscription found to extend. Use reactivate instead.")
 
     invalidate_tenant_caches(tenant_id)
+    invalidate_billing_policy_cache(tenant_id)
 
 
 def cancel_subscription(
@@ -701,6 +707,7 @@ def renew_subscription(
     _update_tenant_status(tenant_id, "active", sub_id=sub_id)
     db.execute("UPDATE tenants SET plan_id = %s WHERE id = %s", (plan_id, tenant_id))
     invalidate_tenant_caches(tenant_id)
+    invalidate_billing_policy_cache(tenant_id)
 
     price = Decimal(str(
         plan["price_yearly"]

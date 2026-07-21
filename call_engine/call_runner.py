@@ -703,8 +703,12 @@ def _run_direct_subprocess(call_id: int, dial_target: str, audio_path: str, repe
 
 # --- Dispatch methods ---
 
-def start_call(number: str, flow_id: int, *, name: str = "", tenant_id: int | None = None, order_id: int | None = None, caller_id: str | None = None, sip_override: dict[str, str] | None = None, sip_gateway_id: int | None = None) -> int:
+def start_call(number: str, flow_id: int, *, name: str = "", tenant_id: int | None = None, order_id: int | None = None, caller_id: str | None = None, sip_override: dict[str, str] | None = None, sip_gateway_id: int | None = None, rate_snapshot: dict | None = None) -> int:
     """Create the database records and dispatch IVR call to background thread pool.
+
+    rate_snapshot: Pre-resolved BillingPolicy.as_dict() to persist alongside the
+    call row before SIP dispatch.  Passed by order_service / quick-call routes after
+    resolving the tenant billing policy.  Must be provided for all new billable calls.
 
     sip_override: REGISTER/INVITE credentials (SIP_DOMAIN/SIP_PORT/SIP_USER/
     SIP_PASSWORD) for the trunk that owns caller_id, e.g. from
@@ -733,14 +737,17 @@ def start_call(number: str, flow_id: int, *, name: str = "", tenant_id: int | No
         sip["SIP_USER"] = caller_id
     dial_target = format_dial_number(normalized, db.get_setting("ASTERISK_DIAL_FORMAT", "local_bd"))
 
+    import json as _json
+    _snap_json: str | None = _json.dumps(rate_snapshot) if rate_snapshot is not None else None
+
     with _lock:
         contact_id = upsert_contact(normalized, name)
         call_id = db.insert_returning_id(
             """
-            INSERT INTO calls (contact_id, flow_id, number, status, attempt_no, call_type, tenant_id, order_id, caller_id, sip_gateway_id, startup_state)
-            VALUES (?, ?, ?, 'initiated', ?, 'ivr', ?, ?, ?, ?, 'pending')
+            INSERT INTO calls (contact_id, flow_id, number, status, attempt_no, call_type, tenant_id, order_id, caller_id, sip_gateway_id, startup_state, rate_snapshot)
+            VALUES (?, ?, ?, 'initiated', ?, 'ivr', ?, ?, ?, ?, 'pending', ?)
             """,
-            (contact_id, flow_id, normalized, _attempt_no(contact_id), tenant_id, order_id, caller_id, sip_gateway_id),
+            (contact_id, flow_id, normalized, _attempt_no(contact_id), tenant_id, order_id, caller_id, sip_gateway_id, _snap_json),
         )
 
     # Register startup ack event before submitting to executor so the event is
@@ -773,8 +780,9 @@ def start_bulk(numbers: list[str], flow_id: int) -> list[int]:
     return [start_call(number, flow_id) for number in numbers]
 
 
-def start_direct_call(number: str, audio_name: str, repeat_count: int, message_text: str = "", audio_mode: str = "tts", *, name: str = "", tenant_id: int | None = None, order_id: int | None = None, caller_id: str | None = None, sip_override: dict[str, str] | None = None, sip_gateway_id: int | None = None) -> int:
+def start_direct_call(number: str, audio_name: str, repeat_count: int, message_text: str = "", audio_mode: str = "tts", *, name: str = "", tenant_id: int | None = None, order_id: int | None = None, caller_id: str | None = None, sip_override: dict[str, str] | None = None, sip_gateway_id: int | None = None, rate_snapshot: dict | None = None) -> int:
     """Create the database records and dispatch Direct call to background thread pool.
+    rate_snapshot: Pre-resolved BillingPolicy.as_dict() — see start_call() for details.
     See start_call() for what sip_override is and why it's needed."""
     if sip_override:
         if not all(sip_override.get(k) for k in ("SIP_DOMAIN", "SIP_USER", "SIP_PASSWORD")):
@@ -801,15 +809,18 @@ def start_direct_call(number: str, audio_name: str, repeat_count: int, message_t
     repeat_val = 2 if int(repeat_count) > 1 else 1
     max_call_secs = audio_secs * repeat_val + max(0, repeat_val - 1)
 
+    import json as _json2
+    _snap_json2: str | None = _json2.dumps(rate_snapshot) if rate_snapshot is not None else None
+
     with _lock:
         contact_id = upsert_contact(normalized, name)
         call_id = db.insert_returning_id(
             """
             INSERT INTO calls
-                (contact_id, number, status, attempt_no, call_type, audio_mode, repeat_count, audio_name, message, tenant_id, order_id, caller_id, sip_gateway_id, startup_state)
-            VALUES (?, ?, 'initiated', ?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                (contact_id, number, status, attempt_no, call_type, audio_mode, repeat_count, audio_name, message, tenant_id, order_id, caller_id, sip_gateway_id, startup_state, rate_snapshot)
+            VALUES (?, ?, 'initiated', ?, 'direct', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
-            (contact_id, normalized, _attempt_no(contact_id), audio_mode, repeat_count, audio_name, message_text, tenant_id, order_id, caller_id, sip_gateway_id),
+            (contact_id, normalized, _attempt_no(contact_id), audio_mode, repeat_count, audio_name, message_text, tenant_id, order_id, caller_id, sip_gateway_id, _snap_json2),
         )
 
     # Register startup ACK event before submitting so the event exists before

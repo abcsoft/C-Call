@@ -498,8 +498,8 @@ def committed_billing_case(app):
 
             cur.execute(
                 "INSERT INTO calls"
-                " (tenant_id, number, status, talk_seconds, call_type)"
-                " VALUES (%s, '01700000000', 'completed', 60, 'ivr')"
+                " (tenant_id, number, status, talk_seconds, call_type, started_at)"
+                " VALUES (%s, '01700000000', 'completed', 60, 'ivr', '2026-07-20 12:00:00+00')"
                 " RETURNING id",
                 (tid,),
             )

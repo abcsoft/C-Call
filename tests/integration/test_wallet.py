@@ -38,7 +38,7 @@ def test_wallet_deduction_after_call(app, create_tenant):
                 (tenant["id"], "ORD-DED-1", "01712345678", "Sakib", Decimal("100.00"))
             )
             call_id = db.insert_returning_id(
-                "INSERT INTO calls (tenant_id, order_id, number, status, direction, talk_seconds) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                "INSERT INTO calls (tenant_id, order_id, number, status, direction, talk_seconds, started_at) VALUES (%s, %s, %s, %s, %s, %s, '2026-07-20 00:00:00+00') RETURNING id",
                 (tenant["id"], order_id, "01712345678", "completed", "outbound", 90) # 1m 30s
             )
             db.execute(

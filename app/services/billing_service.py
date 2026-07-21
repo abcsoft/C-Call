@@ -37,8 +37,20 @@ from typing import Any
 
 import os as _os
 
+import datetime as _dt
+
 from app.db import db
-from app.services.rate_service import calculate_charge_and_duration
+from app.services.rate_service import (
+    calculate_charge_and_duration,
+    validate_rate_snapshot,
+)
+
+# Calls created before this date are considered "legacy" and may have NULL rate_snapshot.
+# Calls created on or after this date are expected to carry a snapshot (fail-closed).
+# Set to the Phase 4B deployment date; adjust forward after confirmed rollout.
+_SNAPSHOT_REQUIRED_AFTER: _dt.datetime = _dt.datetime(
+    2026, 7, 21, 12, 0, 0, tzinfo=_dt.timezone.utc
+)
 
 logger = logging.getLogger("ccall")
 
@@ -244,40 +256,89 @@ def finalize_call_billing(
 
         talk_seconds = int(call["talk_seconds"] or 0)
 
-        # ── 5. Resolve rate (snapshot stored at dispatch time, or live fallback) ──
-        snapshot = call.get("rate_snapshot")
+        # ── 5. Resolve rate from snapshot (fail-closed for new calls) ─────────
+        try:
+            raw_snapshot = call["rate_snapshot"]
+        except (KeyError, TypeError):
+            raw_snapshot = None
         snapshot_rates: dict | None = None
-        if snapshot:
+        snapshot_source: str = "live_fallback"
+
+        if raw_snapshot:
             try:
-                s = snapshot if isinstance(snapshot, dict) else json.loads(snapshot)
-                snapshot_rates = {
-                    "rate_per_min": Decimal(str(s["rate_per_min"])),
-                    "rate_per_call": Decimal(str(s["rate_per_call"])),
-                    "min_charge": Decimal(str(s["min_charge"])),
-                    "billing_pulse_seconds": int(s["billing_pulse_seconds"]),
-                    "minimum_billable_seconds": int(s["minimum_billable_seconds"]),
-                    "charge_failed_calls": bool(s["charge_failed_calls"]),
-                }
+                s = raw_snapshot if isinstance(raw_snapshot, dict) else json.loads(raw_snapshot)
+                # Central validated parse — raises ValueError on any defect
+                snapshot_rates = validate_rate_snapshot(s, expected_tenant_id=tenant_id)
+                snapshot_source = "stored_snapshot"
             except Exception as exc:
+                # Malformed snapshot
+                try:
+                    call_created = call["started_at"]
+                except (KeyError, TypeError):
+                    call_created = None
+                is_new_call = (
+                    call_created is not None
+                    and (
+                        call_created if call_created.tzinfo else call_created.replace(tzinfo=_dt.timezone.utc)
+                    ) >= _SNAPSHOT_REQUIRED_AFTER
+                )
+                if is_new_call:
+                    logger.error(
+                        "finalize_call_billing: malformed rate_snapshot (fail-closed) "
+                        "call=%s tenant=%s error=%s source=%s",
+                        call_id, tenant_id, exc, source,
+                    )
+                    return {
+                        **_defaults,
+                        "billed": False,
+                        "call_id": call_id,
+                        "tenant_id": tenant_id,
+                        "reason": "malformed_snapshot",
+                        "error_code": "malformed_snapshot",
+                    }
+                # Legacy call — log and fall through to live rate
                 logger.warning(
-                    "finalize_call_billing: ignoring malformed rate_snapshot call=%s: %s",
+                    "finalize_call_billing: malformed rate_snapshot (legacy call, "
+                    "using live fallback) call=%s: %s",
                     call_id, exc,
                 )
+        elif raw_snapshot is None:
+            # No snapshot on this call
+            try:
+                call_created = call["started_at"]
+            except (KeyError, TypeError):
+                call_created = None
+            is_new_call = (
+                call_created is not None
+                and (
+                    call_created if call_created.tzinfo else call_created.replace(tzinfo=_dt.timezone.utc)
+                ) >= _SNAPSHOT_REQUIRED_AFTER
+            )
+            if is_new_call:
+                logger.error(
+                    "finalize_call_billing: new call missing rate_snapshot (fail-closed) "
+                    "call=%s tenant=%s source=%s",
+                    call_id, tenant_id, source,
+                )
+                return {
+                    **_defaults,
+                    "billed": False,
+                    "call_id": call_id,
+                    "tenant_id": tenant_id,
+                    "reason": "missing_snapshot",
+                    "error_code": "missing_snapshot",
+                }
+            # Legacy call — will use live fallback below
+            logger.info(
+                "finalize_call_billing: legacy call without snapshot — using live rate "
+                "call=%s tenant=%s source=%s",
+                call_id, tenant_id, source,
+            )
 
         # ── 6. Calculate charge ───────────────────────────────────────────────
-        # Use snapshot_rates if available so billing uses the rate locked at
-        # dispatch time.  If calculate_charge_and_duration accepts a rates=
-        # kwarg (extended API) use it; otherwise fall back to live DB lookup.
-        import inspect as _inspect
-        _sig = _inspect.signature(calculate_charge_and_duration)
-        if "rates" in _sig.parameters:
-            charge, billable_seconds = calculate_charge_and_duration(
-                talk_seconds, tenant_id, status, rates=snapshot_rates
-            )
-        else:
-            charge, billable_seconds = calculate_charge_and_duration(
-                talk_seconds, tenant_id, status
-            )
+        charge, billable_seconds = calculate_charge_and_duration(
+            talk_seconds, tenant_id, status, rates=snapshot_rates
+        )
         _maybe_fault("after_charge_calculation")
 
         txn_id: int | None = None

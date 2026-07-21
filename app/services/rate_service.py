@@ -1,27 +1,53 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
 from dataclasses import dataclass
-from decimal import Decimal
-from typing import Literal
+from decimal import Decimal, InvalidOperation
+from typing import Any, Literal
 
 from app.db import db
 
-# Platform-wide defaults (last resort — no plan, no tenant override)
+logger = logging.getLogger("ccall")
+
+# ---------------------------------------------------------------------------
+# Platform-wide defaults — last resort when no plan or customer override
+# These are used by the platform fallback policy below.
+# ---------------------------------------------------------------------------
 DEFAULT_RATE_PER_MIN = Decimal("0.80")
 DEFAULT_RATE_PER_CALL = Decimal("0.00")
 DEFAULT_MIN_CHARGE = Decimal("0.80")
 DEFAULT_BILLING_PULSE_SECONDS = 60
 DEFAULT_MINIMUM_BILLABLE_SECONDS = 60
 DEFAULT_CHARGE_FAILED_CALLS = False
+DEFAULT_CURRENCY = "BDT"
+
+# Supported currency codes
+_SUPPORTED_CURRENCIES = frozenset({"BDT", "USD"})
+
+# Valid source labels
+_VALID_SOURCES = frozenset({"tenant_override", "plan_default", "platform_default"})
+
+# Current snapshot schema version
+POLICY_VERSION = 1
 
 Source = Literal["tenant_override", "plan_default", "platform_default"]
 
 
+# ---------------------------------------------------------------------------
+# BillingPolicy — immutable, per-field resolved
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class BillingPolicy:
-    """Per-field resolved billing policy with source tracking. Immutable after construction."""
+    """Per-field resolved billing policy. Immutable after construction.
+
+    All monetary fields use Decimal.  Pulse must be >= 1.  Minimum billable
+    seconds must be >= 0.  Rates must be non-negative.  tenant_id must be set
+    for any snapshot written to the calls table.
+    """
 
     rate_per_min: Decimal
     rate_per_min_source: Source
@@ -39,18 +65,16 @@ class BillingPolicy:
     minimum_billable_seconds_source: Source
 
     charge_failed_calls: bool
-    # None in customer_rates → not set for this tenant (inherit from plan/platform).
-    # True/False → explicit tenant override (even if it matches plan/platform value).
     charge_failed_calls_source: Source
 
     plan_id: int | None = None
-    currency: str = "BDT"
+    currency: str = DEFAULT_CURRENCY
     tenant_id: int | None = None
-    policy_version: int = 1
+    policy_version: int = POLICY_VERSION
     resolved_at: str | None = None
 
     def as_dict(self) -> dict:
-        """Serialisable dict for rate_snapshot storage."""
+        """Serialisable dict for rate_snapshot storage (JSON-round-trip safe)."""
         return {
             "rate_per_min": str(self.rate_per_min),
             "rate_per_call": str(self.rate_per_call),
@@ -72,7 +96,7 @@ class BillingPolicy:
         }
 
     def rates_dict(self) -> dict:
-        """Legacy-compat dict consumed by calculate_charge_and_duration."""
+        """Backward-compat dict consumed by calculate_charge_and_duration."""
         return {
             "rate_per_min": self.rate_per_min,
             "rate_per_call": self.rate_per_call,
@@ -83,10 +107,196 @@ class BillingPolicy:
         }
 
 
+# ---------------------------------------------------------------------------
+# Snapshot validation and deserialization
+# ---------------------------------------------------------------------------
+
+_REQUIRED_SNAPSHOT_KEYS = frozenset({
+    "rate_per_min", "rate_per_call", "min_charge",
+    "billing_pulse_seconds", "minimum_billable_seconds",
+    "charge_failed_calls",
+})
+
+
+def validate_rate_snapshot(
+    snapshot: Any,
+    expected_tenant_id: int | None = None,
+) -> dict:
+    """Validate a raw snapshot dict (parsed from calls.rate_snapshot jsonb).
+
+    Returns the validated dict with Decimal values on success.
+    Raises ValueError with a descriptive message on any schema or semantic violation.
+
+    Strict rules (new call context):
+    - Required keys present
+    - Rates non-negative Decimal
+    - Pulse >= 1
+    - Minimum billable seconds >= 0
+    - charge_failed_calls is boolean
+    - currency supported
+    - policy_version present and == POLICY_VERSION (if set)
+    - tenant_id matches expected_tenant_id when provided
+    - No sensitive fields
+    """
+    if not isinstance(snapshot, dict):
+        raise ValueError(f"rate_snapshot is not a dict (type={type(snapshot).__name__})")
+
+    missing = _REQUIRED_SNAPSHOT_KEYS - snapshot.keys()
+    if missing:
+        raise ValueError(f"rate_snapshot missing required keys: {sorted(missing)}")
+
+    # Sensitive field guard
+    for bad in ("password", "secret", "key", "token", "credential"):
+        for k in snapshot:
+            if bad in k.lower():
+                raise ValueError(f"rate_snapshot contains potentially sensitive field: {k!r}")
+
+    try:
+        rpm = Decimal(str(snapshot["rate_per_min"]))
+    except InvalidOperation:
+        raise ValueError(f"rate_snapshot.rate_per_min is not a valid Decimal: {snapshot['rate_per_min']!r}")
+    if rpm < 0:
+        raise ValueError(f"rate_snapshot.rate_per_min must be non-negative, got {rpm}")
+    if rpm > Decimal("1000"):
+        raise ValueError(f"rate_snapshot.rate_per_min exceeds maximum (1000), got {rpm}")
+
+    try:
+        rpc = Decimal(str(snapshot["rate_per_call"]))
+    except InvalidOperation:
+        raise ValueError(f"rate_snapshot.rate_per_call is not a valid Decimal: {snapshot['rate_per_call']!r}")
+    if rpc < 0:
+        raise ValueError(f"rate_snapshot.rate_per_call must be non-negative, got {rpc}")
+
+    try:
+        mc = Decimal(str(snapshot["min_charge"]))
+    except InvalidOperation:
+        raise ValueError(f"rate_snapshot.min_charge is not a valid Decimal: {snapshot['min_charge']!r}")
+    if mc < 0:
+        raise ValueError(f"rate_snapshot.min_charge must be non-negative, got {mc}")
+
+    pulse = snapshot["billing_pulse_seconds"]
+    if not isinstance(pulse, int) or pulse < 1:
+        try:
+            pulse = int(pulse)
+        except (TypeError, ValueError):
+            raise ValueError(f"rate_snapshot.billing_pulse_seconds is not a positive int: {pulse!r}")
+        if pulse < 1:
+            raise ValueError(f"rate_snapshot.billing_pulse_seconds must be >= 1, got {pulse}")
+
+    mbs = snapshot["minimum_billable_seconds"]
+    try:
+        mbs = int(mbs)
+    except (TypeError, ValueError):
+        raise ValueError(f"rate_snapshot.minimum_billable_seconds is not an int: {mbs!r}")
+    if mbs < 0:
+        raise ValueError(f"rate_snapshot.minimum_billable_seconds must be >= 0, got {mbs}")
+
+    cfc = snapshot["charge_failed_calls"]
+    if not isinstance(cfc, bool):
+        if isinstance(cfc, str) and cfc.lower() in ("true", "false"):
+            cfc = cfc.lower() == "true"
+        elif cfc in (0, 1):
+            cfc = bool(cfc)
+        else:
+            raise ValueError(f"rate_snapshot.charge_failed_calls must be boolean, got {cfc!r}")
+
+    currency = snapshot.get("currency", DEFAULT_CURRENCY)
+    if currency not in _SUPPORTED_CURRENCIES:
+        raise ValueError(f"rate_snapshot.currency {currency!r} not supported; valid: {sorted(_SUPPORTED_CURRENCIES)}")
+
+    if "policy_version" not in snapshot:
+        raise ValueError("rate_snapshot missing required key: policy_version")
+    pv = snapshot["policy_version"]
+    if int(pv) != POLICY_VERSION:
+        raise ValueError(f"rate_snapshot.policy_version {pv} != expected {POLICY_VERSION}")
+
+    if expected_tenant_id is not None:
+        snap_tid = snapshot.get("tenant_id")
+        if snap_tid is not None and int(snap_tid) != expected_tenant_id:
+            raise ValueError(
+                f"rate_snapshot.tenant_id {snap_tid} does not match expected tenant {expected_tenant_id}"
+            )
+
+    snap_tid = snapshot.get("tenant_id")
+    validated: dict = {
+        "rate_per_min": rpm,
+        "rate_per_call": rpc,
+        "min_charge": mc,
+        "billing_pulse_seconds": int(pulse),
+        "minimum_billable_seconds": int(mbs),
+        "charge_failed_calls": bool(cfc),
+        "currency": currency,
+        "policy_version": int(pv),
+    }
+    if snap_tid is not None:
+        validated["tenant_id"] = int(snap_tid)
+    # Preserve source tracking fields if present
+    for src_key in ("rate_per_min_source", "rate_per_call_source", "min_charge_source",
+                    "billing_pulse_seconds_source", "minimum_billable_seconds_source",
+                    "charge_failed_calls_source"):
+        if src_key in snapshot:
+            validated[src_key] = snapshot[src_key]
+    if "plan_id" in snapshot:
+        validated["plan_id"] = snapshot["plan_id"]
+    if "resolved_at" in snapshot:
+        validated["resolved_at"] = snapshot["resolved_at"]
+    return validated
+
+
+def billing_policy_from_snapshot(
+    snapshot: Any,
+    expected_tenant_id: int | None = None,
+) -> BillingPolicy:
+    """Deserialise a validated snapshot dict back to a BillingPolicy.
+
+    Raises ValueError on any validation failure (fail-closed).
+    """
+    rates = validate_rate_snapshot(snapshot, expected_tenant_id=expected_tenant_id)
+    d = snapshot if isinstance(snapshot, dict) else {}
+
+    def _src(key: str) -> Source:
+        v = d.get(key, "platform_default")
+        return v if v in _VALID_SOURCES else "platform_default"
+
+    return BillingPolicy(
+        rate_per_min=rates["rate_per_min"],
+        rate_per_min_source=_src("rate_per_min_source"),
+        rate_per_call=rates["rate_per_call"],
+        rate_per_call_source=_src("rate_per_call_source"),
+        min_charge=rates["min_charge"],
+        min_charge_source=_src("min_charge_source"),
+        billing_pulse_seconds=rates["billing_pulse_seconds"],
+        billing_pulse_seconds_source=_src("billing_pulse_seconds_source"),
+        minimum_billable_seconds=rates["minimum_billable_seconds"],
+        minimum_billable_seconds_source=_src("minimum_billable_seconds_source"),
+        charge_failed_calls=rates["charge_failed_calls"],
+        charge_failed_calls_source=_src("charge_failed_calls_source"),
+        plan_id=d.get("plan_id"),
+        currency=d.get("currency", DEFAULT_CURRENCY),
+        tenant_id=d.get("tenant_id"),
+        policy_version=int(d.get("policy_version", POLICY_VERSION)),
+        resolved_at=d.get("resolved_at"),
+    )
+
+
+def serialize_billing_policy(policy: BillingPolicy) -> str:
+    """Serialise a BillingPolicy to a JSON string suitable for calls.rate_snapshot."""
+    return json.dumps(policy.as_dict())
+
+
+# ---------------------------------------------------------------------------
+# Cache invalidation (public API)
+# ---------------------------------------------------------------------------
+
 def invalidate_billing_policy_cache(tenant_id: int) -> None:
     """Evict the billing policy Redis cache for a tenant.
 
-    Call whenever customer_rates or plan billing columns change for this tenant.
+    Must be called after every successful mutation of:
+    - customer_rates (insert/update/delete)
+    - tenant plan assignment
+    - plan default billing columns
+    - subscription activation / renewal / plan switch
+    - tenant suspension / cancellation / reactivation
     """
     from app.extensions import redis_ext
     try:
@@ -95,28 +305,45 @@ def invalidate_billing_policy_cache(tenant_id: int) -> None:
         pass
 
 
-def resolve_billing_policy(tenant_id: int, *, connection=None, use_cache: bool = True) -> BillingPolicy:
+# ---------------------------------------------------------------------------
+# Core resolution
+# ---------------------------------------------------------------------------
+
+def resolve_billing_policy(
+    tenant_id: int,
+    *,
+    connection=None,
+    use_cache: bool = True,
+) -> BillingPolicy:
     """Resolve all billing fields for a tenant with per-field precedence:
 
     1. customer_rates column (NULL = field not overridden for this tenant)
     2. plans.default_* column (NULL = plan has no opinion → platform default)
     3. Platform DEFAULT_* constants
 
-    Each field resolves independently — a tenant can override pulse_seconds
-    while inheriting rate_per_min from their plan.
+    Each field resolves independently.
 
     charge_failed_calls tri-state:
       customer_rates.charge_failed_calls IS NULL  → inherit from plan / platform
       customer_rates.charge_failed_calls = TRUE   → explicit "yes" override
       customer_rates.charge_failed_calls = FALSE  → explicit "no" override
 
-    Raises ValueError if tenant_id does not exist (fail-closed).
-    Pass use_cache=False to bypass Redis and always query the DB.
-    Pass connection= to reuse an existing psycopg connection.
+    Args:
+        tenant_id: Must exist — raises ValueError if not found (fail-closed).
+        connection: Optional existing psycopg connection for dispatch-time
+            transactional reads (bypasses pool checkout and stale cache).
+        use_cache: Set False to force a DB read and skip the Redis cache.
+            Ignored when connection= is supplied (connection implies fresh read).
+
+    Raises:
+        ValueError: if tenant_id does not exist.
     """
     import datetime as _dt
 
-    if use_cache:
+    # Skip cache when a connection is supplied (dispatch-time transactional read)
+    _use_cache = use_cache and (connection is None)
+
+    if _use_cache:
         cached = _policy_from_cache(tenant_id)
         if cached is not None:
             return cached
@@ -126,12 +353,17 @@ def resolve_billing_policy(tenant_id: int, *, connection=None, use_cache: bool =
             return connection.execute(sql, params).fetchone()
         return db.query_one(sql, params)
 
-    # Fail-closed: tenant must exist before we can resolve billing policy
-    tenant_exists = _q_one("SELECT 1 FROM tenants WHERE id = %s", (tenant_id,))
-    if not tenant_exists:
-        raise ValueError(f"resolve_billing_policy: tenant {tenant_id} not found — cannot resolve billing policy")
+    # Fail-closed: tenant must exist
+    tenant_row = _q_one(
+        "SELECT id, status FROM tenants WHERE id = %s",
+        (tenant_id,),
+    )
+    if not tenant_row:
+        raise ValueError(
+            f"resolve_billing_policy: tenant {tenant_id} not found — billing policy cannot be resolved"
+        )
 
-    # --- Load customer_rates row (may not exist) ---
+    # --- customer_rates ---
     cr = _q_one(
         """
         SELECT rate_per_min, rate_per_call, min_charge,
@@ -141,7 +373,7 @@ def resolve_billing_policy(tenant_id: int, *, connection=None, use_cache: bool =
         (tenant_id,),
     )
 
-    # --- Load plan defaults (via tenant → plan join) ---
+    # --- plan defaults (via tenant → plan join) ---
     plan_row = _q_one(
         """
         SELECT p.id AS plan_id,
@@ -164,7 +396,6 @@ def resolve_billing_policy(tenant_id: int, *, connection=None, use_cache: bool =
     plan_defaults: dict = {}
     if plan_row:
         plan_id = plan_row["plan_id"]
-        # Structured default columns take priority over legacy feature_flags JSONB
         plan_defaults = {
             "rate_per_min": plan_row["default_rate_per_min"],
             "rate_per_call": plan_row["default_rate_per_call"],
@@ -174,7 +405,7 @@ def resolve_billing_policy(tenant_id: int, *, connection=None, use_cache: bool =
             "charge_failed_calls": plan_row["default_charge_failed_calls"],
         }
 
-        # Back-fill from legacy feature_flags for rate fields if structured columns are NULL
+        # Back-fill from legacy feature_flags JSONB for rate fields if structured columns are NULL
         ff = plan_row.get("feature_flags") or {}
         if isinstance(ff, str):
             try:
@@ -188,18 +419,18 @@ def resolve_billing_policy(tenant_id: int, *, connection=None, use_cache: bool =
         if plan_defaults["min_charge"] is None and ff.get("min_charge") is not None:
             plan_defaults["min_charge"] = Decimal(str(ff["min_charge"]))
 
-        # Hardcoded name-based fallback for plans that have no structured columns yet
+        # Hardcoded name-based fallback for plans without structured columns yet
         if plan_defaults["rate_per_min"] is None:
             name = (plan_row.get("plan_name") or "").lower()
-            hardcoded = {
+            _hardcoded = {
                 "free": Decimal("0.80"),
                 "starter": Decimal("0.70"),
                 "pro": Decimal("0.60"),
             }
-            if name in hardcoded:
-                plan_defaults["rate_per_min"] = hardcoded[name]
+            if name in _hardcoded:
+                plan_defaults["rate_per_min"] = _hardcoded[name]
                 if plan_defaults["min_charge"] is None:
-                    plan_defaults["min_charge"] = hardcoded[name]
+                    plan_defaults["min_charge"] = _hardcoded[name]
 
     def _resolve_decimal(field: str, platform_val: Decimal) -> tuple[Decimal, Source]:
         if cr and cr.get(field) is not None:
@@ -255,7 +486,7 @@ def resolve_billing_policy(tenant_id: int, *, connection=None, use_cache: bool =
         tenant_id=tenant_id,
         resolved_at=_dt.datetime.now(_dt.timezone.utc).isoformat(),
     )
-    if use_cache:
+    if _use_cache:
         _cache_policy(tenant_id, policy)
     return policy
 
@@ -285,6 +516,10 @@ def _policy_from_cache(tenant_id: int) -> BillingPolicy | None:
             charge_failed_calls=d.get("charge_failed_calls") is True or d.get("charge_failed_calls") == "True",
             charge_failed_calls_source=d.get("charge_failed_calls_source", "platform_default"),
             plan_id=d.get("plan_id"),
+            currency=d.get("currency", DEFAULT_CURRENCY),
+            tenant_id=d.get("tenant_id"),
+            policy_version=int(d.get("policy_version", POLICY_VERSION)),
+            resolved_at=d.get("resolved_at"),
         )
     except Exception:
         return None
@@ -306,10 +541,12 @@ def get_tenant_rate(tenant_id: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Charge calculation helpers
+# Charge calculation
 # ---------------------------------------------------------------------------
 
-_PRE_CONNECTION_FAILURES = {"no_answer", "busy", "failed", "unreachable"}
+_PRE_CONNECTION_FAILURES = frozenset({"no_answer", "busy", "failed", "unreachable"})
+# Alias used in tests
+_PRE_CONNECTION_STATUSES = _PRE_CONNECTION_FAILURES
 
 
 def calculate_charge_and_duration(
@@ -322,16 +559,8 @@ def calculate_charge_and_duration(
     """Calculate call charge and billable seconds from talk duration and rates.
 
     Billing eligibility is based on connection evidence (talk_seconds > 0), NOT
-    on the call_result status label. A call with status='canceled' where
-    talk_seconds=27 was genuinely answered — the remote party hung up (SIP BYE)
-    after the IVR played, and real carrier cost was incurred.
-
-    Statuses that indicate pre-connection failure (no talk time, no carrier cost):
-      no_answer, busy, failed, unreachable
-    Only these are non-billable by default (unless charge_failed_calls=True).
-
-    'canceled' with talk_seconds > 0 = answered call, remote terminated → billable.
-    'canceled' with talk_seconds = 0  = canceled before answer → not billable.
+    on the call_result status label.  A call with status='canceled' where
+    talk_seconds=27 was genuinely answered and carrier cost was incurred.
 
     Pass `rates` to use a pre-resolved dict (e.g. from a stored rate_snapshot)
     rather than hitting the DB again.
@@ -339,22 +568,14 @@ def calculate_charge_and_duration(
     if rates is None:
         rates = get_tenant_rate(tenant_id)
 
-    is_unanswered_failure = (talk_seconds <= 0) and (call_result in _PRE_CONNECTION_FAILURES)
-    if is_unanswered_failure and not rates["charge_failed_calls"]:
-        return Decimal("0.0000"), 0
-
     if talk_seconds <= 0 and not rates["charge_failed_calls"]:
         return Decimal("0.0000"), 0
 
     if rates["rate_per_call"] > 0:
-        charge = rates["rate_per_call"]
         billable_seconds = max(talk_seconds, 0)
-        return round(max(charge, rates["min_charge"]), 4), billable_seconds
+        return round(max(rates["rate_per_call"], rates["min_charge"]), 4), billable_seconds
 
-    pulse = rates["billing_pulse_seconds"]
-    if not pulse or pulse <= 0:
-        pulse = 60
-
+    pulse = int(rates["billing_pulse_seconds"]) or 60
     if talk_seconds <= 0:
         rounded_seconds = 0
     else:
@@ -374,5 +595,4 @@ def calculate_charge(talk_seconds: int, tenant_id: int) -> Decimal:
 
 def estimate_charge(tenant_id: int) -> Decimal:
     """Return the minimum charge for a call (used for pre-call balance checks)."""
-    rates = get_tenant_rate(tenant_id)
-    return rates["min_charge"]
+    return get_tenant_rate(tenant_id)["min_charge"]

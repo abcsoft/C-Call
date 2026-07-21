@@ -29,8 +29,8 @@ def billing_tenant(app):
 def _make_call(tenant_id: int, status: str, talk_seconds: int, order_id: int | None = None) -> int:
     return db.insert_returning_id(
         """
-        INSERT INTO calls (number, status, direction, talk_seconds, tenant_id, order_id, call_type)
-        VALUES ('01799999999', %s, 'outbound', %s, %s, %s, 'direct')
+        INSERT INTO calls (number, status, direction, talk_seconds, tenant_id, order_id, call_type, started_at)
+        VALUES ('01799999999', %s, 'outbound', %s, %s, %s, 'direct', '2026-07-20 00:00:00+00')
         RETURNING id
         """,
         (status, talk_seconds, tenant_id, order_id),
@@ -187,8 +187,8 @@ def test_finalize_call_billing_is_idempotent(app, billing_tenant):
 def test_finalize_call_billing_skips_when_tenant_is_null(app):
     with app.app_context():
         call_id = db.insert_returning_id(
-            "INSERT INTO calls (number, status, direction, talk_seconds, tenant_id) "
-            "VALUES ('01799999999', 'completed', 'outbound', 30, NULL) RETURNING id"
+            "INSERT INTO calls (number, status, direction, talk_seconds, tenant_id, started_at) "
+            "VALUES ('01799999999', 'completed', 'outbound', 30, NULL, '2026-07-20 00:00:00+00') RETURNING id"
         )
         result = finalize_call_billing(call_id)
         assert result["billed"] is False

@@ -146,28 +146,30 @@ def _update_tenant_fields(tenant_id: int, form) -> None:
         audit_log("tenant_status_change", current_user.id, "tenant", tenant_id, {"new_status": status})
     
     if "plan_id" in form or "rate_per_min" in form or "billing_pulse_seconds" in form:
-        rate_per_min = form.get("rate_per_min")
-        rate_dec = None
-        if rate_per_min is not None and rate_per_min.strip() != "":
-            rate_dec = Decimal(rate_per_min)
-            
-        billing_pulse_seconds = form.get("billing_pulse_seconds")
-        pulse_val = 60
-        if billing_pulse_seconds is not None and billing_pulse_seconds.strip() != "":
-            pulse_val = int(billing_pulse_seconds)
-            
-        minimum_billable_seconds = form.get("minimum_billable_seconds")
-        min_bill_val = 60
-        if minimum_billable_seconds is not None and minimum_billable_seconds.strip() != "":
-            min_bill_val = int(minimum_billable_seconds)
-            
-        charge_failed_calls = "charge_failed_calls" in form or form.get("charge_failed_calls") == "true" or form.get("charge_failed_calls") is True
+        # rate_per_min: blank = NULL = inherit from plan/platform
+        rate_per_min = form.get("rate_per_min", "").strip()
+        rate_dec: Decimal | None = Decimal(rate_per_min) if rate_per_min else None
+
+        billing_pulse_seconds = form.get("billing_pulse_seconds", "").strip()
+        pulse_val: int | None = int(billing_pulse_seconds) if billing_pulse_seconds else None
+
+        minimum_billable_seconds = form.get("minimum_billable_seconds", "").strip()
+        min_bill_val: int | None = int(minimum_billable_seconds) if minimum_billable_seconds else None
+
+        # charge_failed_calls tri-state: "" → NULL (inherit), "1" → True, "0" → False
+        cfc_raw = form.get("charge_failed_calls", "")
+        if cfc_raw == "1":
+            charge_failed_calls: bool | None = True
+        elif cfc_raw == "0":
+            charge_failed_calls = False
+        else:
+            charge_failed_calls = None
 
         db.execute(
             """
             INSERT INTO customer_rates (tenant_id, rate_per_min, billing_pulse_seconds, minimum_billable_seconds, charge_failed_calls)
             VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (tenant_id) DO UPDATE SET 
+            ON CONFLICT (tenant_id) DO UPDATE SET
                 rate_per_min = EXCLUDED.rate_per_min,
                 billing_pulse_seconds = EXCLUDED.billing_pulse_seconds,
                 minimum_billable_seconds = EXCLUDED.minimum_billable_seconds,
@@ -179,6 +181,8 @@ def _update_tenant_fields(tenant_id: int, form) -> None:
     
     from app.models.tenant import invalidate_tenant_caches
     invalidate_tenant_caches(tenant_id)
+    from app.services.rate_service import invalidate_billing_policy_cache
+    invalidate_billing_policy_cache(tenant_id)
 
 
 @admin_bp.route("/customers/<int:tenant_id>", methods=["GET", "POST", "PUT"])

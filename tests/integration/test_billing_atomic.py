@@ -58,7 +58,7 @@ def _call(db, tenant_id, *, talk_seconds=60, status="completed"):
     return db.insert_returning_id(
         "INSERT INTO calls (tenant_id, number, status, talk_seconds, total_seconds,"
         " started_at, ended_at, call_type)"
-        " VALUES (%s, '01700000000', %s, %s, %s, now()-interval '2 min', now(), 'ivr')"
+        " VALUES (%s, '01700000000', %s, %s, %s, '2026-07-20 12:00:00+00', '2026-07-20 12:02:00+00', 'ivr')"
         " RETURNING id",
         (tenant_id, status, talk_seconds, talk_seconds + 5),
     )

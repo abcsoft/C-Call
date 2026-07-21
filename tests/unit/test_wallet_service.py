@@ -153,7 +153,12 @@ def test_calculate_charge_rounds_up_to_minute(app):
 
 
 def test_min_charge_applied_for_short_calls(app):
-    """Verify that a minimum charge is applied for calls shorter than 1 minute."""
+    """Verify that a minimum charge is applied for answered calls shorter than 1 minute.
+
+    Billing is based on connection evidence (talk_seconds > 0).
+    0-second calls are not answered — no charge.
+    Short answered calls (1–59s) are rounded up to 1 minute = min_charge.
+    """
     with app.app_context():
         tenant_id = create_tenant({
             "business_name": "Short Store",
@@ -161,14 +166,14 @@ def test_min_charge_applied_for_short_calls(app):
             "plan_name": "free",
             "status": "active"
         })
-        
-        # 0s talk time -> min_charge (0.80 BDT)
-        assert calculate_charge(0, tenant_id) == Decimal("0.8000")
-        
-        # 10s talk time -> min_charge (0.80 BDT)
+
+        # 0s talk time -> 0 (not answered; billing based on connection evidence)
+        assert calculate_charge(0, tenant_id) == Decimal("0.0000")
+
+        # 10s talk time -> rounded to 60s -> min_charge (0.80 BDT)
         assert calculate_charge(10, tenant_id) == Decimal("0.8000")
-        
-        # 45s talk time -> min_charge (0.80 BDT)
+
+        # 45s talk time -> rounded to 60s -> min_charge (0.80 BDT)
         assert calculate_charge(45, tenant_id) == Decimal("0.8000")
 
 

@@ -99,16 +99,65 @@ def _get_plan_or_404(plan_id: int) -> dict[str, Any]:
     return dict(row)
 
 
-def _parse_providers_input(raw: str) -> list[str]:
-    """Parse comma-separated provider input, filter to valid providers."""
-    if not raw:
-        return []
-    items = [p.strip().lower() for p in raw.split(",") if p.strip()]
-    return [p for p in items if p in VALID_PROVIDERS]
+def _parse_providers_input(raw) -> tuple[list[str], list[str]]:
+    """Parse provider input from checkbox list or legacy comma-separated string.
+
+    Accepts:
+      - list/tuple of values (from form.getlist() or checkbox group)
+      - comma-separated string (legacy text input + existing tests)
+
+    Returns (valid_providers, unknown_names) — callers decide whether to
+    reject or silently drop unknowns.
+    """
+    if isinstance(raw, (list, tuple)):
+        # Flatten: each element might itself be comma-separated (legacy test compat)
+        items = []
+        for item in raw:
+            items.extend(p.strip().lower() for p in str(item).split(",") if p.strip())
+    elif raw:
+        items = [p.strip().lower() for p in str(raw).split(",") if p.strip()]
+    else:
+        return [], []
+
+    valid = [p for p in items if p in VALID_PROVIDERS]
+    unknown = list(dict.fromkeys(p for p in items if p not in VALID_PROVIDERS))
+    # Deduplicate valid while preserving order
+    seen: set[str] = set()
+    deduped = []
+    for p in valid:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return deduped, unknown
 
 
-def _validate_plan_form(form) -> tuple[dict, list[str]]:
-    """Validate plan create/edit form. Returns (data_dict, errors_list)."""
+def _get_provider_statuses() -> dict[str, str]:
+    """Return display status for each TTS provider.
+
+    Statuses:
+      "credential_free"  — no API key required (edge, gtts, openvoice)
+      "configured"       — platform credential exists and is active
+      "disabled"         — platform credential is disabled or invalid
+      "not_configured"   — provider supports platform credentials but none saved
+    """
+    statuses: dict[str, str] = {}
+    for p in CANONICAL_PROVIDERS:
+        statuses[p] = "not_configured" if p in PLATFORM_PROVIDERS else "credential_free"
+    for meta in list_platform_secret_meta():
+        provider = meta["provider"]
+        if provider in statuses:
+            statuses[provider] = "configured" if meta["status"] == "active" else "disabled"
+    return statuses
+
+
+def _validate_plan_form(
+    form, provider_statuses: dict[str, str] | None = None
+) -> tuple[dict, list[str]]:
+    """Validate plan create/edit form. Returns (data_dict, errors_list).
+
+    provider_statuses: optional dict from _get_provider_statuses() used to
+    validate that platform_managed providers have active credentials.
+    """
     errors = []
     data: dict[str, Any] = {}
 
@@ -146,26 +195,53 @@ def _validate_plan_form(form) -> tuple[dict, list[str]]:
         credential_policy = "byok_only"
     data["credential_policy"] = credential_policy
 
-    allowed = _parse_providers_input(form.get("allowed_providers", ""))
-    byok = _parse_providers_input(form.get("byok_providers", ""))
-    platform = _parse_providers_input(form.get("platform_managed_providers", ""))
+    # Providers — accept checkbox lists (getlist) or legacy comma-separated strings
+    _allowed_raw = form.getlist("allowed_providers") if hasattr(form, "getlist") else form.get("allowed_providers", "")
+    _byok_raw    = form.getlist("byok_providers")    if hasattr(form, "getlist") else form.get("byok_providers", "")
+    _plat_raw    = form.getlist("platform_managed_providers") if hasattr(form, "getlist") else form.get("platform_managed_providers", "")
+
+    allowed,  unknown_allowed  = _parse_providers_input(_allowed_raw)
+    byok,     unknown_byok     = _parse_providers_input(_byok_raw)
+    platform, unknown_platform = _parse_providers_input(_plat_raw)
+
+    if unknown_allowed:
+        errors.append(f"Unknown provider(s) in Allowed Providers: {unknown_allowed}. Valid: {sorted(VALID_PROVIDERS)}")
+    if unknown_byok:
+        errors.append(f"Unknown provider(s) in BYOK Providers: {unknown_byok}.")
+    if unknown_platform:
+        errors.append(f"Unknown provider(s) in Platform-Managed Providers: {unknown_platform}.")
 
     # Subset checks
     invalid_byok = [p for p in byok if p not in allowed]
     if invalid_byok:
-        errors.append(f"BYOK providers {invalid_byok} not in allowed_providers.")
+        errors.append(f"BYOK providers {invalid_byok} are not in Allowed Providers.")
 
     invalid_plat = [p for p in platform if p not in allowed]
     if invalid_plat:
-        errors.append(f"Platform providers {invalid_plat} not in allowed_providers.")
+        errors.append(f"Platform-Managed providers {invalid_plat} are not in Allowed Providers.")
 
     # Policy consistency
-    if credential_policy == "byok_only" and platform:
-        errors.append("byok_only policy cannot have platform-managed providers.")
+    if credential_policy == "byok_only":
+        if platform:
+            errors.append("byok_only policy cannot have Platform-Managed Providers.")
         platform = []
 
     if credential_policy == "platform_managed" and not platform:
-        errors.append("platform_managed policy requires at least one platform provider.")
+        errors.append(
+            "platform_managed policy requires at least one Platform-Managed Provider. "
+            "Select a configured provider below or configure platform credentials at /admin/platform-tts."
+        )
+
+    # Platform credential check — reject unconfigured key-required providers
+    if provider_statuses and credential_policy in ("platform_managed", "hybrid"):
+        for p in platform:
+            status = provider_statuses.get(p, "not_configured")
+            if status not in ("configured", "credential_free"):
+                errors.append(
+                    f"Provider '{p}' cannot be Platform-Managed: "
+                    f"no active platform credential is configured (status: {status}). "
+                    f"Add credentials at /admin/platform-tts first."
+                )
 
     data["allowed_providers"] = allowed
     data["byok_providers"] = byok
@@ -208,6 +284,56 @@ def _validate_plan_form(form) -> tuple[dict, list[str]]:
     data["premium_voices_enabled"] = bool(form.get("premium_voices_enabled"))
     data["extra_usage_policy"] = "block"  # only allowed value for now
 
+    # Billing defaults — all optional; None means "not set for this plan"
+    for field, label in [
+        ("default_rate_per_min", "Default rate/min"),
+        ("default_rate_per_call", "Default flat rate/call"),
+        ("default_min_charge", "Default min charge"),
+    ]:
+        raw = (form.get(field) or "").strip()
+        if raw:
+            try:
+                val = Decimal(raw)
+                if val < 0:
+                    errors.append(f"{label} cannot be negative.")
+                data[field] = val
+            except InvalidOperation:
+                errors.append(f"Invalid {label} value.")
+                data[field] = None
+        else:
+            data[field] = None
+
+    for field, label in [
+        ("default_billing_pulse_seconds", "Default billing pulse"),
+        ("default_minimum_billable_seconds", "Default min billable secs"),
+        ("included_dedicated_numbers", "Included dedicated numbers"),
+    ]:
+        raw = (form.get(field) or "").strip()
+        if raw:
+            try:
+                val = int(raw)
+                if val < 0:
+                    errors.append(f"{label} cannot be negative.")
+                data[field] = val
+            except (ValueError, TypeError):
+                errors.append(f"Invalid {label}.")
+                data[field] = None
+        else:
+            data[field] = None
+
+    cfc_raw = (form.get("default_charge_failed_calls") or "").strip()
+    if cfc_raw == "1":
+        data["default_charge_failed_calls"] = True
+    elif cfc_raw == "0":
+        data["default_charge_failed_calls"] = False
+    else:
+        data["default_charge_failed_calls"] = None
+
+    ent = form.get("number_entitlement", "shared_only")
+    if ent not in ("shared_only", "dedicated_allowed", "dedicated_included"):
+        ent = "shared_only"
+    data["number_entitlement"] = ent
+
     return data, errors
 
 
@@ -229,6 +355,7 @@ def plans_list():
 @admin_bp.route("/plans/create", methods=["GET", "POST"])
 @require_super_admin
 def plan_create():
+    provider_statuses = _get_provider_statuses()
     if request.method == "GET":
         return render_template(
             "admin/plans/form.html",
@@ -236,10 +363,17 @@ def plan_create():
             policy=None,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
+            provider_statuses=provider_statuses,
             form_values={},
         )
 
-    data, errors = _validate_plan_form(request.form)
+    data, errors = _validate_plan_form(request.form, provider_statuses)
+    # Build form_values with parsed provider lists so checkboxes repopulate correctly
+    form_values = dict(request.form)
+    form_values["allowed_providers"] = data.get("allowed_providers", [])
+    form_values["byok_providers"] = data.get("byok_providers", [])
+    form_values["platform_managed_providers"] = data.get("platform_managed_providers", [])
+
     if errors:
         for e in errors:
             flash(e, "error")
@@ -249,7 +383,8 @@ def plan_create():
             policy=None,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
-            form_values=dict(request.form),
+            provider_statuses=provider_statuses,
+            form_values=form_values,
         ), 422
 
     # Duplicate name check
@@ -262,7 +397,8 @@ def plan_create():
             policy=None,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
-            form_values=dict(request.form),
+            provider_statuses=provider_statuses,
+            form_values=form_values,
         ), 422
 
     # Atomic create: plan + TTS policy in one transaction
@@ -270,16 +406,21 @@ def plan_create():
         with db.transaction():
             plan_id = db.insert_returning_id(
                 """
-                INSERT INTO plans (name, price_monthly, included_minutes, max_flows, max_users, feature_flags)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+                INSERT INTO plans (
+                    name, price_monthly, included_minutes, max_flows, max_users, feature_flags,
+                    default_rate_per_min, default_rate_per_call, default_min_charge,
+                    default_billing_pulse_seconds, default_minimum_billable_seconds,
+                    default_charge_failed_calls, number_entitlement, included_dedicated_numbers
+                )
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
                 """,
                 (
-                    data["name"],
-                    data["price_monthly"],
-                    data["included_minutes"],
-                    data["max_flows"],
-                    data["max_users"],
-                    json.dumps({}),
+                    data["name"], data["price_monthly"], data["included_minutes"],
+                    data["max_flows"], data["max_users"], json.dumps({}),
+                    data["default_rate_per_min"], data["default_rate_per_call"],
+                    data["default_min_charge"], data["default_billing_pulse_seconds"],
+                    data["default_minimum_billable_seconds"], data["default_charge_failed_calls"],
+                    data["number_entitlement"], data["included_dedicated_numbers"] or 0,
                 ),
             )
             db.execute(
@@ -314,7 +455,8 @@ def plan_create():
             policy=None,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
-            form_values=dict(request.form),
+            provider_statuses=provider_statuses,
+            form_values=form_values,
         ), 500
 
     audit_log(
@@ -340,6 +482,7 @@ def plan_create():
 def plan_edit(plan_id: int):
     plan = _get_plan_or_404(plan_id)
     policy = get_plan_tts_policy(plan_id)
+    provider_statuses = _get_provider_statuses()
 
     if request.method == "GET":
         return render_template(
@@ -348,10 +491,16 @@ def plan_edit(plan_id: int):
             policy=policy,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
+            provider_statuses=provider_statuses,
             form_values={},
         )
 
-    data, errors = _validate_plan_form(request.form)
+    data, errors = _validate_plan_form(request.form, provider_statuses)
+    form_values = dict(request.form)
+    form_values["allowed_providers"] = data.get("allowed_providers", [])
+    form_values["byok_providers"] = data.get("byok_providers", [])
+    form_values["platform_managed_providers"] = data.get("platform_managed_providers", [])
+
     if errors:
         for e in errors:
             flash(e, "error")
@@ -361,7 +510,8 @@ def plan_edit(plan_id: int):
             policy=policy,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
-            form_values=dict(request.form),
+            provider_statuses=provider_statuses,
+            form_values=form_values,
         ), 422
 
     # Duplicate name check (exclude self)
@@ -377,7 +527,8 @@ def plan_edit(plan_id: int):
             policy=policy,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
-            form_values=dict(request.form),
+            provider_statuses=provider_statuses,
+            form_values=form_values,
         ), 422
 
     # Downgrade warning: how many tenants are in platform_managed mode on this plan?
@@ -404,7 +555,8 @@ def plan_edit(plan_id: int):
             policy=policy,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
-            form_values=dict(request.form),
+            provider_statuses=provider_statuses,
+            form_values=form_values,
             affected_count=affected_count,
         ), 200
 
@@ -423,12 +575,21 @@ def plan_edit(plan_id: int):
                 """
                 UPDATE plans SET
                     name = %s, price_monthly = %s, included_minutes = %s,
-                    max_flows = %s, max_users = %s
+                    max_flows = %s, max_users = %s,
+                    default_rate_per_min = %s, default_rate_per_call = %s,
+                    default_min_charge = %s, default_billing_pulse_seconds = %s,
+                    default_minimum_billable_seconds = %s, default_charge_failed_calls = %s,
+                    number_entitlement = %s, included_dedicated_numbers = %s
                 WHERE id = %s
                 """,
                 (
                     data["name"], data["price_monthly"], data["included_minutes"],
-                    data["max_flows"], data["max_users"], plan_id,
+                    data["max_flows"], data["max_users"],
+                    data["default_rate_per_min"], data["default_rate_per_call"],
+                    data["default_min_charge"], data["default_billing_pulse_seconds"],
+                    data["default_minimum_billable_seconds"], data["default_charge_failed_calls"],
+                    data["number_entitlement"], data["included_dedicated_numbers"] or 0,
+                    plan_id,
                 ),
             )
             db.execute(
@@ -470,8 +631,18 @@ def plan_edit(plan_id: int):
             policy=policy,
             canonical_providers=CANONICAL_PROVIDERS,
             credential_policies=CREDENTIAL_POLICIES,
-            form_values=dict(request.form),
+            provider_statuses=provider_statuses,
+            form_values=form_values,
         ), 500
+
+    # Invalidate billing policy cache for all tenants on this plan.
+    from app.services.rate_service import invalidate_billing_policy_cache
+    _affected_rows = db.query(
+        "SELECT id FROM tenants WHERE plan_id = %s",
+        (plan_id,),
+    )
+    for _row in (_affected_rows or []):
+        invalidate_billing_policy_cache(_row["id"])
 
     after_snap = {
         "name": data["name"],
@@ -523,6 +694,32 @@ def plan_archive(plan_id: int):
         {"name": plan.get("name")},
     )
     flash(f"Plan '{plan['name']}' archived.", "success")
+    return redirect(url_for("admin.plans_list"))
+
+
+# ── Plan activate ─────────────────────────────────────────────────────────────
+
+@admin_bp.route("/plans/<int:plan_id>/activate", methods=["POST"])
+@require_super_admin
+def plan_activate(plan_id: int):
+    plan = _get_plan_or_404(plan_id)
+
+    if not plan.get("archived_at"):
+        flash(f"Plan '{plan['name']}' is already active.", "error")
+        return redirect(url_for("admin.plans_list"))
+
+    db.execute(
+        "UPDATE plans SET archived_at = NULL WHERE id = %s",
+        (plan_id,),
+    )
+    audit_log(
+        "plan_activated",
+        current_user.id,
+        "plan",
+        plan_id,
+        {"name": plan.get("name"), "previous_status": "archived", "new_status": "active"},
+    )
+    flash(f"Plan '{plan['name']}' activated and visible to merchants.", "success")
     return redirect(url_for("admin.plans_list"))
 
 
