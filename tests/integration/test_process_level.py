@@ -177,27 +177,43 @@ def _tenant_order(app):
             enqueue_order_call(conn, order_id, tenant_id, attempt_no=1,
                                order_call_attempt_id=attempt_id)
 
-        yield order_id, tenant_id
-
-        # Explicit cleanup (real_db skips rollback).
-        # Order matters: delete child rows before parent rows to avoid FK violations.
-        # calls.tenant_id and wallet_transactions.wallet_id lack ON DELETE CASCADE.
-        db.execute("DELETE FROM call_jobs WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM calls WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM orders WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM wallet_transactions WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM wallets WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM customer_rates WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM retry_rules WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM api_keys WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM users WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM service_heartbeats WHERE instance_id LIKE %s",
-                   (f"%@%",))
-        db.execute("DELETE FROM flows WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
-        db.execute("DELETE FROM phone_numbers WHERE id = %s", (pn_id,))
-        db.execute("DELETE FROM sip_providers WHERE id = %s", (provider_id,))
+        try:
+            yield order_id, tenant_id
+        finally:
+            # Explicit cleanup (real_db skips rollback).
+            # All deletes run even if one fails; errors collected and re-raised
+            # so teardown failure propagates as a test failure.
+            # Order: child rows before parent rows (no CASCADE on these FKs).
+            _cleanup_errors: list[str] = []
+            _cleanup_stmts = [
+                ("DELETE FROM call_jobs WHERE tenant_id = %s",             (tenant_id,)),
+                ("DELETE FROM order_call_attempts WHERE tenant_id = %s",   (tenant_id,)),
+                ("DELETE FROM calls WHERE tenant_id = %s",                 (tenant_id,)),
+                ("DELETE FROM orders WHERE tenant_id = %s",                (tenant_id,)),
+                ("DELETE FROM wallet_transactions WHERE tenant_id = %s",   (tenant_id,)),
+                ("DELETE FROM wallets WHERE tenant_id = %s",               (tenant_id,)),
+                ("DELETE FROM customer_rates WHERE tenant_id = %s",        (tenant_id,)),
+                ("DELETE FROM retry_rules WHERE tenant_id = %s",           (tenant_id,)),
+                ("DELETE FROM api_keys WHERE tenant_id = %s",              (tenant_id,)),
+                ("DELETE FROM users WHERE tenant_id = %s",                 (tenant_id,)),
+                # service_heartbeats has no tenant_id; instance_id pattern targets
+                # only test-inserted heartbeat rows (format: "worker@<uid>").
+                ("DELETE FROM service_heartbeats WHERE instance_id LIKE %s", (f"%{uid}%",)),
+                ("DELETE FROM flows WHERE tenant_id = %s",                 (tenant_id,)),
+                ("DELETE FROM tenants WHERE id = %s",                      (tenant_id,)),
+                ("DELETE FROM phone_numbers WHERE id = %s",                (pn_id,)),
+                ("DELETE FROM sip_providers WHERE id = %s",                (provider_id,)),
+            ]
+            for _stmt, _params in _cleanup_stmts:
+                try:
+                    db.execute(_stmt, _params)
+                except Exception as _exc:  # noqa: BLE001
+                    _cleanup_errors.append(f"{_stmt!r}: {_exc}")
+            if _cleanup_errors:
+                raise RuntimeError(
+                    f"_tenant_order cleanup failed ({len(_cleanup_errors)} error(s)):\n"
+                    + "\n".join(_cleanup_errors)
+                )
 
 
 # ── A. Crash after lease → expired lease recovered ───────────────────────────
@@ -714,20 +730,32 @@ def _twenty_tenant_orders(app):
                 enqueue_order_call(conn, order_id, tenant_id, attempt_no=1,
                                    order_call_attempt_id=attempt_id)
 
-        yield tenant_id, order_ids
-
-        db.execute("DELETE FROM call_jobs WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM orders WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM wallets WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM customer_rates WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM retry_rules WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM api_keys WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM users WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM service_heartbeats WHERE instance_id LIKE %s", ("%@%",))
-        db.execute("DELETE FROM calls WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM flows WHERE tenant_id = %s", (tenant_id,))
-        db.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
+        try:
+            yield tenant_id, order_ids
+        finally:
+            _errs: list[str] = []
+            for _s, _p in [
+                ("DELETE FROM call_jobs WHERE tenant_id = %s",           (tenant_id,)),
+                ("DELETE FROM order_call_attempts WHERE tenant_id = %s", (tenant_id,)),
+                ("DELETE FROM calls WHERE tenant_id = %s",               (tenant_id,)),
+                ("DELETE FROM orders WHERE tenant_id = %s",              (tenant_id,)),
+                ("DELETE FROM wallets WHERE tenant_id = %s",             (tenant_id,)),
+                ("DELETE FROM customer_rates WHERE tenant_id = %s",      (tenant_id,)),
+                ("DELETE FROM retry_rules WHERE tenant_id = %s",         (tenant_id,)),
+                ("DELETE FROM api_keys WHERE tenant_id = %s",            (tenant_id,)),
+                ("DELETE FROM users WHERE tenant_id = %s",               (tenant_id,)),
+                ("DELETE FROM service_heartbeats WHERE instance_id LIKE %s", (f"%{uid}%",)),
+                ("DELETE FROM flows WHERE tenant_id = %s",               (tenant_id,)),
+                ("DELETE FROM tenants WHERE id = %s",                    (tenant_id,)),
+            ]:
+                try:
+                    db.execute(_s, _p)
+                except Exception as _e:  # noqa: BLE001
+                    _errs.append(f"{_s!r}: {_e}")
+            if _errs:
+                raise RuntimeError(
+                    f"_twenty_tenant_orders cleanup failed:\n" + "\n".join(_errs)
+                )
 
 
 def test_two_workers_twenty_jobs_no_duplicates(app, _twenty_tenant_orders):
