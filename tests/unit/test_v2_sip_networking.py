@@ -242,3 +242,53 @@ class TestV2SipNetworking:
             ivr.sock.close()
             ivr.rtp.close()
             _rtp_port_allocator.release(ivr.rtp_port)
+
+    def test_refer_uses_advertised_ip(self, monkeypatch):
+        ivr = IvrCall(
+            target="01711223344",
+            flow=self._flow(),
+            sip=self._sip_cfg(SIP_PORT="59999", SIP_ADVERTISED_IP="203.0.113.30"),
+            on_event=lambda e: None,
+        )
+        sent_msgs = []
+        monkeypatch.setattr(ivr, "_send", lambda msg, addr=None: sent_msgs.append(msg))
+        monkeypatch.setattr(ivr, "_recv_until", lambda pred, timeout: "SIP/2.0 202 Accepted\r\nCSeq: 2 REFER\r\n\r\n")
+        try:
+            ok, detail, _ = ivr._refer(2, "<sip:01711223344@127.0.0.1>;tag=t1", "1001")
+            assert ok is True
+            assert "202 Accepted" in detail
+            assert "Via: SIP/2.0/UDP 203.0.113.30:" in sent_msgs[0]
+            assert "Contact: <sip:testuser@203.0.113.30:" in sent_msgs[0]
+        finally:
+            ivr.close()
+
+    def test_bridge_leg_ack_uses_advertised_ip(self, monkeypatch):
+        ivr = IvrCall(
+            target="01711223344",
+            flow=self._flow(),
+            sip=self._sip_cfg(SIP_PORT="59999", SIP_ADVERTISED_IP="203.0.113.40", RTP_ADVERTISED_IP="203.0.113.41"),
+            on_event=lambda e: None,
+        )
+        sent_msgs = []
+        monkeypatch.setattr(ivr, "_send", lambda msg, addr=None: sent_msgs.append(msg))
+        ok_200 = (
+            "SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP 203.0.113.40:5060\r\nTo: <sip:1001@127.0.0.1>;tag=ag1\r\n"
+            "Contact: <sip:1001@127.0.0.1:5060>\r\nContent-Type: application/sdp\r\n\r\n"
+            "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\nc=IN IP4 127.0.0.1\r\nm=audio 40000 RTP/AVP 0\r\n"
+        )
+        monkeypatch.setattr(ivr, "_recv_until", lambda pred, timeout: ok_200)
+        leg = None
+        try:
+            leg = ivr._invite_bridge_leg("1001", timeout=1)
+            assert len(sent_msgs) == 2
+            assert "ACK sip:1001@127.0.0.1:5060 SIP/2.0" in sent_msgs[1]
+            assert "Via: SIP/2.0/UDP 203.0.113.40:" in sent_msgs[1]
+        finally:
+            if leg:
+                leg.rtp.close()
+                _rtp_port_allocator.release(leg.rtp_port)
+            ivr.close()
+
+    def test_ippbx_acceptance_mock_rehearsal(self):
+        from scripts.ippbx_acceptance import run_mock_acceptance
+        assert run_mock_acceptance(transfer_to="1001") == 0

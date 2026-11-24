@@ -509,13 +509,13 @@ class IvrCall:
 
         message = (
             f"REFER {request_uri} SIP/2.0\r\n"
-            f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
+            f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
             "Max-Forwards: 70\r\n"
             f'From: "IVR" <sip:{self.user}@{self.domain}>;tag={self.from_tag}\r\n'
             f"To: {to_header}\r\n"
             f"Call-ID: {self.call_id}\r\n"
             f"CSeq: {cseq} REFER\r\n"
-            f"Contact: <sip:{self.user}@{self.local_ip}:{self.local_port}>\r\n"
+            f"Contact: <sip:{self.user}@{self.advertised_ip}:{self.local_port}>\r\n"
             f"Refer-To: <{refer_to}>\r\n"
             f"Referred-By: <sip:{self.user}@{self.domain}>\r\n"
             "User-Agent: IvrEngine/1.0\r\n"
@@ -606,7 +606,7 @@ class IvrCall:
         def ack(cseq: int, to_header: str, branch: str, request_uri: str) -> None:
             self._send(
                 f"ACK {request_uri} SIP/2.0\r\n"
-                f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch={branch}\r\n"
+                f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch={branch}\r\n"
                 "Max-Forwards: 70\r\n"
                 f'From: "IVR Bridge" <sip:{self.user}@{self.domain}>;tag={from_tag}\r\n'
                 f"To: {to_header}\r\n"

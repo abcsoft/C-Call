@@ -121,11 +121,31 @@ def _setup_tenant_and_call(
         call_id = conn.execute(
             "INSERT INTO calls"
             " (tenant_id, number, status, talk_seconds, total_seconds,"
-            "  started_at, ended_at, call_type)"
+            "  started_at, ended_at, call_type, rate_snapshot)"
             " VALUES (%s, '01700000000', %s, %s, %s,"
-            "  now()-interval '2 min', now(), 'ivr')"
+            "  now()-interval '2 min', now(), 'ivr', %s)"
             " RETURNING id",
-            (tid, status, talk_seconds, talk_seconds + 5),
+            (
+                tid,
+                status,
+                talk_seconds,
+                talk_seconds + 5,
+                json.dumps({
+                    "policy_version": 1,
+                    "tenant_id": tid,
+                    "rate_per_min": str(rate_per_min),
+                    "rate_per_call": "0.00",
+                    "min_charge": str(rate_per_min),
+                    "billing_pulse_seconds": 60,
+                    "minimum_billable_seconds": 60,
+                    "charge_failed_calls": False,
+                    "currency": "BDT",
+                    "rate_per_min_source": "tenant_override",
+                    "billing_pulse_seconds_source": "tenant_override",
+                    "minimum_billable_seconds_source": "tenant_override",
+                    "charge_failed_calls_source": "tenant_override",
+                }),
+            ),
         ).fetchone()["id"]
 
         conn.commit()

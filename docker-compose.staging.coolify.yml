@@ -26,7 +26,11 @@ services:
     volumes:
       - staging_redis_data:/data
 
+  migrate:
+    build: .
+
   web:
+    build: .
     # Override host port binding so Coolify Traefik routes by hostname without port 5000 conflict
     ports: []
     expose:
@@ -39,10 +43,12 @@ services:
       - "traefik.http.services.ccall-staging.loadbalancer.server.port=5000"
 
   scheduler:
+    build: .
     volumes:
       - staging_audio_data:/app/instance
 
   call_worker:
+    build: .
     volumes:
       - staging_audio_data:/app/instance
     deploy:
