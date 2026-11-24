@@ -197,9 +197,12 @@ def key_generate():
             <h4 class="font-bold text-sm">New API Key Generated!</h4>
         </div>
         <p class="text-xs text-emerald-400">Copy this key now. For security, it will not be shown again.</p>
-        <div class="flex items-center justify-between gap-2 bg-black/40 p-2.5 rounded-xl font-mono border border-emerald-500/30 text-xs overflow-x-auto">
+        <div x-data="{{ copied: false }}" class="flex items-center justify-between gap-2 bg-black/40 p-2.5 rounded-xl font-mono border border-emerald-500/30 text-xs overflow-x-auto">
             <span class="select-all break-all">{raw_key}</span>
-            <button onclick="navigator.clipboard.writeText('{raw_key}'); alert('API Key copied!');"
+            <button type="button"
+                    data-api-key="{raw_key}"
+                    @click="navigator.clipboard.writeText($el.dataset.apiKey); copied = true"
+                    x-text="copied ? 'Copied!' : 'Copy'"
                     class="py-1 px-2.5 bg-emerald-500 text-slate-950 font-bold rounded-lg text-[10px] shrink-0 hover:bg-emerald-400 transition-colors">
                 Copy
             </button>
@@ -213,14 +216,28 @@ def key_generate():
 def key_revoke(key_id: int):
     tenant_id = g.tenant_id
     db.execute(
-        "UPDATE api_keys SET is_active = false, revoked_at = now() WHERE id = %s AND tenant_id = %s",
+        "DELETE FROM api_keys WHERE id = %s AND tenant_id = %s",
         (key_id, tenant_id),
     )
 
     from app.middleware.audit import audit_log
-    audit_log("api_key_revoke", current_user.id, "tenant", tenant_id, {"key_id": key_id})
+    audit_log("api_key_delete", current_user.id, "tenant", tenant_id, {"key_id": key_id})
 
     return ""  # Remove from DOM via HTMX hx-swap="outerHTML"
+
+
+@customer_bp.route("/api/integration/keys/<int:key_id>/revoke", methods=["POST"])
+@require_login
+@require_role(["admin"])
+def key_soft_revoke(key_id: int):
+    tenant_id = g.tenant_id
+    db.execute(
+        "UPDATE api_keys SET is_active = false, revoked_at = now() WHERE id = %s AND tenant_id = %s",
+        (key_id, tenant_id),
+    )
+    from app.middleware.audit import audit_log
+    audit_log("api_key_revoke", current_user.id, "tenant", tenant_id, {"key_id": key_id})
+    return "", 200
 
 @customer_bp.route("/api/integration/webhook-secret", methods=["GET"])
 @require_login

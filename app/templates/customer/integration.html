@@ -122,9 +122,11 @@
                     {% if webhook_secret_once %}
                     <div class="p-3 bg-emerald-950/60 border border-emerald-500 rounded-lg text-emerald-300 text-xs flex flex-col gap-1.5">
                         <span class="font-bold">Copy Secret (Shown Once):</span>
-                        <div class="flex items-center justify-between gap-2 bg-black/40 p-2 rounded font-mono text-[11px] border border-emerald-500/30 overflow-x-auto select-all">
+                        <div x-data="{ copied: false }" class="flex items-center justify-between gap-2 bg-black/40 p-2 rounded font-mono text-[11px] border border-emerald-500/30 overflow-x-auto select-all">
                             <span>{{ webhook_secret_once }}</span>
-                            <button onclick="navigator.clipboard.writeText('{{ webhook_secret_once }}'); alert('Webhook Secret copied!');"
+                            <button data-wh-secret="{{ webhook_secret_once }}"
+                                    @click="navigator.clipboard.writeText($el.dataset.whSecret); copied = true"
+                                    x-text="copied ? 'Copied!' : 'Copy'"
                                     class="py-0.5 px-1.5 bg-emerald-500 text-slate-950 font-bold rounded text-[9px] shrink-0" type="button">
                                 Copy
                             </button>

@@ -1,0 +1,60 @@
+version: '3.8'
+# Isolated Coolify Staging Overlay (safe alongside existing production apps)
+# Deploy as a SEPARATE Coolify Compose project (e.g., ccall-staging) with isolated
+# database (ccall_staging), isolated named volumes, and Traefik staging hostname.
+#
+# Usage in Coolify:
+#   Compose files: docker-compose.production.yml:docker-compose.staging.coolify.yml
+#   Required env:  DB_PASSWORD, REDIS_PASSWORD, FLASK_SECRET_KEY,
+#                  SIP_PASSWORD_ENCRYPTION_KEY, STAGING_DOMAIN
+
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: ccall_staging
+      POSTGRES_USER: ccall_staging_app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccall_staging_app -d ccall_staging"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    volumes:
+      - staging_redis_data:/data
+
+  web:
+    # Override host port binding so Coolify Traefik routes by hostname without port 5000 conflict
+    ports: []
+    expose:
+      - "5000"
+    volumes:
+      - staging_audio_data:/app/instance
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ccall-staging.rule=Host(`${STAGING_DOMAIN:-staging-ccall.example.com}`)"
+      - "traefik.http.services.ccall-staging.loadbalancer.server.port=5000"
+
+  scheduler:
+    volumes:
+      - staging_audio_data:/app/instance
+
+  call_worker:
+    volumes:
+      - staging_audio_data:/app/instance
+    deploy:
+      replicas: 1
+
+  backup:
+    volumes:
+      - staging_backup_data:/backups
+      - ./scripts/backup.sh:/backup.sh:ro
+
+volumes:
+  staging_postgres_data:
+  staging_redis_data:
+  staging_audio_data:
+  staging_backup_data:

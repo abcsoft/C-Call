@@ -45,6 +45,11 @@ PORT = int(os.environ.get("SIP_PORT", "5060"))
 USER = os.environ.get("SIP_USER", "")
 PASSWORD = os.environ.get("SIP_PASSWORD", "")
 DOMAIN = os.environ.get("SIP_DOMAIN", SERVER)
+SIP_TRANSPORT = os.environ.get("SIP_TRANSPORT", "udp").strip().lower()
+if SIP_TRANSPORT != "udp":
+    raise ValueError(f"Unsupported SIP transport '{SIP_TRANSPORT}'; supported: ['udp']")
+SIP_BIND_IP = os.environ.get("SIP_BIND_IP", "0.0.0.0").strip()
+RTP_BIND_IP = os.environ.get("RTP_BIND_IP", SIP_BIND_IP).strip()
 TARGET = sys.argv[1]
 AUDIO_PATH = sys.argv[2]
 REPEAT = max(1, int(sys.argv[3]) if len(sys.argv) > 3 else 1)
@@ -126,19 +131,26 @@ def parse_sdp(reply):
 
 
 LOCAL_IP = local_ip()
+ADVERTISED_IP = (
+    os.environ.get("SIP_ADVERTISED_IP")
+    or os.environ.get("PUBLIC_IP")
+    or os.environ.get("EC2_PUBLIC_IP")
+    or LOCAL_IP
+).strip()
+RTP_ADVERTISED_IP = (os.environ.get("RTP_ADVERTISED_IP") or ADVERTISED_IP).strip()
+
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(("0.0.0.0", 0))
+sock.bind((SIP_BIND_IP, 0))
 LOCAL_PORT = sock.getsockname()[1]
 sock.settimeout(1)
 
-# Create RTP socket and keep it open — port is advertised in SDP, must stay bound
-rtp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-rtp_sock.bind(("0.0.0.0", 0))
-rtp_port = rtp_sock.getsockname()[1]
+# Create RTP socket via concurrency-safe port range allocator if configured
+from call_engine.ivr_engine import _rtp_port_allocator
+rtp_sock, rtp_port = _rtp_port_allocator.allocate_socket(RTP_BIND_IP, socket.AF_INET)
 
-call_id = f"call-{token(16)}@{LOCAL_IP}"
+call_id = f"call-{token(16)}@{ADVERTISED_IP}"
 from_tag = token(8)
-reg_call_id = f"reg-{token(16)}@{LOCAL_IP}"
+reg_call_id = f"reg-{token(16)}@{ADVERTISED_IP}"
 reg_tag = token(8)
 
 
@@ -214,13 +226,13 @@ def register():
     def message(cseq, auth=None):
         result = (
             f"REGISTER sip:{DOMAIN} SIP/2.0\r\n"
-            f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
+            f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
             "Max-Forwards: 70\r\n"
             f"From: <sip:{USER}@{DOMAIN}>;tag={reg_tag}\r\n"
             f"To: <sip:{USER}@{DOMAIN}>\r\n"
             f"Call-ID: {reg_call_id}\r\n"
             f"CSeq: {cseq} REGISTER\r\n"
-            f"Contact: <sip:{USER}@{LOCAL_IP}:{LOCAL_PORT}>\r\n"
+            f"Contact: <sip:{USER}@{ADVERTISED_IP}:{LOCAL_PORT}>\r\n"
             "Expires: 300\r\n"
             "User-Agent: CallbotDirect/1.0\r\n"
         )
@@ -228,12 +240,19 @@ def register():
             result += f"Authorization: {auth}\r\n"
         return result + "Content-Length: 0\r\n\r\n"
 
+    def is_reg_reply(r, cseq_num):
+        return (
+            status(r).startswith(("SIP/2.0 2", "SIP/2.0 4"))
+            and re.search(rf"^Call-ID:\s*{re.escape(reg_call_id)}\b", r, re.I | re.M) is not None
+            and re.search(rf"^CSeq:\s*{cseq_num}\s+REGISTER\b", r, re.I | re.M) is not None
+        )
+
     timeout = float(os.environ.get("SIP_REGISTER_TIMEOUT_SECONDS", "8"))
     attempts = int(os.environ.get("SIP_REGISTER_RETRIES", "3"))
     reply = None
     for attempt in range(1, attempts + 1):
         send(message(1))
-        reply = recv_until(lambda r: status(r).startswith(("SIP/2.0 2", "SIP/2.0 4")), timeout)
+        reply = recv_until(lambda r: is_reg_reply(r, 1), timeout)
         if reply or attempt == attempts:
             break
     if not reply:
@@ -241,7 +260,7 @@ def register():
     if status(reply).startswith("SIP/2.0 401"):
         params, _ = parse_challenge(reply)
         send(message(2, digest(params, "REGISTER", f"sip:{DOMAIN}")))
-        reply = recv_until(lambda r: status(r).startswith(("SIP/2.0 2", "SIP/2.0 4")), timeout)
+        reply = recv_until(lambda r: is_reg_reply(r, 2), timeout)
     if not reply or not status(reply).startswith("SIP/2.0 200"):
         raise RuntimeError(f"REGISTER failed: {status(reply) if reply else 'timeout'}")
 
@@ -250,9 +269,9 @@ def invite(cseq, auth_header=None, auth=None, branch=None):
     branch = branch or f"z9hG4bK{token()}"
     sdp = (
         "v=0\r\n"
-        f"o=- {int(time.time())} {int(time.time())} IN IP4 {LOCAL_IP}\r\n"
+        f"o=- {int(time.time())} {int(time.time())} IN IP4 {RTP_ADVERTISED_IP}\r\n"
         "s=Callbot\r\n"
-        f"c=IN IP4 {LOCAL_IP}\r\n"
+        f"c=IN IP4 {RTP_ADVERTISED_IP}\r\n"
         "t=0 0\r\n"
         f"m=audio {rtp_port} RTP/AVP 0 8 101\r\n"
         "a=rtpmap:0 PCMU/8000\r\n"
@@ -262,13 +281,13 @@ def invite(cseq, auth_header=None, auth=None, branch=None):
     )
     message = (
         f"INVITE sip:{TARGET}@{DOMAIN} SIP/2.0\r\n"
-        f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
+        f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
         "Max-Forwards: 70\r\n"
         f'From: "Callbot" <sip:{USER}@{DOMAIN}>;tag={from_tag}\r\n'
         f"To: <sip:{TARGET}@{DOMAIN}>\r\n"
         f"Call-ID: {call_id}\r\n"
         f"CSeq: {cseq} INVITE\r\n"
-        f"Contact: <sip:{USER}@{LOCAL_IP}:{LOCAL_PORT}>\r\n"
+        f"Contact: <sip:{USER}@{ADVERTISED_IP}:{LOCAL_PORT}>\r\n"
         "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO\r\n"
         "User-Agent: CallbotDirect/1.0\r\n"
         "Content-Type: application/sdp\r\n"
@@ -284,7 +303,7 @@ def ack(cseq, to_header, branch, request_uri=None):
     request_uri = request_uri or f"sip:{TARGET}@{DOMAIN}"
     send(
         f"ACK {request_uri} SIP/2.0\r\n"
-        f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
+        f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
         "Max-Forwards: 70\r\n"
         f'From: "Callbot" <sip:{USER}@{DOMAIN}>;tag={from_tag}\r\n'
         f"To: {to_header}\r\n"
@@ -298,7 +317,7 @@ def bye_message(cseq, to_header, request_uri=None):
     request_uri = request_uri or f"sip:{TARGET}@{DOMAIN}"
     return (
         f"BYE {request_uri} SIP/2.0\r\n"
-        f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
+        f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
         "Max-Forwards: 70\r\n"
         f'From: "Callbot" <sip:{USER}@{DOMAIN}>;tag={from_tag}\r\n'
         f"To: {to_header}\r\n"
@@ -450,7 +469,12 @@ try:
     fallback_ip, fallback_port = None, None
     end = time.time() + int(os.environ.get("SIP_PROCESS_TIMEOUT_SECONDS", "90"))
     while time.time() < end:
-        reply = recv_until(lambda r: status(r).startswith("SIP/2.0 "), max(0.1, end - time.time()))
+        reply = recv_until(
+            lambda r: status(r).startswith("SIP/2.0 ")
+            and re.search(rf"^Call-ID:\s*{re.escape(call_id)}\b", r, re.I | re.M) is not None
+            and re.search(rf"^CSeq:\s*{cseq}\s+INVITE\b", r, re.I | re.M) is not None,
+            max(0.1, end - time.time()),
+        )
         if not reply:
             break
         line = status(reply)
@@ -506,3 +530,4 @@ try:
 finally:
     sock.close()
     rtp_sock.close()
+    _rtp_port_allocator.release(rtp_port)

@@ -119,13 +119,13 @@
     }
   ],
   "ivr_flow_test": {
-    "created_url": "http://127.0.0.1:5000/flows/7",
-    "flow_id": "7",
+    "created_url": "http://127.0.0.1:5001/flows/1552",
+    "flow_id": "1552",
     "validate_status": 400,
     "validate_body": "{\n  \"errors\": [\n    \"Flow has no valid start (root) node.\"\n  ],\n  \"valid\": false,\n  \"warnings\": []\n}\n"
   },
   "cross_tenant_test": {
-    "merchant_b_access_merchant_a_flow_url": "http://127.0.0.1:5000/api/debug/live-registry",
+    "merchant_b_access_merchant_a_flow_url": "http://127.0.0.1:5001/api/debug/live-registry",
     "merchant_b_access_merchant_a_flow_blocked": true,
     "debug_endpoint_status": 404
   },
@@ -155,6 +155,6 @@
   ],
   "http_500s": [],
   "failed_requests": [],
-  "invalid_login_url": "http://127.0.0.1:5000/auth/login",
+  "invalid_login_url": "http://127.0.0.1:5001/auth/login",
   "invalid_login_blocked": true
 }

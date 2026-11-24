@@ -1,6 +1,7 @@
 """Tests for V2 SIP/RTP networking: advertised vs bind IPs, transport check, RTP port pool, source validation, mock UDP SIP."""
 from __future__ import annotations
 
+import os
 import socket
 import struct
 import threading
@@ -139,3 +140,105 @@ class TestV2SipNetworking:
             ivr.rtp.close()
             _rtp_port_allocator.release(ivr.rtp_port)
             srv.close()
+
+    def test_multiprocess_rtp_port_allocation_exclusivity(self):
+        """Two separate OS processes allocating concurrently from RTP_PORT_MIN..MAX get distinct even ports."""
+        import subprocess, sys
+        code = (
+            "import os, sys; "
+            "os.environ['RTP_PORT_MIN']='19300'; os.environ['RTP_PORT_MAX']='19310'; "
+            "from call_engine.ivr_engine import RtpPortAllocator; "
+            "a = RtpPortAllocator(); s, p = a.allocate_socket('127.0.0.1'); "
+            "print(p, flush=True); sys.stdin.readline(); s.close(); a.release(p)"
+        )
+        env = dict(os.environ)
+        env["PYTHONPATH"] = "."
+        p1 = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        try:
+            port1 = int(p1.stdout.readline().strip())
+            p2 = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            try:
+                port2 = int(p2.stdout.readline().strip())
+                assert port1 % 2 == 0 and port2 % 2 == 0
+                assert 19300 <= port1 <= 19310 and 19300 <= port2 <= 19310
+                assert port1 != port2
+            finally:
+                p2.communicate("quit\n", timeout=5)
+        finally:
+            p1.communicate("quit\n", timeout=5)
+
+    def test_sip_cancel_while_ringing_and_port_cleanup(self):
+        """Setting cancel_requested during 180 Ringing sends CANCEL, returns canceled, and frees RTP port."""
+        srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        srv.bind(("127.0.0.1", 0))
+        srv_port = srv.getsockname()[1]
+        srv.settimeout(4.0)
+        seen_methods = []
+
+        def mock_pbx():
+            # 1. REGISTER -> 200 OK
+            d, addr = srv.recvfrom(4096)
+            t = d.decode()
+            seen_methods.append(t.split()[0])
+            via = [l for l in t.splitlines() if l.lower().startswith("via:")][0]
+            cid = [l for l in t.splitlines() if l.lower().startswith("call-id:")][0]
+            cseq = [l for l in t.splitlines() if l.lower().startswith("cseq:")][0]
+            srv.sendto(f"SIP/2.0 200 OK\r\n{via}\r\n{cid}\r\n{cseq}\r\nContent-Length: 0\r\n\r\n".encode(), addr)
+            # 2. INVITE -> 180 Ringing
+            d, addr = srv.recvfrom(4096)
+            t = d.decode()
+            seen_methods.append(t.split()[0])
+            via = [l for l in t.splitlines() if l.lower().startswith("via:")][0]
+            cid = [l for l in t.splitlines() if l.lower().startswith("call-id:")][0]
+            cseq = [l for l in t.splitlines() if l.lower().startswith("cseq:")][0]
+            srv.sendto(f"SIP/2.0 180 Ringing\r\n{via}\r\n{cid}\r\n{cseq}\r\nTo: <sip:01711223344@127.0.0.1>;tag=t1\r\nContent-Length: 0\r\n\r\n".encode(), addr)
+            # 3. Expect CANCEL (read until CANCEL or timeout)
+            try:
+                d, addr = srv.recvfrom(4096)
+                seen_methods.append(d.decode().split()[0])
+            except OSError:
+                pass
+
+        t = threading.Thread(target=mock_pbx, daemon=True)
+        t.start()
+        ivr = IvrCall(
+            target="01711223344",
+            flow=self._flow(),
+            sip=self._sip_cfg(SIP_PORT=str(srv_port)),
+            on_event=lambda e: ivr.request_cancel() if e.type == "ringing" else None,
+            invite_timeout=4,
+        )
+        try:
+            res = ivr.run()
+            t.join(timeout=3)
+            assert res.status == "canceled", f"error={res.error} events={seen_methods}"
+            assert "CANCEL" in seen_methods
+            assert ivr.rtp_port not in _rtp_port_allocator._in_use
+        finally:
+            srv.close()
+
+    def test_bridge_leg_uses_advertised_ip_and_releases_port_on_failure(self, monkeypatch):
+        monkeypatch.setenv("RTP_PORT_MIN", "19320")
+        monkeypatch.setenv("RTP_PORT_MAX", "19330")
+        ivr = IvrCall(
+            target="01711223344",
+            flow=self._flow(),
+            sip=self._sip_cfg(SIP_PORT="59999", SIP_ADVERTISED_IP="203.0.113.20", RTP_ADVERTISED_IP="203.0.113.21"),
+            on_event=lambda e: None,
+        )
+        sent_msgs = []
+        monkeypatch.setattr(ivr, "_send", lambda msg, addr=None: sent_msgs.append(msg))
+        monkeypatch.setattr(ivr, "_recv_until", lambda pred, timeout: None)
+        try:
+            with pytest.raises(RuntimeError, match="agent call timed out"):
+                ivr._invite_bridge_leg("1001", timeout=0.2)
+            assert len(sent_msgs) == 1
+            assert "Via: SIP/2.0/UDP 203.0.113.20:" in sent_msgs[0]
+            assert "c=IN IP4 203.0.113.21" in sent_msgs[0]
+            # Only the main call's rtp_port should remain in _in_use within 19320..19330; bridge port was released
+            range_ports = {p for p in _rtp_port_allocator._in_use if 19320 <= p <= 19330}
+            assert range_ports == {ivr.rtp_port}
+        finally:
+            ivr.sock.close()
+            ivr.rtp.close()
+            _rtp_port_allocator.release(ivr.rtp_port)

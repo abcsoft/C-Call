@@ -1,0 +1,37 @@
+{
+  "admin_crud": {
+    "tenant_created_visible": true,
+    "wallet_adjusted": true,
+    "provider_created_visible": true
+  },
+  "merchant_ivr_crud": {
+    "flow_id": "1586",
+    "validate_status": 200,
+    "validate_json": {
+      "errors": [],
+      "valid": true,
+      "warnings": []
+    }
+  },
+  "merchant_api_order_crud": {
+    "api_key_generated": true,
+    "api_create_status": 200,
+    "api_create_body": {
+      "call_id": null,
+      "internal_id": 8885,
+      "message": "Confirmation call queued successfully.",
+      "order_id": "QA-CRUD-1795554344",
+      "status": "CALL_QUEUED",
+      "success": true
+    },
+    "order_visible_in_ui": true
+  },
+  "merchant_retry_crud": {},
+  "cross_tenant_crud": {
+    "merchant_b_sees_merchant_a_order": false
+  },
+  "console_errors": [
+    "[merchant_crud] Executing inline event handler violates the following Content Security Policy directive 'script-src 'self' 'nonce-4Gax_0FMy7QniRI79GOKAw' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com https://cdn.tailwindcss.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-...'), or a nonce ('nonce-...') is required to enable inline execution. Note that hashes do not apply to event handlers, style attributes and javascript: navigations unless the 'unsafe-hashes' keyword is present. The action has been blocked."
+  ],
+  "http_500s": []
+}

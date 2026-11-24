@@ -19,6 +19,11 @@ PORT = int(os.environ.get("SIP_PORT", "5060"))
 USER = os.environ["SIP_USER"]
 PASSWORD = os.environ["SIP_PASSWORD"]
 DOMAIN = SERVER
+SIP_TRANSPORT = os.environ.get("SIP_TRANSPORT", "udp").strip().lower()
+if SIP_TRANSPORT != "udp":
+    raise ValueError(f"Unsupported SIP transport '{SIP_TRANSPORT}'; supported: ['udp']")
+SIP_BIND_IP = os.environ.get("SIP_BIND_IP", "0.0.0.0").strip()
+RTP_BIND_IP = os.environ.get("RTP_BIND_IP", SIP_BIND_IP).strip()
 TARGET = sys.argv[1]
 AUDIO_PATH = sys.argv[2]
 SEND_SECONDS = int(sys.argv[3]) if len(sys.argv) > 3 else 10
@@ -93,18 +98,25 @@ def local_ip():
 
 
 LOCAL_IP = local_ip()
+ADVERTISED_IP = (
+    os.environ.get("SIP_ADVERTISED_IP")
+    or os.environ.get("PUBLIC_IP")
+    or os.environ.get("EC2_PUBLIC_IP")
+    or LOCAL_IP
+).strip()
+RTP_ADVERTISED_IP = (os.environ.get("RTP_ADVERTISED_IP") or ADVERTISED_IP).strip()
+
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(("0.0.0.0", 0))
+sock.bind((SIP_BIND_IP, 0))
 LOCAL_PORT = sock.getsockname()[1]
 sock.settimeout(1)
 
-rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-rtp.bind(("0.0.0.0", 0))
-rtp_port = rtp.getsockname()[1]
+from call_engine.ivr_engine import _rtp_port_allocator
+rtp, rtp_port = _rtp_port_allocator.allocate_socket(RTP_BIND_IP, socket.AF_INET)
 
-call_id = f"call-{token(16)}@{LOCAL_IP}"
+call_id = f"call-{token(16)}@{ADVERTISED_IP}"
 from_tag = token(8)
-reg_call_id = f"reg-{token(16)}@{LOCAL_IP}"
+reg_call_id = f"reg-{token(16)}@{ADVERTISED_IP}"
 reg_tag = token(8)
 
 
@@ -133,22 +145,26 @@ def recv_until(pred, timeout):
 def register():
     def msg(cseq, auth=None):
         r = (f"REGISTER sip:{DOMAIN} SIP/2.0\r\n"
-             f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
+             f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
              "Max-Forwards: 70\r\n"
              f"From: <sip:{USER}@{DOMAIN}>;tag={reg_tag}\r\n"
              f"To: <sip:{USER}@{DOMAIN}>\r\n"
              f"Call-ID: {reg_call_id}\r\nCSeq: {cseq} REGISTER\r\n"
-             f"Contact: <sip:{USER}@{LOCAL_IP}:{LOCAL_PORT}>\r\nExpires: 300\r\n"
+             f"Contact: <sip:{USER}@{ADVERTISED_IP}:{LOCAL_PORT}>\r\nExpires: 300\r\n"
              "User-Agent: Probe/1.0\r\n")
         if auth:
             r += f"Authorization: {auth}\r\n"
         return r + "Content-Length: 0\r\n\r\n"
+    def is_reg(r, cn):
+        return (status(r).startswith(("SIP/2.0 2", "SIP/2.0 4"))
+                and re.search(rf"^Call-ID:\s*{re.escape(reg_call_id)}\b", r, re.I | re.M) is not None
+                and re.search(rf"^CSeq:\s*{cn}\s+REGISTER\b", r, re.I | re.M) is not None)
     send(msg(1))
-    rep = recv_until(lambda r: status(r).startswith(("SIP/2.0 2", "SIP/2.0 4")), 5)
+    rep = recv_until(lambda r: is_reg(r, 1), 5)
     if rep and status(rep).startswith("SIP/2.0 401"):
         p, _ = parse_challenge(rep)
         send(msg(2, digest(p, "REGISTER", f"sip:{DOMAIN}")))
-        rep = recv_until(lambda r: status(r).startswith("SIP/2.0 200"), 5)
+        rep = recv_until(lambda r: is_reg(r, 2), 5)
     if not rep or not status(rep).startswith("SIP/2.0 200"):
         raise RuntimeError("REGISTER failed")
     print("Registered OK")
@@ -157,18 +173,18 @@ def register():
 def invite(cseq, auth_header=None, auth=None):
     branch = f"z9hG4bK{token()}"
     sdp = ("v=0\r\n"
-           f"o=- {int(time.time())} {int(time.time())} IN IP4 {LOCAL_IP}\r\n"
-           f"s=Probe\r\nc=IN IP4 {LOCAL_IP}\r\nt=0 0\r\n"
+           f"o=- {int(time.time())} {int(time.time())} IN IP4 {RTP_ADVERTISED_IP}\r\n"
+           f"s=Probe\r\nc=IN IP4 {RTP_ADVERTISED_IP}\r\nt=0 0\r\n"
            f"m=audio {rtp_port} RTP/AVP 0 8 101\r\n"
            "a=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n"
            "a=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\n")
     m = (f"INVITE sip:{TARGET}@{DOMAIN} SIP/2.0\r\n"
-         f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
+         f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
          "Max-Forwards: 70\r\n"
          f'From: "Probe" <sip:{USER}@{DOMAIN}>;tag={from_tag}\r\n'
          f"To: <sip:{TARGET}@{DOMAIN}>\r\nCall-ID: {call_id}\r\n"
          f"CSeq: {cseq} INVITE\r\n"
-         f"Contact: <sip:{USER}@{LOCAL_IP}:{LOCAL_PORT}>\r\n"
+         f"Contact: <sip:{USER}@{ADVERTISED_IP}:{LOCAL_PORT}>\r\n"
          "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO\r\n"
          "User-Agent: Probe/1.0\r\nContent-Type: application/sdp\r\n")
     if auth:
@@ -180,7 +196,7 @@ def invite(cseq, auth_header=None, auth=None):
 
 def ack(cseq, to_h, branch, ruri):
     send(f"ACK {ruri} SIP/2.0\r\n"
-         f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
+         f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch={branch}\r\n"
          "Max-Forwards: 70\r\n"
          f'From: "Probe" <sip:{USER}@{DOMAIN}>;tag={from_tag}\r\n'
          f"To: {to_h}\r\nCall-ID: {call_id}\r\nCSeq: {cseq} ACK\r\nContent-Length: 0\r\n\r\n")
@@ -188,13 +204,13 @@ def ack(cseq, to_h, branch, ruri):
 
 def bye(cseq, to_h, ruri):
     send(f"BYE {ruri} SIP/2.0\r\n"
-         f"Via: SIP/2.0/UDP {LOCAL_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
+         f"Via: SIP/2.0/UDP {ADVERTISED_IP}:{LOCAL_PORT};rport;branch=z9hG4bK{token()}\r\n"
          "Max-Forwards: 70\r\n"
          f'From: "Probe" <sip:{USER}@{DOMAIN}>;tag={from_tag}\r\n'
          f"To: {to_h}\r\nCall-ID: {call_id}\r\nCSeq: {cseq} BYE\r\nContent-Length: 0\r\n\r\n")
 
 
-print(f"Probe calling {TARGET} from {LOCAL_IP}:{LOCAL_PORT}, rtp_port={rtp_port}")
+print(f"Probe calling {TARGET} from {ADVERTISED_IP}:{LOCAL_PORT} (bind={SIP_BIND_IP}), rtp_port={rtp_port}")
 register()
 cseq = 1
 branch = invite(cseq)
@@ -202,7 +218,12 @@ final = None
 fb_ip = fb_port = None
 end = time.time() + 45
 while time.time() < end:
-    rep = recv_until(lambda r: status(r).startswith("SIP/2.0 "), max(0.1, end - time.time()))
+    rep = recv_until(
+        lambda r: status(r).startswith("SIP/2.0 ")
+        and re.search(rf"^Call-ID:\s*{re.escape(call_id)}\b", r, re.I | re.M) is not None
+        and re.search(rf"^CSeq:\s*{cseq}\s+INVITE\b", r, re.I | re.M) is not None,
+        max(0.1, end - time.time()),
+    )
     if not rep:
         break
     line = status(rep)
@@ -263,6 +284,8 @@ while time.monotonic() < deadline:
     for _ in range(8):
         try:
             d, src = rtp.recvfrom(2048)
+            if decoded and src[0] != decoded:
+                continue
             recv += 1
             recv_srcs[src] = recv_srcs.get(src, 0) + 1
         except OSError:
@@ -283,4 +306,5 @@ bye(cseq, to_h, ruri)
 recv_until(lambda r: status(r).startswith("SIP/2.0 200") and "BYE" in r, 3)
 sock.close()
 rtp.close()
+_rtp_port_allocator.release(rtp_port)
 print("Probe done.")

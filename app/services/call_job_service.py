@@ -100,6 +100,9 @@ def check_provider_channel_capacity(tenant_id: int) -> tuple[bool, int | None]:
     """Check if the tenant's assigned SIP provider has available concurrent channels.
     Returns (has_capacity, provider_id).
     """
+    from app.extensions import db_pool
+    if db_pool._pool is None:
+        return True, None
     row = db.query_one(
         """
         SELECT sp.id AS provider_id, COALESCE(sp.max_channels, 10) AS max_channels

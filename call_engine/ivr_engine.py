@@ -47,6 +47,8 @@ class RtpPortAllocator:
                     if port in self._in_use:
                         continue
                     sock = socket.socket(family, socket.SOCK_DGRAM)
+                    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                     try:
                         sock.bind((bind_ip, port))
                         sock.setblocking(False)
@@ -485,7 +487,8 @@ class IvrCall:
                 self._send(message, addr)
             reply = self._recv_until(
                 lambda r: _status(r).startswith("SIP/2.0 200")
-                and re.search(rf"^CSeq:\s*{cseq}\s+BYE\b", r, re.I | re.M),
+                and re.search(rf"^Call-ID:\s*{re.escape(self.call_id)}\b", r, re.I | re.M) is not None
+                and re.search(rf"^CSeq:\s*{cseq}\s+BYE\b", r, re.I | re.M) is not None,
                 1.5,
             )
             if reply:
@@ -818,6 +821,7 @@ class IvrCall:
                     agent.rtp.close()
                 except Exception:
                     pass
+                _rtp_port_allocator.release(agent.rtp_port)
 
     # --- RTP ---------------------------------------------------------------
 
@@ -1094,10 +1098,33 @@ class IvrCall:
             fallback_ip, fallback_port = None, None
             end = time.time() + self.invite_timeout
             while time.time() < end:
-                reply = self._recv_until(lambda r: _status(r).startswith("SIP/2.0 "),
-                                          max(0.1, end - time.time()))
+                if self.cancel_requested:
+                    cancel_msg = (
+                        f"CANCEL sip:{self.target}@{self.domain} SIP/2.0\r\n"
+                        f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch={branch}\r\n"
+                        "Max-Forwards: 70\r\n"
+                        f'From: "IVR" <sip:{self.user}@{self.domain}>;tag={self.from_tag}\r\n'
+                        f"To: <sip:{self.target}@{self.domain}>\r\n"
+                        f"Call-ID: {self.call_id}\r\n"
+                        f"CSeq: {cseq} CANCEL\r\n"
+                        "Content-Length: 0\r\n\r\n"
+                    )
+                    try:
+                        self._send(cancel_msg)
+                    except Exception:
+                        pass
+                    result.status = "canceled"
+                    result.sip_final_status = "canceled"
+                    self._emit("hangup", detail="canceled while ringing")
+                    return result
+                reply = self._recv_until(
+                    lambda r: _status(r).startswith("SIP/2.0 ")
+                    and re.search(rf"^Call-ID:\s*{re.escape(self.call_id)}\b", r, re.I | re.M) is not None
+                    and re.search(rf"^CSeq:\s*{cseq}\s+INVITE\b", r, re.I | re.M) is not None,
+                    min(0.5, max(0.1, end - time.time())),
+                )
                 if not reply:
-                    break
+                    continue
                 line = _status(reply)
                 if line.startswith(("SIP/2.0 100", "SIP/2.0 180", "SIP/2.0 183")):
                     ip, port = _parse_sdp_audio(reply)
@@ -1198,15 +1225,21 @@ class IvrCall:
             return result
         finally:
             result.total_seconds = int(time.monotonic() - started)
-            try:
-                self.sock.close()
-            except Exception:
-                pass
-            try:
-                self.rtp.close()
-            except Exception:
-                pass
-            _rtp_port_allocator.release(self.rtp_port)
+            self.close()
+
+    def close(self) -> None:
+        """Close SIP/RTP sockets and release any allocated RTP port."""
+        for sock_attr in ("sock", "rtp"):
+            s = getattr(self, sock_attr, None)
+            if s is not None:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        _rtp_port_allocator.release(getattr(self, "rtp_port", None))
+
+    def __del__(self) -> None:
+        self.close()
 
     def _finalize_recording(self) -> str:
         if not self.record or not self._recording:

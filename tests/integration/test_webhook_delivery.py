@@ -57,10 +57,15 @@ def test_webhook_signature_and_delivery_logging(app):
             actual_sig = sig_value.replace("sha256=", "")
             del payload["signature"]
             
-            # Re-generate HMAC and verify
+            # Re-generate HMAC using the tenant's persisted whsec_ secret (not predictable UUID)
+            from app.models.tenant import get_tenant_by_id
+            t_fresh = get_tenant_by_id(tenant["id"])
+            t_settings = t_fresh["settings"] if isinstance(t_fresh["settings"], dict) else json.loads(t_fresh["settings"] or "{}")
+            wh_secret = t_settings["webhook_secret"]
+            assert wh_secret.startswith("whsec_")
             recomputed_json = json.dumps(payload, sort_keys=True)
             expected_sig = hmac.new(
-                tenant_uuid.encode("utf-8"),
+                wh_secret.encode("utf-8"),
                 recomputed_json.encode("utf-8"),
                 hashlib.sha256
             ).hexdigest()
