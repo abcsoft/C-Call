@@ -27,7 +27,7 @@
                 Back to Flows
             </a>
             <form method="POST" action="{{ url_for('customer.flow_delete', flow_id=flow.id) }}"
-                  onsubmit="return confirm('Delete this entire flow, all nodes, and all keypress mappings? Order call records will remain but will lose flow configuration context.')">
+                  @submit="if (!confirm('Delete this entire flow, all nodes, and all keypress mappings? Order call records will remain but will lose flow configuration context.')) $event.preventDefault()">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" 
                         class="py-2.5 px-4 bg-rose-950/40 hover:bg-rose-950/60 text-rose-300 border border-rose-900/40 hover:border-rose-900/80 font-bold rounded-xl text-xs transition-colors flex items-center gap-1.5">
@@ -250,7 +250,7 @@
                                     Edit
                                 </button>
                                 <form method="POST" action="{{ url_for('customer.flow_delete_node', flow_id=flow.id, node_id=n.id) }}"
-                                      onsubmit="return confirm('Delete this node? All keypress transitions pointing to or starting from this node will be removed.')">
+                                      @submit="if (!confirm('Delete this node? All keypress transitions pointing to or starting from this node will be removed.')) $event.preventDefault()">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                     <button type="submit" 
                                             class="inline-flex items-center px-2.5 py-1 bg-rose-950/20 hover:bg-rose-950/40 text-rose-300 border border-rose-900/30 hover:border-rose-900/60 rounded-lg text-xs transition-colors">
