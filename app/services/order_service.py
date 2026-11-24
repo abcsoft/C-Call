@@ -1057,8 +1057,8 @@ def update_status_from_call(
             next_status = "CONFIRMED"
         elif dtmf_digit == "2":
             next_status = "CANCELLED"
-        elif dtmf_digit == "0":
-            # Human-agent transfer requested
+        elif dtmf_digit in ("3", "0"):
+            # Human-agent assistance requested (DTMF 3 or legacy 0)
             next_status = "UNREACHABLE"
             try:
                 from psycopg.types.json import Jsonb as _Jsonb

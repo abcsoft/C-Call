@@ -1,0 +1,160 @@
+{
+  "admin_pages": [
+    {
+      "route": "/admin/dashboard",
+      "status": 200,
+      "title": "Admin Dashboard \u2014 C-Call Console"
+    },
+    {
+      "route": "/admin/customers",
+      "status": 200,
+      "title": "Tenants \u2014 C-Call Admin"
+    },
+    {
+      "route": "/admin/numbers",
+      "status": 200,
+      "title": "SIP CLI Pool \u2014 C-Call Console"
+    },
+    {
+      "route": "/admin/providers",
+      "status": 200,
+      "title": "SIP Gateways \u2014 C-Call Console"
+    },
+    {
+      "route": "/admin/plans",
+      "status": 200,
+      "title": "Plans \u2014 Admin"
+    },
+    {
+      "route": "/admin/platform-tts",
+      "status": 200,
+      "title": "Platform TTS Credentials \u2014 Admin"
+    },
+    {
+      "route": "/admin/tts-usage",
+      "status": 200,
+      "title": "TTS Usage \u2014 Admin"
+    },
+    {
+      "route": "/admin/cdr",
+      "status": 200,
+      "title": "Platform CDR Logs \u2014 C-Call Console"
+    },
+    {
+      "route": "/admin/live-calls",
+      "status": 200,
+      "title": "Live Call Monitor \u2014 C-Call Console"
+    },
+    {
+      "route": "/admin/revenue",
+      "status": 200,
+      "title": "Revenue Reports \u2014 C-Call Console"
+    },
+    {
+      "route": "/admin/settings",
+      "status": 200,
+      "title": "System Settings \u2014 C-Call Console"
+    }
+  ],
+  "merchant_pages": [
+    {
+      "route": "/dashboard",
+      "status": 200,
+      "title": "Dashboard \u2014 C-Call IVR"
+    },
+    {
+      "route": "/orders",
+      "status": 200,
+      "title": "Orders Logs \u2014 C-Call IVR"
+    },
+    {
+      "route": "/flows",
+      "status": 200,
+      "title": "Interactive Voice Flows \u2014 C-Call IVR"
+    },
+    {
+      "route": "/cdr",
+      "status": 200,
+      "title": "Call Logs (CDR) \u2014 C-Call IVR"
+    },
+    {
+      "route": "/live-calls",
+      "status": 200,
+      "title": "Live Calls \u2014 C-Call IVR"
+    },
+    {
+      "route": "/retry",
+      "status": 200,
+      "title": "Retry & DND Rules \u2014 C-Call IVR"
+    },
+    {
+      "route": "/wallet",
+      "status": 200,
+      "title": "Prepaid Wallet \u2014 C-Call IVR"
+    },
+    {
+      "route": "/integration",
+      "status": 200,
+      "title": "API & Integrations \u2014 C-Call IVR"
+    },
+    {
+      "route": "/script",
+      "status": 200,
+      "title": "Voice Scripts \u2014 C-Call IVR"
+    },
+    {
+      "route": "/settings",
+      "status": 200,
+      "title": "SMS Fallback Settings \u2014 C-Call IVR"
+    },
+    {
+      "route": "/settings/team",
+      "status": 200,
+      "title": "Team Management \u2014 C-Call IVR"
+    },
+    {
+      "route": "/settings/subscription",
+      "status": 200,
+      "title": "Subscription & Billing \u2014 C-Call IVR"
+    }
+  ],
+  "ivr_flow_test": {
+    "created_url": "http://127.0.0.1:5000/flows/7",
+    "flow_id": "7",
+    "validate_status": 400,
+    "validate_body": "{\n  \"errors\": [\n    \"Flow has no valid start (root) node.\"\n  ],\n  \"valid\": false,\n  \"warnings\": []\n}\n"
+  },
+  "cross_tenant_test": {
+    "merchant_b_access_merchant_a_flow_url": "http://127.0.0.1:5000/api/debug/live-registry",
+    "merchant_b_access_merchant_a_flow_blocked": true,
+    "debug_endpoint_status": 404
+  },
+  "mobile_pages": [
+    {
+      "route": "/dashboard",
+      "status": 200,
+      "horizontal_overflow": false
+    },
+    {
+      "route": "/orders",
+      "status": 200,
+      "horizontal_overflow": false
+    },
+    {
+      "route": "/flows",
+      "status": 200,
+      "horizontal_overflow": false
+    }
+  ],
+  "console_errors": [
+    "[merchant_a] error: htmx:syntax:error",
+    "[merchant_a] error: htmx:syntax:error",
+    "[merchant_a] error: htmx:syntax:error",
+    "[merchant_a] error: Failed to load resource: the server responded with a status of 400 (BAD REQUEST)",
+    "[merchant_b] error: Failed to load resource: the server responded with a status of 404 (NOT FOUND)"
+  ],
+  "http_500s": [],
+  "failed_requests": [],
+  "invalid_login_url": "http://127.0.0.1:5000/auth/login",
+  "invalid_login_blocked": true
+}

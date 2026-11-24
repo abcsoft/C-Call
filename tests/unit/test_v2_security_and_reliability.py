@@ -230,7 +230,7 @@ class TestV2EcommerceAndSQLite:
             )
             with patch("app.services.order_service.deliver_async"), \
                  patch("app.services.billing_service.finalize_call_billing", return_value={"charge": Decimal("0"), "billable_seconds": 5, "wallet_transaction_id": None}):
-                update_status_from_call(oid, tid, "completed", "0", 5, call_id=cid)
+                update_status_from_call(oid, tid, "completed", "3", 5, call_id=cid)
 
             updated = db_conn.execute("SELECT order_status, metadata FROM orders WHERE id = %s", (oid,)).fetchone()
             meta = updated[1] if not isinstance(updated, dict) else updated["metadata"]

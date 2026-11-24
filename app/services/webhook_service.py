@@ -71,7 +71,7 @@ def build_payload(order: dict[str, Any]) -> dict[str, Any]:
         "FAILED": "order.failed"
     }
     event = event_map.get(order_status, "order.failed")
-    if dtmf_digit == "0":
+    if dtmf_digit in ("3", "0"):
         event = "order.agent_requested"
     
     confirmed_at = None

@@ -39,7 +39,7 @@ def load_user(user_id: str) -> User | None:
 
 
 @auth_bp.route("/register", methods=["GET", "POST"])
-@limiter.limit("5/minute")
+@limiter.limit("5/minute", methods=["POST"])
 def register():
     """Register a new merchant business tenant."""
     if current_user.is_authenticated:
@@ -67,7 +67,7 @@ def register():
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
-@limiter.limit("10/minute")
+@limiter.limit("10/minute", methods=["POST"])
 def login():
     """Sign in an existing user."""
     if current_user.is_authenticated:
