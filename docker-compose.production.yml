@@ -175,6 +175,13 @@ services:
       ENABLE_SCHEDULER: "false"
       ENABLE_CALL_WORKER: "true"
       ENABLE_CALL_MONITOR: "false"   # monitor runs in scheduler (replicas=1) only
+      SIP_TRANSPORT: ${SIP_TRANSPORT:-udp}
+      SIP_BIND_IP: ${SIP_BIND_IP:-0.0.0.0}
+      RTP_BIND_IP: ${RTP_BIND_IP:-0.0.0.0}
+      SIP_ADVERTISED_IP: ${SIP_ADVERTISED_IP:-}
+      RTP_ADVERTISED_IP: ${RTP_ADVERTISED_IP:-}
+      RTP_PORT_MIN: ${RTP_PORT_MIN:-10000}
+      RTP_PORT_MAX: ${RTP_PORT_MAX:-20000}
     deploy:
       replicas: 2   # Each instance leases different jobs via SKIP LOCKED
       resources:

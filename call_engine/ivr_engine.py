@@ -19,12 +19,58 @@ import random
 import re
 import socket
 import struct
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from call_engine.audio import RECORDINGS_DIR, ensure_dirs, ffmpeg_path, ulaw_path_for
+
+SUPPORTED_SIP_TRANSPORTS = frozenset({"udp"})
+
+
+class RtpPortAllocator:
+    """Concurrency-safe RTP UDP port allocator within [RTP_PORT_MIN, RTP_PORT_MAX]."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._in_use: set[int] = set()
+
+    def allocate_socket(self, bind_ip: str = "0.0.0.0", family: int = socket.AF_INET) -> tuple[socket.socket, int]:
+        port_min = int(os.environ.get("RTP_PORT_MIN", "0") or 0)
+        port_max = int(os.environ.get("RTP_PORT_MAX", "0") or 0)
+        if port_min > 0 and port_max >= port_min:
+            start = port_min if port_min % 2 == 0 else port_min + 1
+            with self._lock:
+                for port in range(start, port_max + 1, 2):
+                    if port in self._in_use:
+                        continue
+                    sock = socket.socket(family, socket.SOCK_DGRAM)
+                    try:
+                        sock.bind((bind_ip, port))
+                        sock.setblocking(False)
+                        self._in_use.add(port)
+                        return sock, port
+                    except OSError:
+                        sock.close()
+            raise RuntimeError(f"No available RTP ports in configured range {port_min}-{port_max}")
+
+        sock = socket.socket(family, socket.SOCK_DGRAM)
+        sock.bind((bind_ip, 0))
+        sock.setblocking(False)
+        port = sock.getsockname()[1]
+        with self._lock:
+            self._in_use.add(port)
+        return sock, port
+
+    def release(self, port: int | None) -> None:
+        if port:
+            with self._lock:
+                self._in_use.discard(port)
+
+
+_rtp_port_allocator = RtpPortAllocator()
 
 
 def nat64_to_ipv4(ip: str) -> str:
@@ -193,6 +239,11 @@ class IvrCall:
         self.user = sip["SIP_USER"]
         self.password = sip["SIP_PASSWORD"]
         self.domain = sip.get("SIP_DOMAIN", self.server)
+        self.transport = (sip.get("SIP_TRANSPORT") or os.environ.get("SIP_TRANSPORT", "udp")).strip().lower()
+        if self.transport not in SUPPORTED_SIP_TRANSPORTS:
+            raise ValueError(
+                f"Unsupported SIP transport '{self.transport}'; supported transports: {sorted(SUPPORTED_SIP_TRANSPORTS)}"
+            )
         self.max_call_seconds = int(
             max_call_seconds or os.environ.get("CALL_MAX_DURATION_SECONDS", "120")
         )
@@ -200,21 +251,33 @@ class IvrCall:
             invite_timeout or os.environ.get("SIP_PROCESS_TIMEOUT_SECONDS", "90")
         )
 
+        self.bind_ip = (sip.get("SIP_BIND_IP") or os.environ.get("SIP_BIND_IP", "0.0.0.0")).strip()
+        self.rtp_bind_ip = (sip.get("RTP_BIND_IP") or os.environ.get("RTP_BIND_IP", self.bind_ip)).strip()
         self.local_ip = self._local_ip()
+        self.advertised_ip = (
+            sip.get("SIP_ADVERTISED_IP")
+            or os.environ.get("SIP_ADVERTISED_IP")
+            or os.environ.get("PUBLIC_IP")
+            or os.environ.get("EC2_PUBLIC_IP")
+            or self.local_ip
+        ).strip()
+        self.rtp_advertised_ip = (
+            sip.get("RTP_ADVERTISED_IP")
+            or os.environ.get("RTP_ADVERTISED_IP")
+            or self.advertised_ip
+        ).strip()
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("0.0.0.0", 0))
+        self.sock.bind((self.bind_ip, 0))
         self.local_port = self.sock.getsockname()[1]
         self.sock.settimeout(1)
 
-        # Symmetric RTP: one socket for send + receive.
-        self.rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.rtp.bind(("0.0.0.0", 0))
-        self.rtp_port = self.rtp.getsockname()[1]
-        self.rtp.setblocking(False)
+        # Symmetric RTP: one socket for send + receive, allocated via concurrency-safe pool.
+        self.rtp, self.rtp_port = _rtp_port_allocator.allocate_socket(self.rtp_bind_ip, socket.AF_INET)
 
-        self.call_id = f"call-{_token(16)}@{self.local_ip}"
+        self.call_id = f"call-{_token(16)}@{self.advertised_ip}"
         self.from_tag = _token(8)
-        self.reg_call_id = f"reg-{_token(16)}@{self.local_ip}"
+        self.reg_call_id = f"reg-{_token(16)}@{self.advertised_ip}"
         self.reg_tag = _token(8)
 
         self._rtp_seq = random.randint(0, 65535)
@@ -320,27 +383,34 @@ class IvrCall:
         def message(cseq, auth=None):
             result = (
                 f"REGISTER sip:{self.domain} SIP/2.0\r\n"
-                f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
+                f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
                 "Max-Forwards: 70\r\n"
                 f"From: <sip:{self.user}@{self.domain}>;tag={self.reg_tag}\r\n"
                 f"To: <sip:{self.user}@{self.domain}>\r\n"
                 f"Call-ID: {self.reg_call_id}\r\n"
                 f"CSeq: {cseq} REGISTER\r\n"
-                f"Contact: <sip:{self.user}@{self.local_ip}:{self.local_port}>\r\n"
+                f"Contact: <sip:{self.user}@{self.advertised_ip}:{self.local_port}>\r\n"
                 "Expires: 300\r\nUser-Agent: IvrEngine/1.0\r\n"
             )
             if auth:
                 result += f"Authorization: {auth}\r\n"
             return result + "Content-Length: 0\r\n\r\n"
 
+        def _is_reg_reply(r: str, cseq_num: int) -> bool:
+            return (
+                _status(r).startswith(("SIP/2.0 2", "SIP/2.0 4"))
+                and re.search(rf"^Call-ID:\s*{re.escape(self.reg_call_id)}\b", r, re.I | re.M) is not None
+                and re.search(rf"^CSeq:\s*{cseq_num}\s+REGISTER\b", r, re.I | re.M) is not None
+            )
+
         self._send(message(1))
-        reply = self._recv_until(lambda r: _status(r).startswith(("SIP/2.0 2", "SIP/2.0 4")), 5)
+        reply = self._recv_until(lambda r: _is_reg_reply(r, 1), 5)
         if not reply:
             raise RuntimeError("REGISTER timed out")
         if _status(reply).startswith("SIP/2.0 401"):
             params, _ = _parse_challenge(reply)
             self._send(message(2, self._digest(params, "REGISTER", f"sip:{self.domain}")))
-            reply = self._recv_until(lambda r: _status(r).startswith(("SIP/2.0 2", "SIP/2.0 4")), 5)
+            reply = self._recv_until(lambda r: _is_reg_reply(r, 2), 5)
         if not reply or not _status(reply).startswith("SIP/2.0 200"):
             raise RuntimeError(f"REGISTER failed: {_status(reply) if reply else 'timeout'}")
         self._emit("registered")
@@ -350,9 +420,9 @@ class IvrCall:
         self._last_branch = branch
         sdp = (
             "v=0\r\n"
-            f"o=- {int(time.time())} {int(time.time())} IN IP4 {self.local_ip}\r\n"
+            f"o=- {int(time.time())} {int(time.time())} IN IP4 {self.rtp_advertised_ip}\r\n"
             "s=IvrEngine\r\n"
-            f"c=IN IP4 {self.local_ip}\r\n"
+            f"c=IN IP4 {self.rtp_advertised_ip}\r\n"
             "t=0 0\r\n"
             f"m=audio {self.rtp_port} RTP/AVP 0 8 101\r\n"
             "a=rtpmap:0 PCMU/8000\r\n"
@@ -363,13 +433,13 @@ class IvrCall:
         )
         message = (
             f"INVITE sip:{self.target}@{self.domain} SIP/2.0\r\n"
-            f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch={branch}\r\n"
+            f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch={branch}\r\n"
             "Max-Forwards: 70\r\n"
             f'From: "IVR" <sip:{self.user}@{self.domain}>;tag={self.from_tag}\r\n'
             f"To: <sip:{self.target}@{self.domain}>\r\n"
             f"Call-ID: {self.call_id}\r\n"
             f"CSeq: {cseq} INVITE\r\n"
-            f"Contact: <sip:{self.user}@{self.local_ip}:{self.local_port}>\r\n"
+            f"Contact: <sip:{self.user}@{self.advertised_ip}:{self.local_port}>\r\n"
             "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO, REFER, NOTIFY\r\n"
             "User-Agent: IvrEngine/1.0\r\nContent-Type: application/sdp\r\n"
         )
@@ -381,7 +451,7 @@ class IvrCall:
         request_uri = request_uri or f"sip:{self.target}@{self.domain}"
         self._send(
             f"ACK {request_uri} SIP/2.0\r\n"
-            f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch={branch}\r\n"
+            f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch={branch}\r\n"
             "Max-Forwards: 70\r\n"
             f'From: "IVR" <sip:{self.user}@{self.domain}>;tag={self.from_tag}\r\n'
             f"To: {to_header}\r\n"
@@ -393,7 +463,7 @@ class IvrCall:
         request_uri = request_uri or f"sip:{self.target}@{self.domain}"
         message = (
             f"BYE {request_uri} SIP/2.0\r\n"
-            f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
+            f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
             "Max-Forwards: 70\r\n"
             f'From: "IVR" <sip:{self.user}@{self.domain}>;tag={self.from_tag}\r\n'
             f"To: {to_header}\r\n"
@@ -492,12 +562,9 @@ class IvrCall:
         if not target:
             raise RuntimeError("transfer target is missing")
 
-        rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        rtp.bind(("0.0.0.0", 0))
-        rtp_port = rtp.getsockname()[1]
-        rtp.setblocking(False)
+        rtp, rtp_port = _rtp_port_allocator.allocate_socket(self.rtp_bind_ip, socket.AF_INET)
 
-        call_id = f"bridge-{_token(16)}@{self.local_ip}"
+        call_id = f"bridge-{_token(16)}@{self.advertised_ip}"
         from_tag = _token(8)
 
         def build_invite(cseq: int, auth_header: str | None = None, auth: str | None = None,
@@ -505,9 +572,9 @@ class IvrCall:
             branch = branch or f"z9hG4bK{_token()}"
             sdp = (
                 "v=0\r\n"
-                f"o=- {int(time.time())} {int(time.time())} IN IP4 {self.local_ip}\r\n"
+                f"o=- {int(time.time())} {int(time.time())} IN IP4 {self.rtp_advertised_ip}\r\n"
                 "s=IvrBridge\r\n"
-                f"c=IN IP4 {self.local_ip}\r\n"
+                f"c=IN IP4 {self.rtp_advertised_ip}\r\n"
                 "t=0 0\r\n"
                 f"m=audio {rtp_port} RTP/AVP 0 8 101\r\n"
                 "a=rtpmap:0 PCMU/8000\r\n"
@@ -518,13 +585,13 @@ class IvrCall:
             )
             msg = (
                 f"INVITE sip:{target}@{self.domain} SIP/2.0\r\n"
-                f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch={branch}\r\n"
+                f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch={branch}\r\n"
                 "Max-Forwards: 70\r\n"
                 f'From: "IVR Bridge" <sip:{self.user}@{self.domain}>;tag={from_tag}\r\n'
                 f"To: <sip:{target}@{self.domain}>\r\n"
                 f"Call-ID: {call_id}\r\n"
                 f"CSeq: {cseq} INVITE\r\n"
-                f"Contact: <sip:{self.user}@{self.local_ip}:{self.local_port}>\r\n"
+                f"Contact: <sip:{self.user}@{self.advertised_ip}:{self.local_port}>\r\n"
                 "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, INFO\r\n"
                 "User-Agent: IvrEngine/1.0\r\n"
                 "Content-Type: application/sdp\r\n"
@@ -580,11 +647,13 @@ class IvrCall:
 
         if not final_reply:
             rtp.close()
+            _rtp_port_allocator.release(rtp_port)
             raise RuntimeError("agent call timed out")
 
         final_status = _status(final_reply)
         if not final_status.startswith("SIP/2.0 200"):
             rtp.close()
+            _rtp_port_allocator.release(rtp_port)
             raise RuntimeError(f"agent call failed: {final_status}")
 
         to_header = _header(final_reply, "To")
@@ -597,6 +666,7 @@ class IvrCall:
             remote_ip = nat64_to_ipv4(remote_ip)
         if not remote_ip or not remote_port:
             rtp.close()
+            _rtp_port_allocator.release(rtp_port)
             raise RuntimeError("agent answered without audio SDP")
         if ":" in remote_ip:
             try:
@@ -625,7 +695,7 @@ class IvrCall:
         leg.cseq += 1
         message = (
             f"BYE {leg.contact_uri} SIP/2.0\r\n"
-            f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
+            f"Via: SIP/2.0/UDP {self.advertised_ip}:{self.local_port};rport;branch=z9hG4bK{_token()}\r\n"
             "Max-Forwards: 70\r\n"
             f'From: "IVR Bridge" <sip:{self.user}@{self.domain}>;tag={leg.from_tag}\r\n'
             f"To: {leg.to_header}\r\n"
@@ -792,13 +862,15 @@ class IvrCall:
             self.sock.settimeout(old_timeout)
 
     def _drain_rtp(self, remote_ip: str, remote_port: int) -> str | None:
-        """Read pending RTP packets. Record audio, decode DTMF digit if found."""
+        """Read pending RTP packets. Validate source IP, record audio, decode DTMF digit if found."""
         digit = None
         for _ in range(64):
             try:
                 data, _addr = self.rtp.recvfrom(2048)
             except (BlockingIOError, socket.error):
                 break
+            if remote_ip and _addr and _addr[0] != remote_ip:
+                continue
             if len(data) < 12:
                 continue
             pt = data[1] & 0x7F
@@ -1134,6 +1206,7 @@ class IvrCall:
                 self.rtp.close()
             except Exception:
                 pass
+            _rtp_port_allocator.release(self.rtp_port)
 
     def _finalize_recording(self) -> str:
         if not self.record or not self._recording:

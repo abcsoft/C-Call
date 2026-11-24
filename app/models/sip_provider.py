@@ -159,17 +159,25 @@ def test_connection(provider_id: int) -> dict[str, Any]:
     # SIP server replies to whatever port the Via header claims (no ;rport
     # param here) — so the response lands on a port nothing is listening
     # on, and recvfrom() times out even though the server answered fine.
+    advertised_ip = (
+        os.environ.get("SIP_ADVERTISED_IP")
+        or os.environ.get("PUBLIC_IP")
+        or os.environ.get("EC2_PUBLIC_IP")
+        or local_ip
+    ).strip()
+    bind_ip = os.environ.get("SIP_BIND_IP", "0.0.0.0").strip()
+    local_ip = advertised_ip
     local_port = None
     for _ in range(5):
         candidate = random.randint(10000, 20000)
         try:
-            sock.bind(("0.0.0.0", candidate))
+            sock.bind((bind_ip, candidate))
             local_port = candidate
             break
         except OSError:
             continue
     if local_port is None:
-        sock.bind(("0.0.0.0", 0))
+        sock.bind((bind_ip, 0))
         local_port = sock.getsockname()[1]
 
     # Standard SIP OPTIONS request format
