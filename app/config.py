@@ -178,4 +178,16 @@ if _flask_env == "production":
         raise RuntimeError(
             "DEBUG=True is not permitted in FLASK_ENV=production."
         )
+    # SIP/Tenant secret encryption key must be explicitly configured in production
+    _enc_key = getattr(_active_config, "SIP_PASSWORD_ENCRYPTION_KEY", "") or ""
+    if not _enc_key:
+        raise RuntimeError(
+            "SIP_PASSWORD_ENCRYPTION_KEY must be set in FLASK_ENV=production. "
+            "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+        )
+    try:
+        from cryptography.fernet import Fernet
+        Fernet(_enc_key.encode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError("SIP_PASSWORD_ENCRYPTION_KEY is not a valid Fernet key.") from exc
 

@@ -106,14 +106,17 @@ def _lease_job(conn, worker_id: str, lease_seconds: int = 120) -> dict | None:
                attempts         = attempts + 1,
                updated_at       = now()
         WHERE  id = (
-            SELECT id FROM call_jobs
-            WHERE  (
-                       (job_status IN ('queued', 'retry_wait') AND available_at <= %s)
-                    OR (job_status = 'leased' AND lease_expires_at < %s)
+            SELECT cj.id FROM call_jobs cj
+            JOIN tenants t ON t.id = cj.tenant_id
+            WHERE  COALESCE(cj.campaign_paused, false) = false
+              AND  COALESCE(t.is_dialing_paused, false) = false
+              AND  (
+                       (cj.job_status IN ('queued', 'retry_wait') AND cj.available_at <= %s)
+                    OR (cj.job_status = 'leased' AND cj.lease_expires_at < %s)
                    )
-            ORDER  BY available_at ASC, priority DESC, id ASC
+            ORDER  BY cj.available_at ASC, cj.priority DESC, cj.id ASC
             LIMIT  1
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF cj SKIP LOCKED
         )
         RETURNING id, order_id, tenant_id, attempt_no, attempts, max_attempts,
                   caller_id, audio_path, priority, created_at,
@@ -168,6 +171,18 @@ def _dispatch_job(app, job: dict) -> None:
 
     _raise_if_fault("after_lease")
 
+    from app.services.call_job_service import check_provider_channel_capacity, update_call_state
+    has_cap, provider_id = check_provider_channel_capacity(tenant_id)
+    if not has_cap:
+        with db.transaction() as conn:
+            mark_retry_wait(conn, job_id, attempts, max_attempts, "channel_limit", "Provider channel limit reached")
+        return
+
+    with db.transaction() as conn:
+        update_call_state(conn, job_id, "preparing")
+        if provider_id is not None:
+            conn.execute("UPDATE call_jobs SET provider_id = %s WHERE id = %s", (provider_id, job_id))
+
     result = dispatch_order_call(order_id, tenant_id, attempt_no)
 
     if result.accepted and result.call_id:
@@ -176,6 +191,7 @@ def _dispatch_job(app, job: dict) -> None:
         _raise_if_fault("before_job_complete")     # before mark_dispatched writes call_id
         with db.transaction() as conn:
             mark_dispatched(conn, job_id, result.call_id, result.order_call_attempt_id)
+            update_call_state(conn, job_id, "dialing")
         CALL_JOB_DISPATCH_SUCCESS.inc()
         logger.info(
             "call_worker: job=%s order=%s attempt=%s call_id=%s — completed",

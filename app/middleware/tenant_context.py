@@ -96,30 +96,66 @@ def register_tenant_context(app: Flask) -> None:
         if api_key:
             key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
             row = db.query_one(
-                "SELECT tenant_id FROM api_keys WHERE key_hash = %s AND is_active = true",
+                """
+                SELECT id, tenant_id, scopes, daily_quota, requests_today, quota_reset_date,
+                       expires_at, revoked_at
+                FROM api_keys
+                WHERE key_hash = %s AND is_active = true AND revoked_at IS NULL
+                  AND (expires_at IS NULL OR expires_at > now())
+                """,
                 (key_hash,)
             )
             if not row:
-                g.api_key_error = "UNAUTHORIZED"  # key missing/invalid/inactive
+                g.api_key_error = "UNAUTHORIZED"  # key missing/invalid/inactive/revoked/expired
             else:
+                g.api_key_id = row["id"]
+                g.api_key_scopes = row.get("scopes") or ["orders:read", "orders:write"]
                 tenant_id = int(row["tenant_id"])
                 tenant = db.query_one("SELECT status FROM tenants WHERE id = %s", (tenant_id,))
                 if not tenant:
                     g.api_key_error = "TENANT_INACTIVE"
                 else:
                     status = tenant["status"]
-                    # grace_period tenants retain API access; past_due/suspended/cancelled/expired → 402/403
-                    # (require_api_key + subscription_access_service enforce the exact code per endpoint)
-                    if status in ("suspended", "cancelled"):
+                    # Check per-key daily quota
+                    import datetime as _dt
+                    today = _dt.date.today()
+                    reset_date = row.get("quota_reset_date")
+                    req_today = int(row.get("requests_today") or 0)
+                    daily_quota = int(row.get("daily_quota") or 10000)
+                    if reset_date and reset_date < today:
+                        req_today = 0
+                    if daily_quota > 0 and req_today >= daily_quota:
+                        g.api_key_error = "API_KEY_QUOTA_EXCEEDED"
+                        g.tenant_id = tenant_id
+                    # grace_period tenants retain API access; past_due/suspended/cancelled/expired -> 402/403
+                    elif status in ("suspended", "cancelled"):
                         g.api_key_error = "TENANT_INACTIVE"
                     elif status in ("past_due", "expired"):
                         g.api_key_error = "SUBSCRIPTION_REQUIRED"
                         g.tenant_id = tenant_id  # still set so subscription check can return 402
-                        db.execute("UPDATE api_keys SET last_used_at = now() WHERE key_hash = %s", (key_hash,))
+                        db.execute(
+                            """
+                            UPDATE api_keys
+                            SET last_used_at = now(),
+                                requests_today = CASE WHEN quota_reset_date < CURRENT_DATE THEN 1 ELSE requests_today + 1 END,
+                                quota_reset_date = CURRENT_DATE
+                            WHERE id = %s
+                            """,
+                            (row["id"],),
+                        )
                     else:
                         # active, trial, grace_period
                         g.tenant_id = tenant_id
-                        db.execute("UPDATE api_keys SET last_used_at = now() WHERE key_hash = %s", (key_hash,))
+                        db.execute(
+                            """
+                            UPDATE api_keys
+                            SET last_used_at = now(),
+                                requests_today = CASE WHEN quota_reset_date < CURRENT_DATE THEN 1 ELSE requests_today + 1 END,
+                                quota_reset_date = CURRENT_DATE
+                            WHERE id = %s
+                            """,
+                            (row["id"],),
+                        )
 
         # 2. Resolve from Session (Web panel requests)
         elif current_user and current_user.is_authenticated:

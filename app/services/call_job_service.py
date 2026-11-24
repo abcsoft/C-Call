@@ -35,6 +35,108 @@ DISPATCH_BACKOFF_SECONDS: list[int] = [15, 60, 300, 900]
 
 DEFAULT_MAX_DISPATCH_ATTEMPTS = 5
 
+VALID_CALL_STATES = frozenset({
+    "queued", "preparing", "dialing", "ringing", "answered",
+    "completed", "failed", "canceled", "busy", "no_answer",
+})
+
+
+def update_call_state(conn, job_id: int, call_state: str) -> None:
+    """Update call_jobs.call_state with validation."""
+    if call_state not in VALID_CALL_STATES:
+        raise ValueError(f"Invalid call_state: {call_state}")
+    conn.execute(
+        "UPDATE call_jobs SET call_state = %s, updated_at = now() WHERE id = %s",
+        (call_state, job_id),
+    )
+
+
+def pause_tenant_campaigns(tenant_id: int) -> int:
+    """Pause all queued/retry_wait jobs and tenant dialing."""
+    with db.transaction() as conn:
+        conn.execute("UPDATE tenants SET is_dialing_paused = true, updated_at = now() WHERE id = %s", (tenant_id,))
+        res = conn.execute(
+            """UPDATE call_jobs
+               SET campaign_paused = true, updated_at = now()
+               WHERE tenant_id = %s AND job_status IN ('queued', 'retry_wait')""",
+            (tenant_id,),
+        )
+        return res.rowcount
+
+
+def resume_tenant_campaigns(tenant_id: int) -> int:
+    """Resume all paused jobs and tenant dialing."""
+    with db.transaction() as conn:
+        conn.execute("UPDATE tenants SET is_dialing_paused = false, updated_at = now() WHERE id = %s", (tenant_id,))
+        res = conn.execute(
+            """UPDATE call_jobs
+               SET campaign_paused = false, updated_at = now()
+               WHERE tenant_id = %s AND job_status IN ('queued', 'retry_wait')""",
+            (tenant_id,),
+        )
+        return res.rowcount
+
+
+def cancel_job(job_id: int, tenant_id: int) -> bool:
+    """Cancel a specific non-terminal call job for a tenant."""
+    res_row = db.query_one(
+        """UPDATE call_jobs
+           SET job_status = 'cancelled',
+               call_state = 'canceled',
+               completed_at = now(),
+               updated_at = now(),
+               leased_by = NULL,
+               leased_at = NULL,
+               lease_expires_at = NULL
+           WHERE id = %s AND tenant_id = %s
+             AND job_status NOT IN ('completed', 'failed', 'cancelled')
+           RETURNING id""",
+        (job_id, tenant_id),
+    )
+    return res_row is not None
+
+
+def check_provider_channel_capacity(tenant_id: int) -> tuple[bool, int | None]:
+    """Check if the tenant's assigned SIP provider has available concurrent channels.
+    Returns (has_capacity, provider_id).
+    """
+    row = db.query_one(
+        """
+        SELECT sp.id AS provider_id, COALESCE(sp.max_channels, 10) AS max_channels
+        FROM customer_number_assignments cna
+        JOIN phone_numbers pn ON pn.id = cna.phone_number_id
+        JOIN sip_providers sp ON sp.id = pn.provider_id
+        WHERE cna.tenant_id = %s AND sp.status = 'active'
+        LIMIT 1
+        """,
+        (tenant_id,),
+    )
+    if not row:
+        default_cap = int(os.environ.get("CALL_MAX_PROVIDER_CHANNELS", "10"))
+        active = db.query_one(
+            "SELECT COUNT(*) AS n FROM calls WHERE status IN ('queued', 'preparing', 'dialing', 'ringing', 'answered')"
+        )
+        return (int(active["n"]) if active else 0) < default_cap, None
+
+    provider_id = int(row["provider_id"])
+    max_ch = max(1, int(row["max_channels"]))
+    active = db.query_one(
+        """SELECT COUNT(*) AS n FROM calls
+           WHERE sip_gateway_id = %s
+             AND status IN ('queued', 'preparing', 'dialing', 'ringing', 'answered')""",
+        (provider_id,),
+    )
+    return (int(active["n"]) if active else 0) < max_ch, provider_id
+
+
+def reconcile_job_call_state(call_id: int, call_status: str) -> None:
+    """Reconcile call_jobs.call_state from final calls/CDR status."""
+    mapped = call_status if call_status in VALID_CALL_STATES else "failed"
+    db.execute(
+        "UPDATE call_jobs SET call_state = %s, updated_at = now() WHERE call_id = %s",
+        (mapped, call_id),
+    )
+
 
 @dataclass
 class DispatchResult:

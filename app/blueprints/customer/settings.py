@@ -87,7 +87,13 @@ def integration_panel():
         return redirect(url_for("customer.integration_panel"))
 
     api_keys = db.query(
-        "SELECT id, name, key_prefix, created_at, last_used_at, is_active FROM api_keys WHERE tenant_id = %s ORDER BY created_at DESC",
+        """
+        SELECT id, name, key_prefix, scopes, daily_quota, requests_today,
+               expires_at, revoked_at, created_at, last_used_at, is_active
+        FROM api_keys
+        WHERE tenant_id = %s
+        ORDER BY created_at DESC
+        """,
         (tenant_id,)
     )
     
@@ -95,7 +101,11 @@ def integration_panel():
     from flask import session
     webhook_secret_once = session.pop("webhook_secret_once", None)
     
-    webhook_secret = settings.get("webhook_secret") or str(tenant["uuid"])
+    webhook_secret = settings.get("webhook_secret")
+    if not webhook_secret:
+        webhook_secret = f"whsec_{secrets.token_hex(32)}"
+        settings["webhook_secret"] = webhook_secret
+        update_tenant_settings(tenant_id, settings)
 
     return render_template(
         "customer/integration.html",
@@ -109,30 +119,75 @@ def integration_panel():
 @require_login
 @require_role(["admin"])
 def key_generate():
-    """Generate a new secure API Key, deactivating/revoking any old ones."""
+    """Generate a new scoped API Key, with optional rotation of an existing key."""
     tenant_id = g.tenant_id
     name = request.form.get("name", "Default Key").strip() or "Default Key"
-    
+    raw_scopes = request.form.getlist("scopes") or (request.form.get("scopes") or "").split(",")
+    allowed_scopes = {"orders:read", "orders:write", "webhooks:manage", "*"}
+    scopes = [s.strip() for s in raw_scopes if s and s.strip() in allowed_scopes] or ["orders:read", "orders:write"]
+
+    try:
+        daily_quota = max(1, min(1_000_000, int(request.form.get("daily_quota", "10000") or 10000)))
+    except ValueError:
+        daily_quota = 10000
+
+    expires_at = None
+    expires_days_raw = request.form.get("expires_days", "").strip()
+    if expires_days_raw:
+        try:
+            days = max(1, min(3650, int(expires_days_raw)))
+            expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
+        except ValueError:
+            pass
+
+    rotate_key_id_raw = request.form.get("rotate_key_id", "").strip()
+    revoke_existing = request.form.get("revoke_existing", "1") == "1"
+
     # 1. Generate API key: cc_live_ + 32-bytes token
     raw_key = f"cc_live_{secrets.token_urlsafe(32)}"
     key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
     key_prefix = raw_key[:12]  # e.g., "cc_live_abc12"
 
+    rotated_from_id = None
     with db.transaction() as conn:
-        # Revoke/delete existing keys first to enforce "Old key will stop working"
-        conn.execute("DELETE FROM api_keys WHERE tenant_id = %s", (tenant_id,))
-        
+        if rotate_key_id_raw:
+            try:
+                rk_id = int(rotate_key_id_raw)
+                old_row = conn.execute(
+                    "SELECT id FROM api_keys WHERE id = %s AND tenant_id = %s AND revoked_at IS NULL",
+                    (rk_id, tenant_id),
+                ).fetchone()
+                if old_row:
+                    rotated_from_id = rk_id
+                    conn.execute(
+                        "UPDATE api_keys SET is_active = false, revoked_at = now() WHERE id = %s AND tenant_id = %s",
+                        (rk_id, tenant_id),
+                    )
+            except ValueError:
+                pass
+        elif revoke_existing:
+            conn.execute(
+                "UPDATE api_keys SET is_active = false, revoked_at = now() WHERE tenant_id = %s AND revoked_at IS NULL",
+                (tenant_id,),
+            )
+
         # Insert new key
         conn.execute(
             """
-            INSERT INTO api_keys (tenant_id, name, key_hash, key_prefix, is_active)
-            VALUES (%s, %s, %s, %s, true)
+            INSERT INTO api_keys (tenant_id, name, key_hash, key_prefix, is_active, scopes, daily_quota, expires_at, rotated_from_id)
+            VALUES (%s, %s, %s, %s, true, %s, %s, %s, %s)
             """,
-            (tenant_id, name, key_hash, key_prefix)
+            (tenant_id, name, key_hash, key_prefix, scopes, daily_quota, expires_at, rotated_from_id)
         )
 
     from app.middleware.audit import audit_log
-    audit_log("api_key_generate", current_user.id, "tenant", tenant_id, {"key_prefix": key_prefix})
+    audit_log(
+        "api_key_rotate" if rotated_from_id else "api_key_generate",
+        current_user.id,
+        "tenant",
+        tenant_id,
+        {"key_prefix": key_prefix, "scopes": scopes, "daily_quota": daily_quota, "rotated_from_id": rotated_from_id},
+    )
 
     # Return key HTML fragment showing the key ONCE to the user
     return f"""
@@ -157,7 +212,10 @@ def key_generate():
 @require_role(["admin"])
 def key_revoke(key_id: int):
     tenant_id = g.tenant_id
-    db.execute("DELETE FROM api_keys WHERE id = %s AND tenant_id = %s", (key_id, tenant_id))
+    db.execute(
+        "UPDATE api_keys SET is_active = false, revoked_at = now() WHERE id = %s AND tenant_id = %s",
+        (key_id, tenant_id),
+    )
 
     from app.middleware.audit import audit_log
     audit_log("api_key_revoke", current_user.id, "tenant", tenant_id, {"key_id": key_id})
@@ -853,74 +911,97 @@ def api_tts_preview():
             logger.warning("DB daily preview fallback also failed: %s", _dbe)
             # Fail open — allow preview to proceed
 
-    start_time = datetime.datetime.now()
-    try:
-        audio_filename = generate_order_audio(tenant_id, preview_text, settings_override=settings_override)
-        elapsed = (datetime.datetime.now() - start_time).total_seconds()
+    # ── Max concurrent TTS: distributed Redis semaphore ───────────────────────
+    # Shared pool (preview + order calls) scoped per tenant.
+    # Fail open if Redis unavailable — logged at WARNING level.
+    from app.services.tts_concurrent import tts_concurrency_slot
+    _max_concurrent: int = _policy.get("max_concurrent_tts", 1)
 
-        voice_desc = ""
-        if tts_provider == "edge":
-            voice_desc = edge_tts_voice
-        elif tts_provider == "gemini":
-            voice_desc = gemini_voice_name
-        elif tts_provider == "gtts":
-            voice_desc = "Bangla" if tts_lang == "bn" else "English"
-        elif tts_provider == "elevenlabs":
-            voice_desc = elevenlabs_voice_id[:8] if elevenlabs_voice_id else "(default)"
+    with tts_concurrency_slot(tenant_id, _max_concurrent) as _slot_acquired:
+        if not _slot_acquired:
+            # Release daily counter so user can retry when a slot frees up
+            if _preview_counter_incremented:
+                try:
+                    from app.extensions import redis_ext as _rx2
+                    _rc2 = _rx2._client
+                    if _rc2 is not None:
+                        _rc2.decr(_daily_key)
+                except Exception:
+                    pass
+            return (
+                f"<span class='text-rose-400 text-xs font-semibold'>"
+                f"TTS concurrency limit ({_max_concurrent}) reached. Please retry in a moment.</span>",
+                429,
+            )
 
-        provider_names = {
-            "edge": "Edge TTS",
-            "gemini": "Gemini TTS",
-            "gtts": "Google Translate TTS",
-            "elevenlabs": "ElevenLabs",
-            "openvoice": "OpenVoice",
-        }
-        provider_desc = provider_names.get(tts_provider, tts_provider)
-        model_desc = (elevenlabs_model or "eleven_v3") if tts_provider == "elevenlabs" else ""
+        start_time = datetime.datetime.now()
+        try:
+            audio_filename = generate_order_audio(tenant_id, preview_text, settings_override=settings_override)
+            elapsed = (datetime.datetime.now() - start_time).total_seconds()
 
-        return render_template(
-            "customer/_audio_preview.html",
-            filename=audio_filename,
-            elapsed=elapsed,
-            provider_desc=provider_desc,
-            voice_desc=voice_desc,
-            model_desc=model_desc,
-        )
+            voice_desc = ""
+            if tts_provider == "edge":
+                voice_desc = edge_tts_voice
+            elif tts_provider == "gemini":
+                voice_desc = gemini_voice_name
+            elif tts_provider == "gtts":
+                voice_desc = "Bangla" if tts_lang == "bn" else "English"
+            elif tts_provider == "elevenlabs":
+                voice_desc = elevenlabs_voice_id[:8] if elevenlabs_voice_id else "(default)"
 
-    except TTSCredentialMissingError as exc:
-        provider_label = {"elevenlabs": "ElevenLabs", "gemini": "Gemini"}.get(exc.provider, exc.provider)
-        logger.warning("TTS preview credential missing: provider=%s tenant=%s", exc.provider, tenant_id)
-        return (
-            f"<div class='text-amber-400 text-xs font-semibold space-y-1'>"
-            f"<p>&#9888; {provider_label} API key not configured for this account.</p>"
-            f"<p class='text-slate-400 font-normal'>Save your {provider_label} API key above, then try again.</p>"
-            f"</div>",
-            422,
-        )
-    except Exception as exc:
-        from app.exceptions import TTSProviderNotAllowedError, TTSCredentialModeError, TTSQuotaExceededError
-        if isinstance(exc, TTSProviderNotAllowedError):
-            logger.warning("TTS preview provider not allowed: provider=%s tenant=%s", tts_provider, tenant_id)
-            return f"<span class='text-rose-400 text-xs font-semibold'>Provider '{tts_provider}' is not available on your plan.</span>", 403
-        if isinstance(exc, TTSCredentialModeError):
-            logger.warning("TTS preview mode not allowed: mode=%s tenant=%s", exc.mode, tenant_id)
-            return f"<span class='text-rose-400 text-xs font-semibold'>Credential mode '{exc.mode}' is not allowed on your plan.</span>", 403
-        if isinstance(exc, TTSQuotaExceededError):
-            logger.warning("TTS preview quota exceeded: tenant=%s provider=%s", tenant_id, tts_provider)
-            # Quota denial is valid — do NOT release the daily counter
-            return "<span class='text-rose-400 text-xs font-semibold'>Monthly TTS quota exhausted. Quota resets on the 1st of next month.</span>", 402
-        # Infrastructure failure — release the daily counter so user can retry
-        if _preview_counter_incremented:
-            try:
-                from app.extensions import redis_ext as _rex
-                _rc = _rex._client
-                if _rc is not None:
-                    _rc.decr(_daily_key)
-            except Exception:
-                pass
-        logger.error("TTS Preview failed: %s", exc, exc_info=True)
-        safe_msg = str(exc)[:120].replace("<", "&lt;").replace(">", "&gt;")
-        return f"<span class='text-rose-400 text-xs font-semibold'>TTS Preview failed: {safe_msg}</span>", 422
+            provider_names = {
+                "edge": "Edge TTS",
+                "gemini": "Gemini TTS",
+                "gtts": "Google Translate TTS",
+                "elevenlabs": "ElevenLabs",
+                "openvoice": "OpenVoice",
+            }
+            provider_desc = provider_names.get(tts_provider, tts_provider)
+            model_desc = (elevenlabs_model or "eleven_v3") if tts_provider == "elevenlabs" else ""
+
+            return render_template(
+                "customer/_audio_preview.html",
+                filename=audio_filename,
+                elapsed=elapsed,
+                provider_desc=provider_desc,
+                voice_desc=voice_desc,
+                model_desc=model_desc,
+            )
+
+        except TTSCredentialMissingError as exc:
+            provider_label = {"elevenlabs": "ElevenLabs", "gemini": "Gemini"}.get(exc.provider, exc.provider)
+            logger.warning("TTS preview credential missing: provider=%s tenant=%s", exc.provider, tenant_id)
+            return (
+                f"<div class='text-amber-400 text-xs font-semibold space-y-1'>"
+                f"<p>&#9888; {provider_label} API key not configured for this account.</p>"
+                f"<p class='text-slate-400 font-normal'>Save your {provider_label} API key above, then try again.</p>"
+                f"</div>",
+                422,
+            )
+        except Exception as exc:
+            from app.exceptions import TTSProviderNotAllowedError, TTSCredentialModeError, TTSQuotaExceededError
+            if isinstance(exc, TTSProviderNotAllowedError):
+                logger.warning("TTS preview provider not allowed: provider=%s tenant=%s", tts_provider, tenant_id)
+                return f"<span class='text-rose-400 text-xs font-semibold'>Provider '{tts_provider}' is not available on your plan.</span>", 403
+            if isinstance(exc, TTSCredentialModeError):
+                logger.warning("TTS preview mode not allowed: mode=%s tenant=%s", exc.mode, tenant_id)
+                return f"<span class='text-rose-400 text-xs font-semibold'>Credential mode '{exc.mode}' is not allowed on your plan.</span>", 403
+            if isinstance(exc, TTSQuotaExceededError):
+                logger.warning("TTS preview quota exceeded: tenant=%s provider=%s", tenant_id, tts_provider)
+                # Quota denial is valid — do NOT release the daily counter
+                return "<span class='text-rose-400 text-xs font-semibold'>Monthly TTS quota exhausted. Quota resets on the 1st of next month.</span>", 402
+            # Infrastructure failure — release the daily counter so user can retry
+            if _preview_counter_incremented:
+                try:
+                    from app.extensions import redis_ext as _rex
+                    _rc = _rex._client
+                    if _rc is not None:
+                        _rc.decr(_daily_key)
+                except Exception:
+                    pass
+            logger.error("TTS Preview failed: %s", exc, exc_info=True)
+            safe_msg = str(exc)[:120].replace("<", "&lt;").replace(">", "&gt;")
+            return f"<span class='text-rose-400 text-xs font-semibold'>TTS Preview failed: {safe_msg}</span>", 422
 
 @customer_bp.route("/api/integration/test-order", methods=["POST"])
 @require_login
@@ -1016,12 +1097,17 @@ def remove_tts_key(provider: str):
 @require_login
 @require_role(["admin", "agent", "viewer"])
 def subscription_page():
-    """Read-only subscription overview — plan, TTS limits, and quota usage."""
+    """Subscription management: current plan summary, available plans, billing cycle selector."""
     tenant_id = g.tenant_id
     tenant = get_tenant_by_id(tenant_id)
     from app.models.plan_tts_policy import get_plan_tts_policy
     from app.models.tenant_tts_usage import get_total_monthly_characters
     from app.models.platform_secrets import platform_secret_is_active
+    from app.models.subscription import (
+        get_current_subscription, get_subscription_events, get_tenant_subscription_history
+    )
+    from app.services.subscription_access_service import get_tenant_status_banner
+    from app.services import wallet_service as _ws
 
     plan = db.query_one("SELECT * FROM plans WHERE id = %s", (tenant.get("plan_id"),)) if tenant.get("plan_id") else None
     tts_policy = get_plan_tts_policy(tenant.get("plan_id"))
@@ -1038,14 +1124,19 @@ def subscription_page():
         for p in (tts_policy.get("platform_managed_providers") or [])
     }
 
-    from app.models.subscription import (
-        get_current_subscription, get_subscription_events, get_tenant_subscription_history
-    )
-    from app.services.subscription_access_service import get_tenant_status_banner
     subscription = get_current_subscription(tenant_id)
-    subscription_events = get_subscription_events(tenant_id, limit=10)
+    subscription_events = get_subscription_events(tenant_id, limit=15)
     subscription_history = get_tenant_subscription_history(tenant_id)
     status_banner = get_tenant_status_banner(tenant_id)
+
+    # Available plans for plan-selection UI
+    available_plans = db.query(
+        "SELECT * FROM plans WHERE archived_at IS NULL ORDER BY price_monthly ASC",
+        (),
+    )
+    plan_policies = {p["id"]: get_plan_tts_policy(p["id"]) for p in available_plans}
+
+    wallet_balance = _ws.get_balance(tenant_id)
 
     return render_template(
         "customer/subscription.html",
@@ -1060,7 +1151,160 @@ def subscription_page():
         subscription_events=subscription_events,
         subscription_history=subscription_history,
         status_banner=status_banner,
+        available_plans=available_plans,
+        plan_policies=plan_policies,
+        wallet_balance=wallet_balance,
     )
+
+
+@customer_bp.route("/subscription/select-plan", methods=["POST"])
+@require_login
+@require_role(["admin"])
+def subscription_select_plan():
+    """Select, switch, upgrade, or downgrade plan with billing cycle choice.
+
+    Price always resolved from DB — never from browser form.
+    Uses wallet balance directly. Idempotent at calendar-month granularity.
+    """
+    from decimal import Decimal, ROUND_UP
+    from app.services.subscription_lifecycle_service import (
+        activate_subscription, _get_plan, _compute_period_end,
+    )
+    from app.services import wallet_service as _ws
+    from app.models.subscription import (
+        get_current_subscription,
+        create_subscription_payment,
+        get_subscription_payment_by_idempotency,
+    )
+    from app.models.wallet import create_payment_intent, update_payment_intent_status
+    from app.middleware.audit import audit_log
+    import datetime
+
+    tenant_id = g.tenant_id
+    tenant = get_tenant_by_id(tenant_id)
+    if not tenant:
+        flash("Tenant not found.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    if tenant["status"] == "suspended":
+        flash("Account is suspended. Contact support to reactivate.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    # Validate inputs — never trust browser price
+    try:
+        plan_id = int(request.form.get("plan_id", ""))
+    except (ValueError, TypeError):
+        flash("Invalid plan selection.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    billing_cycle = request.form.get("billing_cycle", "monthly")
+    if billing_cycle not in ("monthly", "yearly"):
+        flash("Invalid billing cycle.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    plan = db.query_one("SELECT * FROM plans WHERE id = %s", (plan_id,))
+    if not plan:
+        flash("Plan not found.", "error")
+        return redirect(url_for("customer.subscription_page"))
+    if plan.get("archived_at") is not None:
+        flash("This plan is no longer available.", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    # Server-side price
+    _UTC = datetime.timezone.utc
+    now = datetime.datetime.now(_UTC)
+    price = Decimal(str(
+        plan["price_yearly"]
+        if billing_cycle == "yearly" and plan.get("price_yearly")
+        else plan["price_monthly"]
+    ))
+
+    # Month-level idempotency: same tenant+plan+cycle+month → same result
+    period_key = f"select-plan:{tenant_id}:{plan_id}:{billing_cycle}:{now.strftime('%Y-%m')}"
+    existing = get_subscription_payment_by_idempotency(period_key)
+    if existing and existing.get("status") == "completed":
+        flash("Subscription already active for this plan and period.", "info")
+        return redirect(url_for("customer.subscription_page"))
+
+    # Free plan: activate without payment
+    if price == Decimal("0"):
+        try:
+            activate_subscription(
+                tenant_id=tenant_id,
+                plan_id=plan_id,
+                billing_cycle=billing_cycle,
+                payment_intent_id=None,
+                actor_type="customer",
+                actor_id=current_user.id,
+            )
+            audit_log("subscription_plan_selected", current_user.id, "tenant", tenant_id,
+                      {"plan_id": plan_id, "plan_name": plan["name"],
+                       "billing_cycle": billing_cycle, "price": "0"})
+            flash(f"Switched to {plan['name']} plan.", "success")
+        except Exception as exc:
+            logger.error("subscription_select_plan (free) failed tenant=%s: %s", tenant_id, exc)
+            flash(f"Plan activation failed: {exc}", "error")
+        return redirect(url_for("customer.subscription_page"))
+
+    # Check wallet balance before attempting deduction
+    balance = _ws.get_balance(tenant_id)
+    if balance < price:
+        shortfall = (price - balance).quantize(Decimal("0.01"), rounding=ROUND_UP)
+        flash(
+            f"Insufficient wallet balance. Need ৳{price:.2f}, have ৳{balance:.2f}. "
+            f"Please recharge ৳{shortfall:.2f} first.",
+            "error",
+        )
+        return redirect(url_for("customer.wallet_panel"))
+
+    intent_id = create_payment_intent(tenant_id, gateway="wallet", amount=price)
+
+    try:
+        _ws.deduct(tenant_id, price, f"Subscription — {plan['name']} ({billing_cycle})")
+        update_payment_intent_status(intent_id, "completed")
+
+        sub_id = activate_subscription(
+            tenant_id=tenant_id,
+            plan_id=plan_id,
+            billing_cycle=billing_cycle,
+            payment_intent_id=intent_id,
+            actor_type="customer",
+            actor_id=current_user.id,
+        )
+
+        period_end = _compute_period_end(now, billing_cycle)
+        if not get_subscription_payment_by_idempotency(period_key):
+            create_subscription_payment(
+                subscription_id=sub_id,
+                tenant_id=tenant_id,
+                amount=price,
+                billing_period_start=now,
+                billing_period_end=period_end,
+                idempotency_key=period_key,
+                payment_intent_id=intent_id,
+                status="completed",
+            )
+
+        audit_log("subscription_plan_selected", current_user.id, "tenant", tenant_id,
+                  {"plan_id": plan_id, "plan_name": plan["name"],
+                   "billing_cycle": billing_cycle, "price": str(price)})
+
+        flash(
+            f"Subscribed to {plan['name']} ({billing_cycle}) for ৳{price:.2f}. "
+            f"Next billing: {period_end.strftime('%Y-%m-%d')}.",
+            "success",
+        )
+
+    except Exception as exc:
+        try:
+            _ws.credit(tenant_id, price, f"Plan selection reversal — {exc}")
+        except Exception:
+            pass
+        update_payment_intent_status(intent_id, "failed")
+        logger.error("subscription_select_plan failed tenant=%s: %s", tenant_id, exc)
+        flash(f"Subscription failed: {exc}", "error")
+
+    return redirect(url_for("customer.subscription_page"))
 
 
 @customer_bp.route("/subscription/cancel", methods=["POST"])

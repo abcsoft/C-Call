@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from flask import jsonify, request, g
 from app.blueprints.api_public import api_bp
-from app.blueprints.auth.decorators import require_api_key
+from app.blueprints.auth.decorators import require_api_key, require_api_scope
 from app.services import order_service
 from app.exceptions import InsufficientBalanceError
 
@@ -12,6 +12,7 @@ logger = logging.getLogger("ccall")
 @api_bp.route("/order-call", methods=["POST"])
 @api_bp.route("/orders", methods=["POST"])
 @require_api_key
+@require_api_scope("orders:write")
 def api_create_order():
     """Receive order details from merchant and queue a confirmation call.
     Uses Submission Idempotency: duplicate external order IDs return the existing order.
@@ -57,6 +58,7 @@ def api_create_order():
 
 @api_bp.route("/orders/<string:external_id>", methods=["GET"])
 @require_api_key
+@require_api_scope("orders:read")
 def api_get_order(external_id: str):
     """Retrieve details and call history of a specific order by ID or external ID."""
     tenant_id = g.tenant_id
@@ -103,6 +105,7 @@ def api_get_order(external_id: str):
 
 @api_bp.route("/orders", methods=["GET"])
 @require_api_key
+@require_api_scope("orders:read")
 def api_list_orders():
     """List orders, support filtering by status, search, and date range."""
     tenant_id = g.tenant_id
@@ -146,6 +149,7 @@ def api_list_orders():
 
 @api_bp.route("/orders/<string:external_id>/recall", methods=["POST"])
 @require_api_key
+@require_api_scope("orders:write")
 def api_recall_order(external_id: str):
     """Manually trigger a recall for an order."""
     tenant_id = g.tenant_id

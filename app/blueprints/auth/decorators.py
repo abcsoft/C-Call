@@ -78,6 +78,12 @@ def require_api_key(f):
             }), 401
 
         err_reason = getattr(g, "api_key_error", None)
+        if err_reason == "API_KEY_QUOTA_EXCEEDED":
+            return jsonify({
+                "success": False,
+                "error": "API key daily quota exceeded",
+                "code": "QUOTA_EXCEEDED"
+            }), 429
         if g.tenant_id is None or (err_reason and err_reason != "SUBSCRIPTION_REQUIRED"):
             logger.warning(f"[SAAS STEP 2] API key check failed: Tenant not matched or inactive. Key: {masked_key}, Error: {err_reason}")
             if err_reason == "TENANT_INACTIVE":
@@ -107,3 +113,20 @@ def require_api_key(f):
         logger.info(f"[SAAS STEP 2] API key check passed: Tenant matched to ID {g.tenant_id}. Key: {masked_key}")
         return f(*args, **kwargs)
     return decorated_view
+
+
+def require_api_scope(scope: str):
+    """Enforce that the authenticated API key possesses the required scope."""
+    def decorator(f):
+        @wraps(f)
+        def decorated_view(*args, **kwargs):
+            scopes = getattr(g, "api_key_scopes", None)
+            if scopes is not None and scope not in scopes and "*" not in scopes:
+                return jsonify({
+                    "success": False,
+                    "error": f"API key lacks required scope: {scope}",
+                    "code": "INSUFFICIENT_SCOPE"
+                }), 403
+            return f(*args, **kwargs)
+        return decorated_view
+    return decorator

@@ -284,7 +284,10 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
     Supports idempotency via external_order_id.
     Accepts rich e-commerce metadata: product_name, price, delivery_charge, grand_total, etc.
     """
-    logger.info(f"[SAAS STEP 1] /api/v1/orders request received. Tenant ID: {tenant_id}, Data: {data}")
+    logger.info(
+        "[SAAS STEP 1] /api/v1/orders request received. Tenant ID: %s, Order ID: %s",
+        tenant_id, data.get("order_id"),
+    )
 
     # Subscription enforcement: block order intake for past_due, expired, suspended, cancelled
     from app.services.subscription_access_service import check_feature_access
@@ -299,7 +302,7 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
 
     # 1. Validation
     if not external_order_id:
-        logger.warning(f"[SAAS STEP 3] Payload validation failed: order_id is missing. Data: {data}")
+        logger.warning("[SAAS STEP 3] Payload validation failed: order_id is missing.")
         raise ValueError("order_id is required.")
     if not phone:
         logger.warning("[SAAS STEP 3] Payload validation failed: phone number is missing.")
@@ -336,8 +339,10 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
         logger.info(f"Order {external_order_id} already exists for tenant {tenant_id}. Returning existing record.")
         return existing_order
 
-    # 4. Wallet balance check (min_charge)
+    # 4. Wallet balance & outbound compliance check
     min_charge = estimate_charge(tenant_id)
+    from app.services.compliance_service import validate_outbound_call
+    validate_outbound_call(tenant_id, normalized_phone, min_charge)
     if not check_balance(tenant_id, min_charge):
         from app.services.wallet_service import get_balance
         current_bal = get_balance(tenant_id)
@@ -529,12 +534,19 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
     from psycopg.types.json import Jsonb as _Jsonb
 
     with db.transaction() as conn:
+        consent_at = None
+        consent_source = _clean_str(data.get("consent_source"), 100)
+        if data.get("consent") in (True, "true", "1", 1) or consent_source:
+            consent_at = datetime.datetime.now(datetime.timezone.utc)
+            consent_source = consent_source or "api"
+
         # Create order row.
         row = conn.execute(
             """INSERT INTO orders
                    (tenant_id, external_order_id, phone, customer_name, amount,
-                    webhook_url, max_attempts, metadata, custom_text, custom_audio_url)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    webhook_url, max_attempts, metadata, custom_text, custom_audio_url,
+                    consent_recorded_at, consent_source)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (tenant_id, external_order_id) DO UPDATE
                SET phone = EXCLUDED.phone, customer_name = EXCLUDED.customer_name,
                    amount = EXCLUDED.amount, webhook_url = EXCLUDED.webhook_url,
@@ -547,6 +559,7 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
                 amount, webhook_url, 3,
                 _Jsonb(metadata if metadata else {}),
                 custom_text, custom_audio_url,
+                consent_at, consent_source,
             ),
         ).fetchone()
         order_id = int(row["id"])
@@ -1016,6 +1029,11 @@ def update_status_from_call(
     txn_id = None
     if call_id:
         db.execute("UPDATE calls SET status = %s, talk_seconds = %s WHERE id = %s", (call_result, talk_seconds, call_id))
+        try:
+            from app.services.call_job_service import reconcile_job_call_state
+            reconcile_job_call_state(call_id, call_result)
+        except Exception:
+            pass
         from app.services.billing_service import finalize_call_billing
         result = finalize_call_billing(call_id)
         charge = result["charge"]
@@ -1039,6 +1057,19 @@ def update_status_from_call(
             next_status = "CONFIRMED"
         elif dtmf_digit == "2":
             next_status = "CANCELLED"
+        elif dtmf_digit == "0":
+            # Human-agent transfer requested
+            next_status = "UNREACHABLE"
+            try:
+                from psycopg.types.json import Jsonb as _Jsonb
+                meta = order.get("metadata") or {}
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                meta["human_agent_requested"] = True
+                meta["dtmf_action"] = "human_agent"
+                db.execute("UPDATE orders SET metadata = %s, updated_at = now() WHERE id = %s", (_Jsonb(meta), order_id))
+            except Exception:
+                pass
         else:
             # no input/timeout or invalid DTMF
             next_status = "FAILED"

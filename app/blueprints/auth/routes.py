@@ -187,6 +187,7 @@ def verify_email_route(token: str):
 
 
 @auth_bp.route("/forgot-password", methods=["GET", "POST"])
+@limiter.limit("5/minute")
 def forgot_password():
     """Forgot password request view."""
     form = ForgotPasswordForm()
@@ -252,6 +253,7 @@ def reset_password(token: str):
 
 
 @auth_bp.route("/check-email", methods=["POST"])
+@limiter.limit("10/minute")
 def check_email():
     """Real-time HTMX endpoint to check email availability."""
     email = request.form.get("email", "").strip()

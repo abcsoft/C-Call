@@ -354,8 +354,8 @@ def flow_add_node(flow_id: int):
                 prompt_audio,
                 request.form.get("prompt_lang", "bn").strip() or "bn",
                 request.form.get("transfer_number", "").strip(),
-                int(request.form.get("gather_timeout_seconds", "8") or 8),
-                int(request.form.get("max_retries", "2") or 2),
+                max(1, min(60, int(request.form.get("gather_timeout_seconds", "8") or 8))),
+                max(0, min(5, int(request.form.get("max_retries", "2") or 2))),
             ),
         )
         if not flow["root_node_id"]:
@@ -376,6 +376,7 @@ def flow_delete_node(flow_id: int, node_id: int):
         flash("Flow not found or access denied.", "error")
         return redirect(url_for("customer.flows_list"))
         
+    db.execute("DELETE FROM flow_transitions WHERE node_id = %s OR next_node_id = %s", (node_id, node_id))
     db.execute("DELETE FROM flow_nodes WHERE id = %s AND flow_id = %s", (node_id, flow_id))
     if flow["root_node_id"] == node_id:
         db.execute("UPDATE flows SET root_node_id = NULL WHERE id = %s AND tenant_id = %s", (flow_id, tenant_id))
@@ -436,8 +437,8 @@ def flow_update_node(flow_id: int, node_id: int):
                 prompt_audio,
                 prompt_lang,
                 request.form.get("transfer_number", "").strip(),
-                int(request.form.get("gather_timeout_seconds", "8") or 8),
-                int(request.form.get("max_retries", "2") or 2),
+                max(1, min(60, int(request.form.get("gather_timeout_seconds", "8") or 8))),
+                max(0, min(5, int(request.form.get("max_retries", "2") or 2))),
                 node_id,
                 flow_id,
             ),
@@ -531,3 +532,61 @@ def flow_delete_transition(flow_id: int, transition_id: int):
         db.execute("DELETE FROM flow_transitions WHERE id = %s", (transition_id,))
         flash("Transition removed.", "success")
     return redirect(url_for("customer.flow_edit", flow_id=flow_id))
+
+
+def validate_flow_graph(flow_id: int, tenant_id: int) -> dict:
+    """Validate IVR flow integrity: root ownership, missing targets, unreachable nodes, and dead-end menus."""
+    flow = db.query_one("SELECT id, root_node_id FROM flows WHERE id = %s AND tenant_id = %s", (flow_id, tenant_id))
+    if not flow:
+        return {"valid": False, "errors": ["Flow not found or access denied"], "warnings": []}
+
+    nodes = db.query("SELECT id, name, node_type FROM flow_nodes WHERE flow_id = %s", (flow_id,))
+    node_map = {n["id"]: n for n in nodes}
+    transitions = db.query(
+        "SELECT t.node_id, t.digit, t.next_node_id FROM flow_transitions t "
+        "JOIN flow_nodes n ON n.id = t.node_id WHERE n.flow_id = %s",
+        (flow_id,),
+    )
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    root_id = flow.get("root_node_id")
+    if not root_id or root_id not in node_map:
+        errors.append("Flow has no valid start (root) node.")
+
+    adj: dict[int, list[int]] = {}
+    for t in transitions:
+        if t["next_node_id"] not in node_map:
+            errors.append(f"Transition digit '{t['digit']}' on node {t['node_id']} points to missing node {t['next_node_id']}.")
+        else:
+            adj.setdefault(t["node_id"], []).append(t["next_node_id"])
+
+    for nid, n in node_map.items():
+        if n["node_type"] == "menu" and not adj.get(nid):
+            warnings.append(f"Menu node '{n['name']}' has no outgoing DTMF transitions.")
+
+    if root_id and root_id in node_map:
+        visited: set[int] = set()
+        stack = [root_id]
+        while stack:
+            curr = stack.pop()
+            if curr in visited:
+                continue
+            visited.add(curr)
+            for nxt in adj.get(curr, []):
+                if nxt not in visited:
+                    stack.append(nxt)
+        unreachable = [n["name"] for nid, n in node_map.items() if nid not in visited]
+        if unreachable:
+            warnings.append(f"Unreachable nodes: {', '.join(unreachable)}")
+
+    return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+
+@customer_bp.route("/flows/<int:flow_id>/validate", methods=["GET"])
+@require_login
+@require_role(["admin", "agent"])
+def flow_validate(flow_id: int):
+    result = validate_flow_graph(flow_id, g.tenant_id)
+    return jsonify(result), (200 if result["valid"] else 400)

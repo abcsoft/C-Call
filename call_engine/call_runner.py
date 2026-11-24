@@ -248,10 +248,14 @@ def load_flow(flow_id: int) -> Flow:
             max_retries=r["max_retries"],
         )
     for t in trans_rows:
-        if t["node_id"] in nodes and t["next_node_id"]:
+        if t["node_id"] in nodes and t["next_node_id"] and t["next_node_id"] in nodes:
             nodes[t["node_id"]].transitions[t["digit"]] = t["next_node_id"]
 
-    root = flow_row["root_node_id"] or (node_rows[0]["id"] if node_rows else None)
+    root = flow_row["root_node_id"]
+    if root is not None and root not in nodes:
+        raise ValueError(f"Flow {flow_id} root_node_id={root} does not belong to flow")
+    if root is None:
+        root = node_rows[0]["id"] if node_rows else None
     if root is None:
         raise ValueError("Flow has no nodes")
     return Flow(id=flow_id, root_node_id=root, nodes=nodes, tenant_id=flow_row.get("tenant_id"))

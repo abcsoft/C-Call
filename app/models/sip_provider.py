@@ -5,16 +5,21 @@ from typing import Any
 from cryptography.fernet import Fernet
 from app.db import db
 
-# Static fallback Fernet key (valid 32-byte base64 key)
+# Static fallback Fernet key (dev/testing only; production fails closed)
 FALLBACK_KEY = "WKUchdJq2Ur7OjSn9xkt1qfzYSxo1FlsTwtfjS71wwQ="
 
 def _get_fernet() -> Fernet:
-    key = os.environ.get("SIP_PASSWORD_ENCRYPTION_KEY")
+    key = os.environ.get("SIP_PASSWORD_ENCRYPTION_KEY", "").strip()
+    is_prod = os.environ.get("FLASK_ENV", "production") == "production"
     if not key:
+        if is_prod:
+            raise RuntimeError("SIP_PASSWORD_ENCRYPTION_KEY is required in production.")
         key = FALLBACK_KEY
     try:
         return Fernet(key.encode("utf-8"))
-    except Exception:
+    except Exception as exc:
+        if is_prod:
+            raise RuntimeError("Invalid SIP_PASSWORD_ENCRYPTION_KEY in production.") from exc
         return Fernet(FALLBACK_KEY.encode("utf-8"))
 
 def encrypt_password(password: str) -> str:

@@ -19,6 +19,7 @@ x-app-base: &app-base
     - audio_data:/app/instance
   networks:
     - internal
+    - egress
   # ── Container hardening ────────────────────────────────────────────────────
   security_opt:
     - no-new-privileges:true
@@ -222,4 +223,6 @@ volumes:
 networks:
   internal:
     driver: bridge
-    internal: true   # no external network access from DB/Redis containers
+    internal: true   # private DB/Redis network — no external internet access
+  egress:
+    driver: bridge   # outbound HTTPS (TTS/webhooks/SMTP) & SIP/RTP trunk access

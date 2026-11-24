@@ -866,12 +866,19 @@ class IvrCall:
 
     def _run_flow(self, remote_ip: str, remote_port: int, result: CallResult) -> None:
         flow = self.flow
+        if flow.root_node_id is None or flow.root_node_id not in flow.nodes:
+            self._emit("error", node_id=flow.root_node_id, detail="missing_root_node")
+            result.reached_terminal = False
+            return
+
         node = flow.nodes.get(flow.root_node_id)
         visited_guard = 0
-        while node is not None and visited_guard < 100:
+        max_steps = 100
+        while node is not None and visited_guard < max_steps:
             if self.cancel_requested:
                 self._emit("hangup", node_id=node.id, detail="canceled by operator")
                 result.drop_node_id = node.id
+                result.reached_terminal = False
                 return
             visited_guard += 1
             result.last_node_id = node.id
@@ -901,6 +908,9 @@ class IvrCall:
             attempt, advanced = 0, False
             while attempt <= node.max_retries and not advanced:
                 if self.cancel_requested:
+                    self._emit("hangup", node_id=node.id, detail="canceled by operator")
+                    result.drop_node_id = node.id
+                    result.reached_terminal = False
                     return
                 digit = barge if barge else self._gather_digit(
                     remote_ip, remote_port, node.gather_timeout_seconds
@@ -910,8 +920,10 @@ class IvrCall:
                     self._emit("no_input", node_id=node.id, detail=f"attempt {attempt + 1}")
                     attempt += 1
                     if attempt <= node.max_retries:
-                        self._play_prompt(node.prompt_audio, remote_ip, remote_port,
-                                          bool(valid_digits), valid_digits)
+                        barge = self._play_prompt(
+                            node.prompt_audio, remote_ip, remote_port,
+                            bool(valid_digits), valid_digits,
+                        )
                         prompt_end = time.monotonic()
                     continue
 
@@ -923,21 +935,34 @@ class IvrCall:
                     next_id = node.transitions[digit]
                     self._emit("branch", node_id=node.id, digit=digit,
                                detail=f"-> node {next_id}")
-                    node = flow.nodes.get(next_id)
+                    next_node = flow.nodes.get(next_id)
+                    if next_node is None:
+                        self._emit("error", node_id=node.id, detail=f"missing_node:{next_id}")
+                        result.drop_node_id = node.id
+                        result.reached_terminal = False
+                        return
+                    node = next_node
                     advanced = True
                 else:
                     self._emit("invalid_digit", node_id=node.id, digit=digit)
                     attempt += 1
                     if attempt <= node.max_retries:
-                        self._play_prompt(node.prompt_audio, remote_ip, remote_port,
-                                          bool(valid_digits), valid_digits)
+                        barge = self._play_prompt(
+                            node.prompt_audio, remote_ip, remote_port,
+                            bool(valid_digits), valid_digits,
+                        )
                         prompt_end = time.monotonic()
 
             if not advanced:
                 self._emit("timeout", node_id=result.last_node_id, detail="no valid input")
                 result.drop_node_id = result.last_node_id
+                result.reached_terminal = False
                 return
-        result.reached_terminal = True
+
+        # Traversal limit exceeded (cycle protection)
+        self._emit("error", node_id=result.last_node_id, detail="traversal_limit_exceeded")
+        result.drop_node_id = result.last_node_id
+        result.reached_terminal = False
 
     # --- Run ---------------------------------------------------------------
 

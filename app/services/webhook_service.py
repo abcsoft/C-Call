@@ -71,6 +71,8 @@ def build_payload(order: dict[str, Any]) -> dict[str, Any]:
         "FAILED": "order.failed"
     }
     event = event_map.get(order_status, "order.failed")
+    if dtmf_digit == "0":
+        event = "order.agent_requested"
     
     confirmed_at = None
     if order.get("confirmed_at"):
@@ -144,7 +146,13 @@ def deliver_webhook(order_id: int, attempt_no: int = 1) -> bool:
         except Exception:
             settings = {}
             
-    secret = settings.get("webhook_secret") or str(tenant["uuid"])
+    secret = settings.get("webhook_secret")
+    if not secret:
+        import secrets as _sec
+        secret = f"whsec_{_sec.token_hex(32)}"
+        settings["webhook_secret"] = secret
+        from app.models.tenant import update_tenant_settings
+        update_tenant_settings(tenant_id, settings)
     
     order_copy = dict(order)
     order_copy["webhook_attempt_no"] = attempt_no
@@ -209,7 +217,6 @@ def deliver_webhook(order_id: int, attempt_no: int = 1) -> bool:
             return new_req
             
     opener = urllib.request.build_opener(MaxRedirectHandler(3))
-    urllib.request.install_opener(opener)
     
     status_code = None
     response_body = ""

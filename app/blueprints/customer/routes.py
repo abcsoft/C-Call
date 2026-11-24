@@ -179,10 +179,12 @@ def quick_call():
         sip_override = get_sip_trunk_for_caller_id(caller_id) if caller_id else None
         sip_gateway_id = get_sip_provider_id_for_caller_id(caller_id) if caller_id else None
         
-        # Check wallet balance
+        # Check wallet balance & outbound compliance
         from app.services.rate_service import estimate_charge
         from app.services.wallet_service import check_balance
+        from app.services.compliance_service import validate_outbound_call
         min_charge = estimate_charge(tenant_id)
+        validate_outbound_call(tenant_id, normalized_phone, min_charge)
         if not check_balance(tenant_id, min_charge):
             raise ValueError("Insufficient wallet balance to place call.")
 
@@ -199,7 +201,13 @@ def quick_call():
                     raise ValueError("No voice flow configured. Please create a flow first.")
                 flow_id = default_flow["id"]
             else:
-                flow_id = int(flow_id_str)
+                flow_row = db.query_one(
+                    "SELECT id FROM flows WHERE id = %s AND tenant_id = %s",
+                    (int(flow_id_str), tenant_id),
+                )
+                if not flow_row:
+                    raise ValueError("Flow not found or access denied.")
+                flow_id = flow_row["id"]
 
             call_id = call_runner.start_call(
                 number=normalized_phone,
@@ -236,9 +244,10 @@ def quick_call():
         </div>
         """
     except Exception as e:
+        from markupsafe import escape
         return f"""
         <div class="p-3 bg-rose-950/60 border border-rose-500/80 rounded-xl text-rose-300 text-xs">
-            <strong>Error:</strong> {str(e)}
+            <strong>Error:</strong> {escape(str(e))}
         </div>
         """
 @customer_bp.route("/live-calls", methods=["GET"])
@@ -261,7 +270,10 @@ def api_live_calls():
 @customer_bp.route("/api/debug/live-registry", methods=["GET"])
 @require_login
 def api_debug_live_registry():
-    """TEMP debug endpoint — remove after live-call-monitor investigation."""
+    """Debug endpoint restricted to super_admin in DEBUG mode only."""
+    from flask import current_app, abort
+    if not current_app.config.get("DEBUG") or getattr(current_user, "role", None) != "super_admin":
+        abort(404)
     from call_engine import active_calls as registry
     import call_engine.call_runner as call_runner_mod
     tenant_id = g.tenant_id
@@ -294,27 +306,32 @@ def api_live_calls_hangup(call_id: int):
 @require_login
 def serve_recording(filename: str):
     """Serve call recording WAV files from the instance/recordings directory, validating tenant ownership."""
+    import os
+    from werkzeug.utils import secure_filename
+    safe_name = secure_filename(filename)
+    if not safe_name or safe_name != filename:
+        return "Invalid filename", 400
+
     tenant_id = g.tenant_id
     call = db.query_one(
         "SELECT id FROM calls WHERE tenant_id = %s AND recording_path LIKE %s",
-        (tenant_id, f"%{filename}")
+        (tenant_id, f"%{safe_name}")
     )
     if not call:
-        logger.warning("Tenant %s attempted to access unauthorized recording: %s", tenant_id, filename)
+        logger.warning("Tenant %s attempted to access unauthorized recording: %s", tenant_id, safe_name)
         return "Unauthorized", 403
 
-    import os
     from flask import send_from_directory, current_app
-    recordings_dir = os.path.abspath(os.path.join(current_app.root_path, "../instance/recordings"))
+    recordings_dir = os.path.realpath(os.path.join(current_app.root_path, "../instance/recordings"))
     if not os.path.exists(recordings_dir):
-        recordings_dir = os.path.abspath("instance/recordings")
-        
-    return send_from_directory(recordings_dir, filename)
+        recordings_dir = os.path.realpath("instance/recordings")
+
+    return send_from_directory(recordings_dir, safe_name)
 
 
 @customer_bp.route("/recordings/play", methods=["GET"])
 def play_recording():
-    """Verify signed URL and serve recording file from disk."""
+    """Verify signed URL and serve recording file from disk, confined to recordings directory."""
     path = request.args.get("path")
     sig = request.args.get("sig")
     exp = request.args.get("exp")
@@ -327,38 +344,56 @@ def play_recording():
         return "Access Denied: Invalid or expired signature", 403
 
     import os
-    abs_path = os.path.abspath(path)
-    if not os.path.exists(abs_path):
+    from flask import current_app
+    recordings_dir = os.path.realpath(os.path.join(current_app.root_path, "../instance/recordings"))
+    if not os.path.exists(recordings_dir):
+        recordings_dir = os.path.realpath("instance/recordings")
+
+    real_path = os.path.realpath(path)
+    if not real_path.startswith(recordings_dir + os.sep):
+        logger.warning("Blocked path traversal attempt in play_recording: %s", path)
+        return "Access Denied: Invalid recording path", 403
+
+    if not os.path.exists(real_path):
         return "File not found", 404
 
     as_attachment = request.args.get("download") == "1"
-    filename = os.path.basename(abs_path)
+    filename = os.path.basename(real_path)
 
     return send_file(
-        abs_path,
+        real_path,
         mimetype="audio/wav",
         as_attachment=as_attachment,
         download_name=filename
     )
 
 
-
 @customer_bp.route("/sounds/<filename>")
+@require_login
+@require_role(["admin", "agent", "viewer"])
 def serve_sound(filename: str):
     """Serve ulaw audio files as wav for browser playback on the fly!"""
+    import os
     import subprocess
-    sound_path = f"instance/sounds/{filename}"
+    from werkzeug.utils import secure_filename
+
+    safe_name = secure_filename(filename)
+    if not safe_name or safe_name != filename:
+        return "Invalid audio filename", 400
+
+    sounds_dir = os.path.realpath("instance/sounds")
+    sound_path = os.path.realpath(os.path.join(sounds_dir, safe_name))
     if not sound_path.endswith(".ulaw"):
         sound_path += ".ulaw"
-        
-    # Check if file exists
-    import os
+    if not sound_path.startswith(sounds_dir + os.sep):
+        return "Access Denied", 403
+
     if not os.path.exists(sound_path):
         return "Audio file not found", 404
-        
+
     # Convert ulaw to wav on the fly using ffmpeg
     wav_path = sound_path.replace(".ulaw", ".wav")
-    
+
     ffmpeg_path = os.environ.get("FFMPEG_PATH", "ffmpeg")
     try:
         subprocess.run(
@@ -367,7 +402,9 @@ def serve_sound(filename: str):
             stderr=subprocess.DEVNULL,
             check=True
         )
-        return make_response(open(wav_path, "rb").read(), 200, {"Content-Type": "audio/wav"})
+        with open(wav_path, "rb") as f:
+            data = f.read()
+        return make_response(data, 200, {"Content-Type": "audio/wav"})
     except Exception as e:
         logger.error(f"FFmpeg conversion failed: {e}")
         return "Conversion failed", 500
