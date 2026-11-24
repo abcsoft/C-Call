@@ -36,6 +36,11 @@
       "title": "TTS Usage \u2014 Admin"
     },
     {
+      "route": "/admin/tts-reservations",
+      "status": 200,
+      "title": "TTS Reservations \u2014 Admin"
+    },
+    {
       "route": "/admin/cdr",
       "status": 200,
       "title": "Platform CDR Logs \u2014 C-Call Console"
@@ -118,17 +123,6 @@
       "title": "Subscription & Billing \u2014 C-Call IVR"
     }
   ],
-  "ivr_flow_test": {
-    "created_url": "http://127.0.0.1:5001/flows/1552",
-    "flow_id": "1552",
-    "validate_status": 400,
-    "validate_body": "{\n  \"errors\": [\n    \"Flow has no valid start (root) node.\"\n  ],\n  \"valid\": false,\n  \"warnings\": []\n}\n"
-  },
-  "cross_tenant_test": {
-    "merchant_b_access_merchant_a_flow_url": "http://127.0.0.1:5001/api/debug/live-registry",
-    "merchant_b_access_merchant_a_flow_blocked": true,
-    "debug_endpoint_status": 404
-  },
   "mobile_pages": [
     {
       "route": "/dashboard",
@@ -144,17 +138,35 @@
       "route": "/flows",
       "status": 200,
       "horizontal_overflow": false
+    },
+    {
+      "route": "/wallet",
+      "status": 200,
+      "horizontal_overflow": false
+    },
+    {
+      "route": "/settings/subscription",
+      "status": 200,
+      "horizontal_overflow": false
     }
   ],
-  "console_errors": [
-    "[merchant_a] error: htmx:syntax:error",
-    "[merchant_a] error: htmx:syntax:error",
-    "[merchant_a] error: htmx:syntax:error",
-    "[merchant_a] error: Failed to load resource: the server responded with a status of 400 (BAD REQUEST)",
-    "[merchant_b] error: Failed to load resource: the server responded with a status of 404 (NOT FOUND)"
-  ],
+  "console_errors": [],
   "http_500s": [],
   "failed_requests": [],
-  "invalid_login_url": "http://127.0.0.1:5001/auth/login",
-  "invalid_login_blocked": true
+  "workflows": {
+    "invalid_login_blocked": true,
+    "admin_wallet_credit": true,
+    "ivr_validate_ok": true,
+    "ivr_delete_ok": true,
+    "wallet_page_loaded": true,
+    "subscription_page_loaded": true,
+    "team_page_loaded": true,
+    "cdr_page_loaded": true,
+    "live_calls_page_loaded": true,
+    "script_page_loaded": true,
+    "api_key_generated": true,
+    "api_order_queued": true,
+    "order_in_ui": true,
+    "cross_tenant_isolated": true
+  }
 }

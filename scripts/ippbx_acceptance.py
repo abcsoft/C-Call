@@ -98,6 +98,7 @@ def run_diagnostic(sip_cfg: dict[str, str]) -> int:
             "rtp_advertised_ip": ivr.rtp_advertised_ip,
             "rtp_port": ivr.rtp_port,
             "registered": "registered" in events,
+            "register_latency_ms": ivr._register_latency_ms,
         }
         print(json.dumps(report, indent=2))
         return 0
@@ -155,6 +156,8 @@ def run_full_call(
         "hangup": "hangup" in event_types,
         "transfer": transfer_ok,
     }
+    total_rx_expected = res.rtp_packets_received + res.rtp_packets_lost
+    loss_pct = round((res.rtp_packets_lost / total_rx_expected) * 100.0, 2) if total_rx_expected > 0 else 0.0
     report = {
         "status": res.status,
         "sip_final_status": res.sip_final_status,
@@ -163,6 +166,14 @@ def run_full_call(
         "reached_terminal": res.reached_terminal,
         "digits_pressed": res.digits_pressed,
         "recording_path": res.recording_path,
+        "telemetry": {
+            "register_latency_ms": res.register_latency_ms,
+            "invite_setup_latency_ms": res.invite_setup_latency_ms,
+            "rtp_packets_received": res.rtp_packets_received,
+            "rtp_packets_lost": res.rtp_packets_lost,
+            "rtp_packet_loss_pct": loss_pct,
+            "rtp_jitter_ms": res.rtp_jitter_ms,
+        },
         "checks": checks,
         "events": events,
         "error": res.error,

@@ -9,12 +9,12 @@
 | Check | Result |
 |---|---|
 | Invalid login blocked (`qa_admin@ccall.example.com`) | **PASS** |
-| Admin Panel Page Walk (11/11 routes) | **PASS** (all HTTP 200) |
+| Admin Panel Page Walk (12/12 routes incl. `/admin/tts-reservations`) | **PASS** (all HTTP 200) |
 | Admin CRUD (Create Tenant modal, Credit Wallet modal, Add SIP Provider form) | **PASS** |
 | Merchant Panel Page Walk (12/12 routes) | **PASS** (all HTTP 200) |
-| Merchant IVR CRUD (Create flow, add Menu+Hangup nodes, add DTMF `1` transition, `/flows/<id>/validate` -> `valid: true`) | **PASS** |
+| Merchant IVR CRUD (Create flow, add Menu+Hangup nodes, add DTMF `1` transition, `/flows/<id>/validate` -> `valid: true`, delete flow) | **PASS** |
 | Merchant API Key + Order CRUD (Generate key in `/integration`, `POST /api/v1/orders` -> 200 `CALL_QUEUED`, order visible in `/orders`) | **PASS** |
 | Cross-Tenant Isolation (`qa_merchant_b` blocked from Merchant A flow, orders, and `/api/debug/live-registry` -> 404) | **PASS** |
-| Mobile Responsive (`390x844` on `/dashboard`, `/orders`, `/flows`) | **PASS** (`horizontal_overflow: false`) |
-| HTTP 500s on final run | **0** |
-| CSP Inline Handler Fixes (`settings.py`, `integration.html`) | **FIXED** (replaced `onclick=` with Alpine `@click`) |
+| Mobile Responsive (`390x844` on `/dashboard`, `/orders`, `/flows`, `/wallet`, `/settings/subscription`) | **PASS** (`horizontal_overflow: false`) |
+| Console Errors / Failed Requests / HTTP 500s on final run | **0 / 0 / 0** |
+| CSP & HTMX Fixes (`settings.py`, `integration.html`, `flows.html`, `flow_edit.html`, `script.html`) | **FIXED** (Alpine `@click`/`@submit`; fixed `click debounce:500ms` -> `click delay:500ms` and moved `<script nonce>` inside block) |

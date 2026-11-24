@@ -67,3 +67,39 @@ Test backups regularly on a non-production database using `scripts/restore_verif
    ```
 2. Because all migrations (`001`–`028`) are additive/expand-first, code rollback works without schema contraction. If a full DB restore is required, stop `web`, `call_worker`, `scheduler`, restore from the latest encrypted `pg_dump`, and restart services.
 3. Verify `/health/ready` returns `200` and run `scripts/smoke_test.sh`.
+
+---
+
+## 5. Multi-Region Support (Singapore, USA, Bangladesh)
+
+C-Call V2 is region-agnostic with no hardcoded ISP, carrier, or data-center dependencies:
+- **Singapore / USA / Bangladesh VPS or EC2**: Set `SIP_ADVERTISED_IP` and `RTP_ADVERTISED_IP` to the host's public IPv4 / Elastic IP, set `SIP_DOMAIN` and `SIP_PORT` in `.env` or Admin → Providers, and select the carrier-compliant `ASTERISK_DIAL_FORMAT` (`local_bd`, `e164`, `plus_e164`, or `raw`).
+- **UDP-Only SIP Transport**: Only `SIP_TRANSPORT=udp` is supported; non-UDP values fail fast at startup.
+
+---
+
+## 6. Alternative Deployment Modes
+
+### Standalone Ubuntu (22.04 / 24.04 LTS)
+1. Provision host hardening, Docker, Nginx, Certbot, UFW, Fail2ban, and `ccall` user:
+   `sudo bash scripts/provision_production_server.sh`
+2. Configure `.env.production` (`chmod 600`) and validate secrets:
+   `python3 scripts/validate_production_secrets.py --env .env.production`
+3. Run `sudo bash scripts/deploy_production.sh` (ensures UDP `10000:20000` is permitted for RTP media if behind strict firewall).
+
+### Existing Windows Local Installation
+Use [run.ps1](file:///c:/xampp_lite_8_3/www/ccall/run.ps1) / [run.bat](file:///c:/xampp_lite_8_3/www/ccall/run.bat) with the `.venv` Python environment, PostgreSQL, Redis, and `FFMPEG_PATH`, and [backup.ps1](file:///c:/xampp_lite_8_3/www/ccall/backup.ps1) for scheduled DB dumps. Multi-worker production WSGI (`gunicorn.conf.py`) requires Linux/Docker.
+
+---
+
+## 7. Minimum Resource Requirements & Troubleshooting
+
+| Tier | vCPU | RAM | Disk | Concurrent Calls |
+|---|---|---|---|---|
+| Staging / Small | 2 vCPU | 4 GB | 20 GB SSD | Up to 10 |
+| Production | 4 vCPU | 8 GB | 50+ GB SSD | 25–50 |
+
+**Common Troubleshooting:**
+- **Calls ring but no audio / 200 OK timeout:** Confirm `SIP_ADVERTISED_IP` and `RTP_ADVERTISED_IP` equal the public Elastic IP and UDP `RTP_PORT_MIN..MAX` (`10000-20000`) is open.
+- **`/health/ready` returns 503:** Verify `postgres` and `redis` containers are healthy on `internal` network (`docker compose ps`).
+- **Workers exit on startup:** Validate `SECRET_KEY`, `SIP_PASSWORD_ENCRYPTION_KEY`, and `DATABASE_URL` with `python scripts/validate_production_secrets.py --env .env.production`.

@@ -525,7 +525,7 @@
                         hx-include="#voice_script, [name='tts_provider']:checked, #hidden_edge_voice, #hidden_gemini_voice, #hidden_gtts_lang, #hidden_el_voice, #elevenlabs_model"
                         hx-target="#preview-audio-container"
                         hx-indicator="#preview-indicator"
-                        hx-trigger="click debounce:500ms"
+                        hx-trigger="click delay:500ms"
                         hx-on::before-request="document.getElementById('preview-audio-container').innerHTML=''"
                         hx-on::after-request="loadingPreview = false; htmx.process(document.getElementById('preview-audio-container'))"
                         hx-on::response-error="document.getElementById('preview-audio-container').innerHTML=event.detail.xhr.responseText"
@@ -583,9 +583,7 @@
     </div>
 </div>
 </div>{# end outer space-y-8 wrapping plan card + main grid #}
-{% endblock %}
-
-<script>
+<script nonce="{{ csp_nonce }}">
 // After HTMX swaps new voice options into #voice-select, sync the
 // hidden input so the selected value is always submitted correctly.
 document.addEventListener('htmx:afterSwap', function(e) {
@@ -594,3 +592,4 @@ document.addEventListener('htmx:afterSwap', function(e) {
     }
 });
 </script>
+{% endblock %}

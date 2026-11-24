@@ -93,6 +93,8 @@ ufw default allow outgoing
 ufw allow ssh
 ufw allow 80/tcp comment "HTTP (Certbot + redirect)"
 ufw allow 443/tcp comment "HTTPS"
+# SIP/RTP NAT/media ports (allow outbound; open inbound UDP RTP if carrier requires symmetric firewall allow)
+ufw allow 10000:20000/udp comment "RTP media range (SIP trunk media)"
 # Explicitly deny ports that must never be public
 ufw deny 5432/tcp comment "PostgreSQL — internal only"
 ufw deny 6379/tcp comment "Redis — internal only"

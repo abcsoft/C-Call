@@ -292,3 +292,27 @@ class TestV2SipNetworking:
     def test_ippbx_acceptance_mock_rehearsal(self):
         from scripts.ippbx_acceptance import run_mock_acceptance
         assert run_mock_acceptance(transfer_to="1001") == 0
+
+    def test_ivr_call_telemetry_latency_jitter_and_loss(self):
+        ivr = IvrCall(
+            target="01711223344",
+            flow=self._flow(),
+            sip=self._sip_cfg(),
+            on_event=lambda e: None,
+        )
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Send seq 10, 11, then 13 (1 dropped packet: seq 12) + DTMF '1'
+            for seq, ts in [(10, 160), (11, 320), (13, 640)]:
+                pkt = struct.pack("!BBHII", 0x80, 0x00, seq, ts, 0xABCD) + b"\x7f" * 160
+                sender.sendto(pkt, ("127.0.0.1", ivr.rtp_port))
+            dtmf_pkt = struct.pack("!BBHII", 0x80, 101, 14, 800, 0xABCD) + bytes([1, 0x0A, 0x00, 0xA0])
+            sender.sendto(dtmf_pkt, ("127.0.0.1", ivr.rtp_port))
+            digit = ivr._drain_rtp("127.0.0.1", 5000)
+            assert digit == "1"
+            assert ivr._rtp_rx_packets == 4
+            assert ivr._rtp_rx_lost == 1
+            assert ivr._rtp_jitter_ms >= 0.0
+        finally:
+            sender.close()
+            ivr.close()

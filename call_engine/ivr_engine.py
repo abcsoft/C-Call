@@ -198,6 +198,11 @@ class CallResult:
     reached_terminal: bool = False
     recording_path: str = ""
     error: str = ""
+    register_latency_ms: float = 0.0
+    invite_setup_latency_ms: float = 0.0
+    rtp_packets_received: int = 0
+    rtp_packets_lost: int = 0
+    rtp_jitter_ms: float = 0.0
 
 
 @dataclass
@@ -293,6 +298,13 @@ class IvrCall:
         self._digits_pressed = 0
         self.cancel_requested = False
         self._transfer_target = ""
+        self._register_latency_ms = 0.0
+        self._invite_setup_latency_ms = 0.0
+        self._rtp_rx_packets = 0
+        self._rtp_rx_lost = 0
+        self._rtp_last_seq: int | None = None
+        self._rtp_last_rx_time: float | None = None
+        self._rtp_jitter_ms = 0.0
 
     # --- low level ---------------------------------------------------------
 
@@ -405,6 +417,7 @@ class IvrCall:
                 and re.search(rf"^CSeq:\s*{cseq_num}\s+REGISTER\b", r, re.I | re.M) is not None
             )
 
+        t0 = time.monotonic()
         self._send(message(1))
         reply = self._recv_until(lambda r: _is_reg_reply(r, 1), 5)
         if not reply:
@@ -415,6 +428,7 @@ class IvrCall:
             reply = self._recv_until(lambda r: _is_reg_reply(r, 2), 5)
         if not reply or not _status(reply).startswith("SIP/2.0 200"):
             raise RuntimeError(f"REGISTER failed: {_status(reply) if reply else 'timeout'}")
+        self._register_latency_ms = round((time.monotonic() - t0) * 1000.0, 2)
         self._emit("registered")
 
     def _invite_message(self, cseq, auth_header=None, auth=None, branch=None) -> str:
@@ -878,7 +892,19 @@ class IvrCall:
             if len(data) < 12:
                 continue
             pt = data[1] & 0x7F
+            seq = struct.unpack("!H", data[2:4])[0]
             ts = struct.unpack("!I", data[4:8])[0]
+            now = time.monotonic()
+            self._rtp_rx_packets += 1
+            if self._rtp_last_seq is not None:
+                delta_seq = (seq - self._rtp_last_seq) & 0xFFFF
+                if 1 < delta_seq < 1000:
+                    self._rtp_rx_lost += delta_seq - 1
+                if self._rtp_last_rx_time is not None and delta_seq > 0:
+                    transit_diff_ms = abs((now - self._rtp_last_rx_time) * 1000.0 - 20.0 * delta_seq)
+                    self._rtp_jitter_ms += (transit_diff_ms - self._rtp_jitter_ms) / 16.0
+            self._rtp_last_seq = seq
+            self._rtp_last_rx_time = now
             payload = data[12:]
             if pt == self._te_pt:
                 d = self._decode_dtmf(payload, ts)
@@ -1089,6 +1115,7 @@ class IvrCall:
         try:
             self._register()
             cseq = 1
+            invite_started = time.monotonic()
             message = self._invite_message(cseq)
             self._send(message)
             branch = self._last_branch
@@ -1164,6 +1191,7 @@ class IvrCall:
 
             # Answered.
             self._answered_at = time.monotonic()
+            self._invite_setup_latency_ms = round((self._answered_at - invite_started) * 1000.0, 2)
             talk_start = self._answered_at
             self._te_pt = _parse_telephone_event_pt(final_reply)
             self._emit("answered", detail=final_status)
@@ -1217,6 +1245,11 @@ class IvrCall:
             result.talk_seconds = int(time.monotonic() - talk_start)
             result.digits_pressed = self._digits_pressed
             result.recording_path = self._finalize_recording()
+            result.register_latency_ms = self._register_latency_ms
+            result.invite_setup_latency_ms = self._invite_setup_latency_ms
+            result.rtp_packets_received = self._rtp_rx_packets
+            result.rtp_packets_lost = self._rtp_rx_lost
+            result.rtp_jitter_ms = round(self._rtp_jitter_ms, 2)
             return result
         except Exception as exc:
             result.status = result.status if result.status != "failed" else "failed"
