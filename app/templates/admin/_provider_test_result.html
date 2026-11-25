@@ -6,6 +6,15 @@
         <span class="font-mono text-[11px] opacity-80">{{ result.latency_ms }} ms</span>
     </div>
 
+    <div class="flex flex-wrap gap-1.5 text-[10px] font-mono">
+        <span class="px-2 py-0.5 rounded border {% if result.options_status_code == 200 %}bg-emerald-900/50 border-emerald-700 text-emerald-200{% elif result.options_status_code %}bg-rose-900/50 border-rose-700 text-rose-200{% else %}bg-amber-900/50 border-amber-700 text-amber-200{% endif %}" data-options-badge>
+            OPTIONS: {{ result.options_status_code or 'TIMEOUT' }}
+        </span>
+        <span class="px-2 py-0.5 rounded border {% if result.register_status_code == 200 %}bg-emerald-900/50 border-emerald-700 text-emerald-200{% else %}bg-rose-900/50 border-rose-700 text-rose-200{% endif %}" data-register-badge>
+            REGISTER: {{ result.register_status_code or 'TIMEOUT' }}
+        </span>
+    </div>
+
     <div class="space-y-1 text-[11px]">
         {% for step in result.steps %}
         <div class="flex items-start justify-between gap-2">

@@ -432,11 +432,13 @@ def _recv_matching_sip(sock: socket.socket, call_id: str, cseq_num: int, method:
 
 
 def test_connection(provider_id: int) -> dict[str, Any]:
-    """Run non-calling SIP trunk diagnostics (DNS, UDP OPTIONS, Digest REGISTER).
+    """Run non-calling, non-disruptive SIP trunk diagnostics.
 
-    Never places an outbound PSTN/SIP INVITE call and never returns secrets.
+    Uses DNS lookup, UDP OPTIONS probe, and an RFC 3261 binding-query REGISTER
+    (omitting Contact/Expires so active trunk registrations and active calls are
+    never modified or disrupted). Never places INVITE calls or exposes secrets.
     """
-    caveat = "Diagnostic only (DNS + SIP OPTIONS + SIP REGISTER). No outbound call was placed or verified."
+    caveat = "Diagnostic only (DNS + OPTIONS + non-modifying RFC 3261 REGISTER query). No outbound call placed; existing active calls and SIP bindings left untouched."
     provider = get_sip_provider_by_id(provider_id)
     if not provider:
         return {
@@ -587,6 +589,7 @@ def test_connection(provider_id: int) -> dict[str, Any]:
 
         def _build_register(cseq_num: int, auth_hdr_name: str | None = None, auth_value: str | None = None) -> str:
             br = "z9hG4bK" + "".join(random.choices("0123456789abcdef", k=10))
+            # RFC 3261 binding-query REGISTER: omit Contact & Expires so existing active trunk registrations are untouched.
             msg = (
                 f"REGISTER {reg_uri} SIP/2.0\r\n"
                 f"Via: SIP/2.0/UDP {advertised_ip}:{local_port};rport;branch={br}\r\n"
@@ -595,8 +598,6 @@ def test_connection(provider_id: int) -> dict[str, Any]:
                 f"To: <sip:{sip_user}@{domain}>\r\n"
                 f"Call-ID: {reg_call_id}\r\n"
                 f"CSeq: {cseq_num} REGISTER\r\n"
-                f"Contact: <sip:{sip_user}@{advertised_ip}:{local_port}>\r\n"
-                "Expires: 60\r\n"
                 "User-Agent: C-Call/2.0\r\n"
             )
             if auth_hdr_name and auth_value:
@@ -608,10 +609,12 @@ def test_connection(provider_id: int) -> dict[str, Any]:
         register_status = "timeout"
         register_code: int | None = None
         register_line = ""
+        active_bindings_count = 0
 
         t_reg = time.perf_counter()
         sock.sendto(_build_register(1).encode("utf-8"), (ip, port))
         reg_reply = _recv_matching_sip(sock, reg_call_id, 1, "REGISTER", timeout_s)
+        final_reg_reply = reg_reply
         if reg_reply:
             udp_reachable = True
             if first_rtt_ms is None:
@@ -632,6 +635,7 @@ def test_connection(provider_id: int) -> dict[str, Any]:
                     auth_val = _build_digest_header(challenge_params, sip_user, sip_password, "REGISTER", reg_uri)
                     sock.sendto(_build_register(2, hdr_name, auth_val).encode("utf-8"), (ip, port))
                     reg_reply_2 = _recv_matching_sip(sock, reg_call_id, 2, "REGISTER", timeout_s)
+                    final_reg_reply = reg_reply_2
                     if reg_reply_2:
                         register_code, register_line = _parse_sip_status(reg_reply_2)
                     else:
@@ -644,6 +648,11 @@ def test_connection(provider_id: int) -> dict[str, Any]:
                         "status": "fail",
                         "detail": f"{register_line} missing Digest challenge parameters",
                     })
+
+        if register_code == 200 and final_reg_reply:
+            active_bindings_count = sum(
+                1 for ln in final_reg_reply.split("\r\n") if ln.lower().startswith("contact:")
+            )
 
         if register_code == 200:
             register_status = "registered"
@@ -679,12 +688,15 @@ def test_connection(provider_id: int) -> dict[str, Any]:
         if register_code == 200:
             success = True
             readiness = "registered"
-            readiness_label = "SIP Trunk Registered"
+            if options_code and options_code != 200:
+                readiness_label = f"REGISTER 200 OK (OPTIONS {options_code})"
+            else:
+                readiness_label = "SIP Trunk Registered"
             explanation = (
-                f"DNS resolved to {ip}, UDP signaling is reachable on port {port}, and SIP REGISTER succeeded ({register_line})."
+                f"DNS resolved to {ip}, UDP signaling is reachable on port {port}, and SIP REGISTER query succeeded ({register_line})."
             )
             if options_code and options_code != 200:
-                explanation += f" Note: OPTIONS returned {options_line}, which some carriers disable while still accepting calls."
+                explanation += f" Note: OPTIONS probe returned {options_line}, which many IP-PBX trunks return when no extension is targeted, while REGISTER works."
             suggested_action = "Assign a pool number to this trunk and place an authorized test call before live traffic."
             summary_msg = f"Registered OK ({register_line})"
         elif not udp_reachable:
@@ -755,6 +767,8 @@ def test_connection(provider_id: int) -> dict[str, Any]:
             "provider_readiness": readiness,
             "readiness_label": readiness_label,
             "outbound_call_verified": False,
+            "registration_non_disruptive": True,
+            "active_bindings_count": active_bindings_count,
             "caveat": caveat,
             "explanation": explanation,
             "suggested_action": suggested_action,

@@ -274,15 +274,41 @@ class TestPlanArchive:
             WHERE p.archived_at IS NULL
             LIMIT 1
         """).fetchone()
+        created_fixture = False
+        fixture_tenant_id = None
         if not row:
-            pytest.skip("No plan with tenants in DB")
-        plan_id = row["id"]
+            created_fixture = True
+            db_conn.execute(
+                "INSERT INTO plans (name, price_monthly, included_minutes, max_flows, max_users) "
+                "VALUES ('ArchiveGuardFixture __t', 0, 0, 0, 0)"
+            )
+            plan_id = db_conn.execute(
+                "SELECT id FROM plans WHERE name='ArchiveGuardFixture __t'"
+            ).fetchone()["id"]
+            db_conn.execute(
+                "INSERT INTO plan_tts_policies (plan_id, credential_policy, allowed_providers, byok_providers, platform_managed_providers) "
+                "VALUES (%s, 'byok_only', '[]', '[]', '[]')",
+                (plan_id,),
+            )
+            fixture_tenant_id = db_conn.execute(
+                "INSERT INTO tenants (business_name, email, status, plan_id) "
+                "VALUES ('ArchiveGuard Tenant', 'archive_guard_fix@test.local', 'active', %s) RETURNING id",
+                (plan_id,),
+            ).fetchone()["id"]
+        else:
+            plan_id = row["id"]
+
         csrf = _get_csrf(super_admin_client, "/admin/plans")
         resp = _post(super_admin_client, f"/admin/plans/{plan_id}/archive", {}, csrf_token=csrf)
         assert b"Cannot archive" in resp.data or b"tenant" in resp.data.lower()
         # Confirm not archived
         r2 = db_conn.execute("SELECT archived_at FROM plans WHERE id=%s", (plan_id,)).fetchone()
         assert r2["archived_at"] is None
+
+        if created_fixture:
+            db_conn.execute("DELETE FROM tenants WHERE id=%s", (fixture_tenant_id,))
+            db_conn.execute("DELETE FROM plan_tts_policies WHERE plan_id=%s", (plan_id,))
+            db_conn.execute("DELETE FROM plans WHERE id=%s", (plan_id,))
 
     def test_archive_succeeds_for_unassigned_plan(self, super_admin_client, db_conn):
         """Plan with 0 tenants can be archived."""

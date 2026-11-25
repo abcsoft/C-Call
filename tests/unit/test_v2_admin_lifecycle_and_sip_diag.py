@@ -60,6 +60,7 @@ def _start_mock_sip_server(mode: str, expected_user: str = "trunkuser", expected
     port = sock.getsockname()[1]
     stop = threading.Event()
     received_methods: list[str] = []
+    received_raw: list[str] = []
 
     def _reply(addr, req: str, status_line: str, extra: str = ""):
         via = _header(req, "Via")
@@ -92,6 +93,7 @@ def _start_mock_sip_server(mode: str, expected_user: str = "trunkuser", expected
             except OSError:
                 break
             req = data.decode("utf-8", errors="ignore")
+            received_raw.append(req)
             first = req.split("\r\n", 1)[0]
             method = first.split(" ", 1)[0].upper()
             received_methods.append(method)
@@ -124,12 +126,12 @@ def _start_mock_sip_server(mode: str, expected_user: str = "trunkuser", expected
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
-    return port, stop, received_methods, sock
+    return port, stop, received_methods, sock, received_raw
 
 
 def test_sip_404_not_reported_as_success(app, monkeypatch):
     monkeypatch.setenv("SIP_DIAGNOSTIC_TIMEOUT_SECONDS", "0.6")
-    port, stop, methods, srv_sock = _start_mock_sip_server("always_404")
+    port, stop, methods, srv_sock, _ = _start_mock_sip_server("always_404")
     try:
         with app.app_context():
             pid = add_sip_provider("Bad 404 Trunk", "127.0.0.1", port, "u1", "VerySecretPw1!", max_channels=12)
@@ -150,7 +152,7 @@ def test_sip_404_not_reported_as_success(app, monkeypatch):
 
 def test_sip_digest_401_to_200_register_passes_and_never_places_call(app, monkeypatch):
     monkeypatch.setenv("SIP_DIAGNOSTIC_TIMEOUT_SECONDS", "0.6")
-    port, stop, methods, srv_sock = _start_mock_sip_server("digest_200", "u_ok", "VerySecretPw2!")
+    port, stop, methods, srv_sock, raw_packets = _start_mock_sip_server("digest_200", "u_ok", "VerySecretPw2!")
     try:
         with app.app_context():
             pid = add_sip_provider("Digest OK Trunk", "127.0.0.1", port, "u_ok", "VerySecretPw2!", max_channels=25)
@@ -163,7 +165,13 @@ def test_sip_digest_401_to_200_register_passes_and_never_places_call(app, monkey
         assert res["register_status_code"] == 200
         assert res["provider_readiness"] == "registered"
         assert res["outbound_call_verified"] is False
+        assert res["registration_non_disruptive"] is True
         assert "INVITE" not in methods
+        # Ensure RFC 3261 binding-query REGISTER omits Contact/Expires so active trunk registrations are never modified
+        reg_packets = [pkt for pkt in raw_packets if pkt.startswith("REGISTER ")]
+        assert len(reg_packets) == 2
+        for pkt in reg_packets:
+            assert "\r\nContact:" not in pkt and "\r\nExpires:" not in pkt
         assert "VerySecretPw2!" not in json.dumps(res)
     finally:
         stop.set()
@@ -172,7 +180,7 @@ def test_sip_digest_401_to_200_register_passes_and_never_places_call(app, monkey
 
 def test_sip_wrong_password_rejected_403(app, monkeypatch):
     monkeypatch.setenv("SIP_DIAGNOSTIC_TIMEOUT_SECONDS", "0.6")
-    port, stop, _, srv_sock = _start_mock_sip_server("digest_200", "u_ok", "real_secret")
+    port, stop, _, srv_sock, _ = _start_mock_sip_server("digest_200", "u_ok", "real_secret")
     try:
         with app.app_context():
             pid = add_sip_provider("Bad Auth Trunk", "127.0.0.1", port, "u_ok", "wrong_secret_99", max_channels=10)
