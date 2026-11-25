@@ -1,6 +1,6 @@
 # C-Call — SIP & Calling Engine Test Report
 
-- **Policy:** No unsolicited real PSTN/SIP calls placed. All SIP/RTP/IVR tests executed with mocked/loopback UDP SIP/RTP transport and synthetic data.
+- **Policy:** No unsolicited real PSTN/SIP calls placed. All SIP/RTP/IVR call tests executed with mocked/loopback UDP SIP/RTP transport and synthetic data; live carrier diagnostics against `203.188.247.3:5060` use strictly non-calling `OPTIONS` + RFC 3261 binding-query `REGISTER` (omitting `Contact` and `Expires` so existing active calls and SIP trunk registrations remain untouched).
 - **Covered modules:** `call_engine/ivr_engine.py`, `call_engine/direct_sip_call.py`, `rtp_probe.py`, `app/models/sip_provider.py`, `scripts/ippbx_acceptance.py`.
 
 | Test Area | Scope & Command | Status |
@@ -13,6 +13,6 @@
 | Mock UDP SIP REGISTER 401 Digest Challenge + 200 OK (`Call-ID`/`CSeq` validation) | `pytest tests/unit/test_v2_sip_networking.py -k test_mock_udp_sip_register_challenge_and_200` | **PASS** |
 | SIP `CANCEL` During 180 Ringing & Port Cleanup | `pytest tests/unit/test_v2_sip_networking.py -k test_sip_cancel_while_ringing_and_port_cleanup` | **PASS** |
 | Direct SIP Startup ACK Protocol | `pytest tests/unit/test_direct_sip_ack.py` (24 tests) | **PASS** |
-| Admin SIP Diagnostics: `SIP/2.0 404` Reject, Digest `401 -> 200` Non-Calling REGISTER, Wrong Auth `403`, `max_channels`/Port/Duplicate Validation & Stale Call Reconciliation | `pytest tests/unit/test_v2_admin_lifecycle_and_sip_diag.py` + Playwright (`:5001`) | **PASS** |
+| Admin SIP Diagnostics: Separate `OPTIONS` (`404`/`405`) & Non-Disruptive RFC 3261 Binding-Query `REGISTER` (`401 -> 200`, `Contact`/`Expires` omitted), UDP Retry on Timeout, Wrong Auth `403`, `max_channels`/Port/Duplicate Validation & Stale Call Reconciliation | `pytest tests/unit/test_v2_admin_lifecycle_and_sip_diag.py` (7/7) + Live `:5000` Playwright (`203.188.247.3:5060`: `OPTIONS: 404` & `REGISTER: 200`) | **PASS** |
 | End-to-End Local UDP Mock IP-PBX Rehearsal (REGISTER, INVITE, RTP audio, DTMF, recording, REFER transfer, BYE) | `scripts/ippbx_acceptance.py --mode mock-acceptance --transfer-to 1001` & `test_ippbx_acceptance_mock_rehearsal` | **PASS** |
 | Live Carrier IP-PBX Call, Audio, DTMF, Hangup, Transfer | Requires explicit authorization + live SIP credentials (`scripts/ippbx_acceptance.py --mode full-call --confirm-authorized-test --target ...`) | **BLOCKED** |

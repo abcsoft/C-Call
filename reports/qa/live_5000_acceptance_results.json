@@ -1,56 +1,143 @@
 {
   "base_url": "http://127.0.0.1:5000",
-  "audit_101_summary": {
-    "total": 101,
-    "synthetic_empty": 4,
-    "synthetic_with_balance_or_activity": 89,
-    "manual_review": 0,
-    "protected_merchant": 8,
-    "safe_delete_eligible": 4,
-    "archive_eligible": 101
-  },
-  "pages": {
-    "customers": {
+  "initial_existing_tenants": 101,
+  "admin_pages": {
+    "dashboard": {
+      "url": "/admin/dashboard",
       "status": 200,
-      "total_text_present": true,
-      "pagination_present": true
+      "ok": true
+    },
+    "live_calls": {
+      "url": "/admin/live-calls",
+      "status": 200,
+      "ok": true
+    },
+    "customers": {
+      "url": "/admin/customers",
+      "status": 200,
+      "ok": true
+    },
+    "numbers": {
+      "url": "/admin/numbers",
+      "status": 200,
+      "ok": true
     },
     "providers": {
+      "url": "/admin/providers",
       "status": 200,
-      "max_channels_visible": true
+      "ok": true
+    },
+    "cdr": {
+      "url": "/admin/cdr",
+      "status": 200,
+      "ok": true
+    },
+    "revenue": {
+      "url": "/admin/revenue",
+      "status": 200,
+      "ok": true
+    },
+    "settings": {
+      "url": "/admin/settings",
+      "status": 200,
+      "ok": true
     },
     "plans": {
-      "status": 200
+      "url": "/admin/plans",
+      "status": 200,
+      "ok": true
     },
     "platform_tts": {
-      "status": 200
+      "url": "/admin/platform-tts",
+      "status": 200,
+      "ok": true
     },
     "tts_usage": {
+      "url": "/admin/tts-usage",
       "status": 200,
-      "csv_export_status": 200
+      "ok": true
     }
   },
-  "synthetic_crud_on_5000": {
-    "cleanup_preview_default_unchecked": true,
-    "create_edit_safe_delete_temp_tenant": "PASS"
-  },
-  "sip_diagnostic_on_5000": [
-    {
-      "readiness": "registered",
-      "summary": "PASS \u2014 SIP Trunk Registered",
-      "has_non_calling_caveat": true,
-      "steps_text": "PASS \u2014 SIP Trunk Registered\n5 ms\nDNS / Host Resolution\n[PASS] 203.188.247.3 -> 203.188.247.3\nUDP Socket Reachability\n[PASS] UDP packet response received from 203.188.247.3:5060\nSIP OPTIONS Ping\n[FAIL] SIP/2.0 404 Not Found\nSIP Digest Challenge\n[PASS] SIP/2.0 401 Unauthorized (realm=asterisk)\nSIP REGISTER Auth\n[PASS] SIP/2.0 200 OK\n\nDNS resolved to 203.188.247.3, UDP signaling is reachable on port 5060, and SIP REGISTER succeeded (SIP/2.0 200 OK). Note: OPTIONS returned SIP/2.0 404 Not Found, which some carriers disable while still accepting calls.\n\nNext: Assign a pool number to this trunk and place an authorized test call before live traffic.\n\nDiagnostic only (DNS + SIP OPTIONS + SIP REGISTER). No outbound call was placed or verified."
+  "merchant_pages": {
+    "dashboard": {
+      "url": "/dashboard",
+      "status": 200,
+      "ok": true
+    },
+    "live_calls": {
+      "url": "/live-calls",
+      "status": 200,
+      "ok": true
+    },
+    "orders": {
+      "url": "/orders",
+      "status": 200,
+      "ok": true
+    },
+    "voice_script": {
+      "url": "/script",
+      "status": 200,
+      "ok": true
+    },
+    "retry_settings": {
+      "url": "/retry",
+      "status": 200,
+      "ok": true
+    },
+    "flows": {
+      "url": "/flows",
+      "status": 200,
+      "ok": true
+    },
+    "wallet": {
+      "url": "/wallet",
+      "status": 200,
+      "ok": true
+    },
+    "subscription": {
+      "url": "/settings/subscription",
+      "status": 200,
+      "ok": true
+    },
+    "cdr": {
+      "url": "/cdr",
+      "status": 200,
+      "ok": true
+    },
+    "integration": {
+      "url": "/integration",
+      "status": 200,
+      "ok": true
+    },
+    "settings": {
+      "url": "/settings",
+      "status": 200,
+      "ok": true
+    },
+    "team": {
+      "url": "/settings/team",
+      "status": 200,
+      "ok": true
     }
-  ],
-  "tts_usage_db_check": {
-    "chars": 0,
-    "seconds": 0,
-    "cost": 0.0
+  },
+  "sip_diagnostic": {
+    "options_badge": "OPTIONS: 404",
+    "register_badge": "REGISTER: 200",
+    "header": "PASS \u2014 REGISTER 200 OK (OPTIONS 404)"
+  },
+  "workflows": {
+    "plan_create_duplicate_archive_activate": "PASS",
+    "tts_usage_and_csv_db_match": "PASS",
+    "plan_tts_restriction_enforced": {
+      "status": 403,
+      "body": "<span class='text-rose-400 text-xs font-semibold'>Provider 'gemini' is not available on your plan.</span>"
+    },
+    "subscription_select_and_cancel": "PASS"
   },
   "leaked_secrets": [],
   "console_errors": [],
   "page_errors": [],
   "http_500s": [],
   "failed_requests": [],
-  "final_live_tenants_count": 101
+  "final_existing_tenants": 101
 }

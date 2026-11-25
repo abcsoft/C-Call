@@ -431,6 +431,28 @@ def _recv_matching_sip(sock: socket.socket, call_id: str, cseq_num: int, method:
             return text
 
 
+def _send_and_recv_sip(
+    sock: socket.socket,
+    addr: tuple[str, int],
+    payload: str,
+    call_id: str,
+    cseq_num: int,
+    method: str,
+    timeout: float,
+    attempts: int | None = None,
+) -> tuple[str | None, int | None]:
+    """Send a UDP SIP diagnostic datagram with limited retransmit on timeout."""
+    max_attempts = attempts if attempts is not None else max(1, int(os.environ.get("SIP_DIAGNOSTIC_UDP_RETRIES", "2")))
+    encoded = payload.encode("utf-8")
+    for _ in range(max_attempts):
+        t0 = time.perf_counter()
+        sock.sendto(encoded, addr)
+        reply = _recv_matching_sip(sock, call_id, cseq_num, method, timeout)
+        if reply is not None:
+            return reply, int((time.perf_counter() - t0) * 1000)
+    return None, None
+
+
 def test_connection(provider_id: int) -> dict[str, Any]:
     """Run non-calling, non-disruptive SIP trunk diagnostics.
 
@@ -560,12 +582,10 @@ def test_connection(provider_id: int) -> dict[str, Any]:
             "Accept: application/sdp\r\n"
             "Content-Length: 0\r\n\r\n"
         )
-        t0 = time.perf_counter()
-        sock.sendto(options_req.encode("utf-8"), (ip, port))
-        opt_reply = _recv_matching_sip(sock, opt_call_id, 1, "OPTIONS", timeout_s)
+        opt_reply, opt_rtt_ms = _send_and_recv_sip(sock, (ip, port), options_req, opt_call_id, 1, "OPTIONS", timeout_s)
         if opt_reply:
             udp_reachable = True
-            first_rtt_ms = int((time.perf_counter() - t0) * 1000)
+            first_rtt_ms = opt_rtt_ms
             options_code, options_line = _parse_sip_status(opt_reply)
             if options_code == 200:
                 options_status = "ok"
@@ -611,14 +631,12 @@ def test_connection(provider_id: int) -> dict[str, Any]:
         register_line = ""
         active_bindings_count = 0
 
-        t_reg = time.perf_counter()
-        sock.sendto(_build_register(1).encode("utf-8"), (ip, port))
-        reg_reply = _recv_matching_sip(sock, reg_call_id, 1, "REGISTER", timeout_s)
+        reg_reply, reg_rtt_ms = _send_and_recv_sip(sock, (ip, port), _build_register(1), reg_call_id, 1, "REGISTER", timeout_s)
         final_reg_reply = reg_reply
         if reg_reply:
             udp_reachable = True
             if first_rtt_ms is None:
-                first_rtt_ms = int((time.perf_counter() - t_reg) * 1000)
+                first_rtt_ms = reg_rtt_ms
             register_code, register_line = _parse_sip_status(reg_reply)
 
             if register_code in (401, 407):
@@ -633,8 +651,15 @@ def test_connection(provider_id: int) -> dict[str, Any]:
                         "detail": f"{register_line} (realm={auth_realm or 'default'})",
                     })
                     auth_val = _build_digest_header(challenge_params, sip_user, sip_password, "REGISTER", reg_uri)
-                    sock.sendto(_build_register(2, hdr_name, auth_val).encode("utf-8"), (ip, port))
-                    reg_reply_2 = _recv_matching_sip(sock, reg_call_id, 2, "REGISTER", timeout_s)
+                    reg_reply_2, _ = _send_and_recv_sip(
+                        sock,
+                        (ip, port),
+                        _build_register(2, hdr_name, auth_val),
+                        reg_call_id,
+                        2,
+                        "REGISTER",
+                        timeout_s,
+                    )
                     final_reg_reply = reg_reply_2
                     if reg_reply_2:
                         register_code, register_line = _parse_sip_status(reg_reply_2)
