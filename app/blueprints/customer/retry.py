@@ -234,6 +234,20 @@ def retry_settings():
             save_retry_rules(tenant_id, rules)
             return jsonify({"success": True, "message": "Retry & DND settings saved."})
 
+        retry_enabled = request.form.get("retry_enabled") == "on"
+
+        if not retry_enabled:
+            # Retry disabled: preserve all configured rules but mark them inactive.
+            # No per-attempt validation needed — disabled inputs are not submitted.
+            update_tenant_settings(tenant_id, {"retry_enabled": False})
+            from app.db import db as _db
+            _db.execute(
+                "UPDATE retry_rules SET is_enabled = FALSE WHERE tenant_id = %s",
+                (tenant_id,),
+            )
+            flash("Auto retry disabled. Previous retry rules preserved.", "success")
+            return redirect(url_for("customer.retry_settings"))
+
         try:
             max_attempts = int(request.form.get("max_attempts", 3))
         except ValueError:
@@ -242,12 +256,15 @@ def retry_settings():
         rules, errors = _validate_and_build_rules(request.form, max_attempts)
 
         if errors:
-            for err in errors:
-                flash(err, "error")
+            # One summary flash instead of one per error.
+            flash(
+                f"Could not save retry settings — please fix {len(errors)} highlighted field(s): "
+                + "; ".join(errors),
+                "error",
+            )
             return redirect(url_for("customer.retry_settings"))
 
-        retry_enabled = request.form.get("retry_enabled") == "on"
-        update_tenant_settings(tenant_id, {"retry_enabled": retry_enabled})
+        update_tenant_settings(tenant_id, {"retry_enabled": True})
         save_retry_rules(tenant_id, rules)
 
         flash("Retry & DND settings saved.", "success")

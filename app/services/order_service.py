@@ -40,6 +40,7 @@ logger = logging.getLogger("ccall")
 # Background thread to monitor calls and process outcomes
 _monitor_thread = None
 _monitor_active = False
+_monitor_stop_event = threading.Event()
 
 _MONITOR_LOCK_KEY = "ccall:monitor_leader"
 _MONITOR_LOCK_TTL = 10  # seconds — must be > poll interval (1.5s) with headroom
@@ -70,23 +71,26 @@ end
 def start_call_monitor(app) -> None:
     """Start the background call monitor thread.
 
-    In a multi-worker deployment (Gunicorn 4 workers) each worker calls this
-    function and would otherwise run 4 polling loops that duplicate work and
-    emit duplicate billing events.  We use a Redis SETNX lock with a short TTL
-    so only one worker (the lock holder) actually runs the loop.  Workers that
-    fail to acquire the lock skip startup entirely; they will pick it up on the
-    next restart if the holder dies without releasing."""
+    In a multi-worker deployment each worker may call this; singleton ownership
+    is enforced via a dedicated PostgreSQL session advisory lock (key=99999)
+    with informational Redis SETNX TTL renewal."""
     global _monitor_thread, _monitor_active
-    if _monitor_active:
+    if _monitor_active and _monitor_thread and _monitor_thread.is_alive():
         return
+    _monitor_stop_event.clear()
     _monitor_active = True
     _monitor_thread = threading.Thread(target=_monitor_loop, args=(app,), daemon=True)
     _monitor_thread.start()
     logger.info("Background Call Monitor Thread started.")
 
-def stop_call_monitor() -> None:
+
+def stop_call_monitor(wait: bool = False, timeout: float = 5.0) -> None:
+    """Signal the background call monitor thread to stop cleanly."""
     global _monitor_active
     _monitor_active = False
+    _monitor_stop_event.set()
+    if wait and _monitor_thread and _monitor_thread.is_alive():
+        _monitor_thread.join(timeout=timeout)
 
 _MONITOR_PG_ADVISORY_KEY = 99999  # session-level advisory lock for monitor singleton
 
@@ -113,7 +117,7 @@ def _monitor_loop(app) -> None:
         # This connection must stay open for the full duration of the monitor
         # thread — do not close it until the thread exits.
         import psycopg
-        db_url = os.environ.get("DATABASE_URL", "")
+        db_url = app.config.get("DATABASE_URL") or os.environ.get("DATABASE_URL", "")
         _pg_conn = None
         _pg_lock_held = False
 
@@ -222,7 +226,7 @@ def _monitor_loop(app) -> None:
                 except Exception as exc:
                     logger.error("Error in monitor poll loop: %s", exc, exc_info=True)
 
-                time.sleep(1.5)  # Poll every 1.5 seconds
+                _monitor_stop_event.wait(timeout=1.5)  # Wake immediately on stop_call_monitor()
         finally:
             # Release the PG advisory lock and close dedicated connection.
             try:

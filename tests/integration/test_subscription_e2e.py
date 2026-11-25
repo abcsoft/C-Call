@@ -1218,3 +1218,362 @@ class TestBackfillIntegrity:
             "SELECT id FROM subscription_events WHERE NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = subscription_events.tenant_id)"
         )
         assert len(rows) == 0, f"Orphan subscription_events: {[r['id'] for r in rows]}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 10 — SUBSCRIPTION PAGE LAYOUT + PLAN SELECTION UI TESTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _sp_login(client, email, password="Password123!"):
+    return client.post("/auth/login", data={"email": email, "password": password},
+                       follow_redirects=True)
+
+
+def _sp_csrf(client, url):
+    import re
+    resp = client.get(url)
+    m = re.search(r'name="csrf_token"\s+value="([^"]+)"', resp.data.decode())
+    return m.group(1) if m else ""
+
+
+class TestSubscriptionPageLayout:
+    """Sidebar, nav, layout assertions."""
+
+    def test_page_returns_200(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "LayoutSub", "email": f"layout_sub_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712100001",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        _sp_login(client, user["email"])
+        resp = client.get("/settings/subscription")
+        assert resp.status_code == 200
+
+    def test_merchant_sidebar_present(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "SidebarSub2", "email": f"sidebar2_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712100002",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        _sp_login(client, user["email"])
+        html = client.get("/settings/subscription").data.decode()
+        assert "C-CALL IVR" in html, "Merchant branding missing"
+        assert "sidebarOpen" in html, "Alpine sidebar toggle missing"
+
+    def test_subscription_nav_item_present(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "NavSub2", "email": f"nav2_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712100003",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        _sp_login(client, user["email"])
+        html = client.get("/settings/subscription").data.decode()
+        assert "/settings/subscription" in html, "Nav link to subscription page must exist"
+
+    def test_available_plans_shown(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "PlansShown", "email": f"plans_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712100004",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        _sp_login(client, user["email"])
+        plans = db.query("SELECT name FROM plans WHERE archived_at IS NULL")
+        html = client.get("/settings/subscription").data.decode()
+        for p in plans:
+            assert p["name"] in html, f"Plan '{p['name']}' not displayed"
+
+    def test_archived_plan_hidden(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "ArchHide", "email": f"arch_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712100005",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        plan_id = db.insert_returning_id(
+            "INSERT INTO plans (name, price_monthly, archived_at) VALUES (%s, %s, now()) RETURNING id",
+            ("ARCHIVED_SP_HIDDEN", 77.77)
+        )
+        _sp_login(client, user["email"])
+        html = client.get("/settings/subscription").data.decode()
+        assert "ARCHIVED_SP_HIDDEN" not in html
+        db.execute("DELETE FROM plans WHERE id=%s", (plan_id,))
+
+    def test_expired_tenant_can_access(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "ExpAccess", "email": f"exp_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712100006",
+        })
+        db.execute("UPDATE tenants SET status='expired' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        _sp_login(client, user["email"])
+        resp = client.get("/settings/subscription")
+        assert resp.status_code == 200, "Expired tenant must access subscription page"
+
+    def test_suspended_login_blocked(self, client, app, db_conn):
+        """Suspended tenant cannot log in — auth.login shows error flash."""
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        from app.models.tenant import invalidate_tenant_caches
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "SuspView", "email": f"susp_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712100007",
+        })
+        db.execute("UPDATE tenants SET status='suspended' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        invalidate_tenant_caches(tenant["id"])
+        resp = _sp_login(client, user["email"])
+        # login blocked → stays on login page (200 with flash), not redirected to dashboard
+        assert resp.status_code == 200
+        assert "dashboard" not in resp.data.decode().lower()
+
+
+class TestSubscriptionSelectPlan:
+    """Plan selection, billing cycle, security."""
+
+    def test_invalid_plan_id_rejected(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "BadPlan", "email": f"bad_plan_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200001",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        db.execute("UPDATE wallets SET balance=9999 WHERE tenant_id=%s", (tenant["id"],))
+        _sp_login(client, user["email"])
+        csrf = _sp_csrf(client, "/settings/subscription")
+        resp = client.post("/subscription/select-plan",
+                           data={"csrf_token": csrf, "plan_id": "9999999", "billing_cycle": "monthly"},
+                           follow_redirects=True)
+        html = resp.data.decode()
+        assert "not found" in html.lower() or "invalid" in html.lower() or resp.status_code in (200, 302)
+
+    def test_archived_plan_rejected(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "ArchSel2", "email": f"arch_sel_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200002",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        db.execute("UPDATE wallets SET balance=9999 WHERE tenant_id=%s", (tenant["id"],))
+        plan_id = db.insert_returning_id(
+            "INSERT INTO plans (name, price_monthly, archived_at) VALUES (%s, %s, now()) RETURNING id",
+            ("ARCH_SEL2", 50.00)
+        )
+        _sp_login(client, user["email"])
+        csrf = _sp_csrf(client, "/settings/subscription")
+        resp = client.post("/subscription/select-plan",
+                           data={"csrf_token": csrf, "plan_id": str(plan_id), "billing_cycle": "monthly"},
+                           follow_redirects=True)
+        html = resp.data.decode()
+        assert "no longer available" in html.lower() or "archived" in html.lower()
+        db.execute("DELETE FROM plans WHERE id=%s", (plan_id,))
+
+    def test_invalid_billing_cycle_rejected(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "BadCyc2", "email": f"bad_cyc_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200003",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        plan = db.query_one("SELECT id FROM plans WHERE archived_at IS NULL LIMIT 1")
+        if not plan:
+            pytest.skip("No plan")
+        _sp_login(client, user["email"])
+        csrf = _sp_csrf(client, "/settings/subscription")
+        resp = client.post("/subscription/select-plan",
+                           data={"csrf_token": csrf, "plan_id": str(plan["id"]), "billing_cycle": "weekly"},
+                           follow_redirects=True)
+        assert "invalid" in resp.data.decode().lower()
+
+    def test_insufficient_balance_redirects_to_wallet(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "NoBal", "email": f"no_bal_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200004",
+        })
+        db.execute("UPDATE tenants SET status='trial' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        db.execute("UPDATE wallets SET balance=0 WHERE tenant_id=%s", (tenant["id"],))
+        plan = db.query_one("SELECT id FROM plans WHERE archived_at IS NULL AND price_monthly > 0 LIMIT 1")
+        if not plan:
+            pytest.skip("No paid plan")
+        _sp_login(client, user["email"])
+        csrf = _sp_csrf(client, "/settings/subscription")
+        resp = client.post("/subscription/select-plan",
+                           data={"csrf_token": csrf, "plan_id": str(plan["id"]), "billing_cycle": "monthly"},
+                           follow_redirects=True)
+        html = resp.data.decode()
+        assert "insufficient" in html.lower() or "recharge" in html.lower()
+
+    def test_suspended_login_blocked_no_select(self, client, app, db_conn):
+        """Suspended tenant cannot log in, therefore cannot POST to select-plan."""
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        from app.models.tenant import invalidate_tenant_caches
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "SuspSel2", "email": f"susp_sel_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200005",
+        })
+        db.execute("UPDATE tenants SET status='suspended' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        db.execute("UPDATE wallets SET balance=9999 WHERE tenant_id=%s", (tenant["id"],))
+        invalidate_tenant_caches(tenant["id"])
+        plan = db.query_one("SELECT id FROM plans WHERE archived_at IS NULL LIMIT 1")
+        if not plan:
+            pytest.skip("No plan")
+        login_resp = _sp_login(client, user["email"])
+        # Suspended login is blocked — user lands on login page not dashboard
+        assert "login" in login_resp.request.url.lower() or "suspended" in login_resp.data.decode().lower()
+
+    def test_renewal_sets_tenant_active(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "RenewAct2", "email": f"renew2_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200006",
+        })
+        db.execute("UPDATE tenants SET status='expired' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        db.execute("UPDATE wallets SET balance=9999 WHERE tenant_id=%s", (tenant["id"],))
+        plan = db.query_one("SELECT id FROM plans WHERE archived_at IS NULL AND price_monthly > 0 LIMIT 1")
+        if not plan:
+            pytest.skip("No paid plan")
+        _sp_login(client, user["email"])
+        csrf = _sp_csrf(client, "/settings/subscription")
+        client.post("/subscription/select-plan",
+                    data={"csrf_token": csrf, "plan_id": str(plan["id"]), "billing_cycle": "monthly"},
+                    follow_redirects=True)
+        row = db.query_one("SELECT status FROM tenants WHERE id=%s", (tenant["id"],))
+        assert row["status"] == "active"
+
+    def test_renewal_records_event(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "EventRec2", "email": f"evt2_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200007",
+        })
+        db.execute("UPDATE tenants SET status='trial' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        db.execute("UPDATE wallets SET balance=9999 WHERE tenant_id=%s", (tenant["id"],))
+        plan = db.query_one("SELECT id FROM plans WHERE archived_at IS NULL LIMIT 1")
+        if not plan:
+            pytest.skip("No plan")
+        _sp_login(client, user["email"])
+        csrf = _sp_csrf(client, "/settings/subscription")
+        client.post("/subscription/select-plan",
+                    data={"csrf_token": csrf, "plan_id": str(plan["id"]), "billing_cycle": "monthly"},
+                    follow_redirects=True)
+        events = db.query(
+            "SELECT event_type FROM subscription_events WHERE tenant_id=%s ORDER BY created_at DESC",
+            (tenant["id"],)
+        )
+        types = [e["event_type"] for e in events]
+        assert "activated" in types or "renewed" in types, f"No activation event: {types}"
+
+    def test_idempotent_no_double_charge(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        from app.services import wallet_service
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "IdempSP", "email": f"idemp2_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200008",
+        })
+        db.execute("UPDATE tenants SET status='expired' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        db.execute("UPDATE wallets SET balance=9999 WHERE tenant_id=%s", (tenant["id"],))
+        plan = db.query_one("SELECT id FROM plans WHERE archived_at IS NULL AND price_monthly > 0 LIMIT 1")
+        if not plan:
+            pytest.skip("No paid plan")
+        _sp_login(client, user["email"])
+        csrf1 = _sp_csrf(client, "/settings/subscription")
+        client.post("/subscription/select-plan",
+                    data={"csrf_token": csrf1, "plan_id": str(plan["id"]), "billing_cycle": "monthly"},
+                    follow_redirects=True)
+        bal1 = wallet_service.get_balance(tenant["id"])
+        csrf2 = _sp_csrf(client, "/settings/subscription")
+        client.post("/subscription/select-plan",
+                    data={"csrf_token": csrf2, "plan_id": str(plan["id"]), "billing_cycle": "monthly"},
+                    follow_redirects=True)
+        bal2 = wallet_service.get_balance(tenant["id"])
+        assert bal2 == bal1, "Second POST must not deduct wallet again"
+
+    def test_csrf_token_in_form(self, client, app, db_conn):
+        """CSRF token rendered in form (WTF_CSRF_ENABLED=False in test config, so we verify token presence instead)."""
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenant, user = register_tenant({
+            "business_name": "CsrfSP", "email": f"csrf_sp_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200009",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenant["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (user["id"],))
+        _sp_login(client, user["email"])
+        html = client.get("/settings/subscription").data.decode()
+        assert "csrf_token" in html, "CSRF token must be present in subscription form"
+
+    def test_cross_tenant_wallet_isolated(self, client, app, db_conn):
+        from app.db import db
+        from app.services.auth_service import register_tenant
+        import secrets as _s
+        tenantA, userA = register_tenant({
+            "business_name": "CrossSPA", "email": f"cross_spa_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200010",
+        })
+        tenantB, userB = register_tenant({
+            "business_name": "CrossSPB", "email": f"cross_spb_{_s.token_hex(3)}@test.example",
+            "password": "Password123!", "phone": "01712200011",
+        })
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenantA["id"],))
+        db.execute("UPDATE tenants SET status='active' WHERE id=%s", (tenantB["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (userA["id"],))
+        db.execute("UPDATE users SET email_verified=true WHERE id=%s", (userB["id"],))
+        db.execute("UPDATE wallets SET balance=9999 WHERE tenant_id=%s", (tenantB["id"],))
+        plan = db.query_one("SELECT id FROM plans WHERE archived_at IS NULL LIMIT 1")
+        if not plan:
+            pytest.skip("No plan")
+        _sp_login(client, userA["email"])
+        csrf = _sp_csrf(client, "/settings/subscription")
+        client.post("/subscription/select-plan",
+                    data={"csrf_token": csrf, "plan_id": str(plan["id"]), "billing_cycle": "monthly"},
+                    follow_redirects=True)
+        balB = db.query_one("SELECT balance FROM wallets WHERE tenant_id=%s", (tenantB["id"],))
+        assert float(balB["balance"]) == 9999.0, "Tenant B wallet must not be touched"

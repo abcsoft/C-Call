@@ -93,7 +93,10 @@ class TestPlansList:
     def test_plans_list_super_admin_accessible(self, super_admin_client):
         resp = super_admin_client.get("/admin/plans")
         assert resp.status_code == 200
-        assert b"Plans" in resp.data
+        html = resp.data.decode()
+        assert "Plans" in html
+        assert "C-CALL ADMIN" in html, "Admin sidebar must be present"
+        assert "sidebarOpen" in html, "Alpine sidebar toggle must be present"
 
     def test_plans_list_no_encrypted_value_in_html(self, super_admin_client):
         resp = super_admin_client.get("/admin/plans")
@@ -181,8 +184,8 @@ class TestPlanCreate:
         }, csrf_token=csrf)
         assert b"byok_only" in resp.data or b"cannot" in resp.data.lower()
 
-    def test_create_plan_invalid_provider_filtered(self, super_admin_client, db_conn):
-        """Invalid provider names are silently filtered out."""
+    def test_create_plan_invalid_provider_rejected(self, super_admin_client, db_conn):
+        """Unknown provider names are rejected with a validation error."""
         csrf = _get_csrf(super_admin_client, "/admin/plans/create")
         resp = _post(super_admin_client, "/admin/plans/create", {
             "name": "Filter Test Plan __xyz",
@@ -197,10 +200,10 @@ class TestPlanCreate:
             "daily_preview_limit": "10",
             "max_concurrent_tts": "1",
         }, csrf_token=csrf)
-        # Should succeed (invalid filtered) or redirect to list
-        # Cleanup
-        db_conn.execute("DELETE FROM plan_tts_policies WHERE plan_id IN (SELECT id FROM plans WHERE name='Filter Test Plan __xyz')")
-        db_conn.execute("DELETE FROM plans WHERE name = 'Filter Test Plan __xyz'")
+        # Unknown providers must cause a validation error — plan must NOT be created
+        assert b"Unknown provider" in resp.data or b"notvalid" in resp.data.lower() or b"fakeai" in resp.data.lower()
+        row = db_conn.execute("SELECT id FROM plans WHERE name='Filter Test Plan __xyz'").fetchone()
+        assert row is None, "Plan must not be created when unknown providers are submitted"
 
 
 # ── Plan edit ─────────────────────────────────────────────────────────────────
@@ -338,7 +341,10 @@ class TestPlatformTtsPage:
     def test_page_loads(self, super_admin_client):
         resp = super_admin_client.get("/admin/platform-tts")
         assert resp.status_code == 200
+        html = resp.data.decode()
         assert b"gemini" in resp.data.lower() or b"elevenlabs" in resp.data.lower()
+        assert "C-CALL ADMIN" in html, "Admin sidebar must be present"
+        assert "sidebarOpen" in html, "Alpine sidebar toggle must be present"
 
     def test_page_no_encrypted_value(self, super_admin_client):
         """encrypted_value must never appear in HTML response."""
@@ -606,7 +612,10 @@ class TestTtsUsagePage:
     def test_page_loads(self, super_admin_client):
         resp = super_admin_client.get("/admin/tts-usage")
         assert resp.status_code == 200
-        assert b"TTS Usage" in resp.data
+        html = resp.data.decode()
+        assert "TTS Usage" in html
+        assert "C-CALL ADMIN" in html, "Admin sidebar must be present"
+        assert "sidebarOpen" in html, "Alpine sidebar toggle must be present"
 
     def test_page_no_api_keys_in_response(self, super_admin_client):
         """Usage page must not leak credentials."""
@@ -663,3 +672,238 @@ class TestAdminNavLinks:
         resp = super_admin_client.get("/admin/dashboard")
         html = resp.data.decode()
         assert "/admin/tts-usage" in html
+
+
+# ── TTS Policy UX — new validation rules ──────────────────────────────────────
+
+def _make_plan(db_conn, name: str, policy: str = "byok_only",
+               allowed: str = "edge", byok: str = "", platform: str = "") -> int:
+    """Insert a plan + tts_policy row and return plan_id."""
+    import json as _json
+    db_conn.execute(
+        "INSERT INTO plans (name, price_monthly, included_minutes, max_flows, max_users) VALUES (%s, 0, 0, 0, 0)",
+        (name,),
+    )
+    row = db_conn.execute("SELECT id FROM plans WHERE name=%s", (name,)).fetchone()
+    plan_id = row["id"]
+    db_conn.execute(
+        """INSERT INTO plan_tts_policies
+           (plan_id, credential_policy, allowed_providers, byok_providers, platform_managed_providers)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (plan_id, policy,
+         _json.dumps([p for p in allowed.split(",") if p]),
+         _json.dumps([p for p in byok.split(",") if p]),
+         _json.dumps([p for p in platform.split(",") if p])),
+    )
+    return plan_id
+
+
+def _cleanup_plan(db_conn, plan_id: int) -> None:
+    db_conn.execute("DELETE FROM plan_tts_policies WHERE plan_id=%s", (plan_id,))
+    db_conn.execute("DELETE FROM plans WHERE id=%s", (plan_id,))
+
+
+class TestTtsPolicyUxValidation:
+    """10 tests covering the new TTS Policy UX validation rules."""
+
+    # 1. platform_managed with no provider rejected
+    def test_platform_managed_requires_at_least_one_provider(self, super_admin_client):
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "PM No Provider __ux1",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "platform_managed",
+            "allowed_providers": "edge",
+            "byok_providers": "",
+            "platform_managed_providers": "",   # ← empty
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        assert b"platform_managed" in resp.data or b"requires at least one" in resp.data.lower()
+
+    # 2. platform_managed with configured Gemini accepted
+    def test_platform_managed_with_configured_gemini_accepted(self, super_admin_client, db_conn):
+        # Plant active Gemini credential
+        db_conn.execute("""
+            INSERT INTO platform_secrets (provider, encrypted_value, last_four, status)
+            VALUES ('gemini', 'FAKEENC', '1234', 'active')
+            ON CONFLICT (provider) DO UPDATE SET status='active', last_four='1234'
+        """)
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "PM Gemini OK __ux2",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "platform_managed",
+            "allowed_providers": "gemini",
+            "byok_providers": "",
+            "platform_managed_providers": "gemini",
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        assert b"created successfully" in resp.data or b"PM Gemini OK" in resp.data
+        db_conn.execute("DELETE FROM plan_tts_policies WHERE plan_id IN (SELECT id FROM plans WHERE name='PM Gemini OK __ux2')")
+        db_conn.execute("DELETE FROM plans WHERE name='PM Gemini OK __ux2'")
+
+    # 3. BYOK provider outside Allowed Providers rejected
+    def test_byok_provider_not_in_allowed_rejected(self, super_admin_client):
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "BYOK Subset __ux3",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "byok_only",
+            "allowed_providers": "edge",       # only edge allowed
+            "byok_providers": "gemini",        # gemini not in allowed → error
+            "platform_managed_providers": "",
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        assert b"not in Allowed" in resp.data or b"byok" in resp.data.lower()
+
+    # 4. Platform provider outside Allowed Providers rejected
+    def test_platform_provider_not_in_allowed_rejected(self, super_admin_client, db_conn):
+        db_conn.execute("""
+            INSERT INTO platform_secrets (provider, encrypted_value, last_four, status)
+            VALUES ('gemini', 'FAKEENC', '1234', 'active')
+            ON CONFLICT (provider) DO UPDATE SET status='active'
+        """)
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "Plat Subset __ux4",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "platform_managed",
+            "allowed_providers": "edge",       # gemini not in allowed
+            "byok_providers": "",
+            "platform_managed_providers": "gemini",
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        assert b"not in Allowed" in resp.data or b"platform" in resp.data.lower()
+
+    # 5. Unknown provider rejected (not silently filtered)
+    def test_unknown_provider_in_byok_rejected(self, super_admin_client):
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "Unknown BYOK __ux5",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "byok_only",
+            "allowed_providers": "edge,fakeprovider",
+            "byok_providers": "fakeprovider",
+            "platform_managed_providers": "",
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        assert b"Unknown provider" in resp.data or b"fakeprovider" in resp.data.lower()
+
+    # 6. Form values preserved after validation failure
+    def test_form_values_preserved_after_failure(self, super_admin_client):
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "",                         # ← triggers name-required error
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "byok_only",
+            "allowed_providers": "edge",
+            "byok_providers": "",
+            "platform_managed_providers": "",
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        # Re-renders form with errors — must not be a redirect (200 or 422)
+        assert resp.status_code in (200, 422)
+        assert b"Plan name is required" in resp.data or b"required" in resp.data.lower()
+        # The credential_policy value should appear in the re-rendered form
+        assert b"byok_only" in resp.data
+
+    # 7. byok_only does not require platform provider
+    def test_byok_only_does_not_require_platform_provider(self, super_admin_client, db_conn):
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "BYOK Only __ux7",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "byok_only",
+            "allowed_providers": "edge,gtts",
+            "byok_providers": "edge",
+            "platform_managed_providers": "",   # fine — byok_only doesn't need platform
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        assert b"created successfully" in resp.data or b"BYOK Only __ux7" in resp.data
+        db_conn.execute("DELETE FROM plan_tts_policies WHERE plan_id IN (SELECT id FROM plans WHERE name='BYOK Only __ux7')")
+        db_conn.execute("DELETE FROM plans WHERE name='BYOK Only __ux7'")
+
+    # 8. Hybrid validation works
+    def test_hybrid_policy_requires_both_byok_and_platform(self, super_admin_client, db_conn):
+        # Ensure Gemini is active
+        db_conn.execute("""
+            INSERT INTO platform_secrets (provider, encrypted_value, last_four, status)
+            VALUES ('gemini', 'FAKEENC', '1234', 'active')
+            ON CONFLICT (provider) DO UPDATE SET status='active'
+        """)
+        csrf = _get_csrf(super_admin_client, "/admin/plans/create")
+        resp = _post(super_admin_client, "/admin/plans/create", {
+            "name": "Hybrid OK __ux8",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "hybrid",
+            "allowed_providers": "edge,gemini",
+            "byok_providers": "edge",
+            "platform_managed_providers": "gemini",
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+        }, csrf_token=csrf)
+        assert b"created successfully" in resp.data or b"Hybrid OK __ux8" in resp.data
+        db_conn.execute("DELETE FROM plan_tts_policies WHERE plan_id IN (SELECT id FROM plans WHERE name='Hybrid OK __ux8')")
+        db_conn.execute("DELETE FROM plans WHERE name='Hybrid OK __ux8'")
+
+    # 9. Archived plan editing still works (edit form loads, save accepted)
+    def test_archived_plan_edit_form_loads(self, super_admin_client, db_conn):
+        plan_id = _make_plan(db_conn, "Archived Edit __ux9", allowed="edge")
+        # Archive it
+        db_conn.execute("UPDATE plans SET archived_at = now() WHERE id=%s", (plan_id,))
+
+        resp = super_admin_client.get(f"/admin/plans/{plan_id}/edit")
+        assert resp.status_code == 200, "Edit form must load for archived plans"
+        assert b"edge" in resp.data or b"Edge" in resp.data
+
+        _cleanup_plan(db_conn, plan_id)
+
+    # 10. Existing billing defaults remain unchanged after TTS policy edit
+    def test_billing_defaults_unchanged_after_tts_edit(self, super_admin_client, db_conn):
+        plan_id = _make_plan(db_conn, "Billing Stable __ux10", allowed="edge")
+        # Set billing defaults on plan
+        db_conn.execute(
+            "UPDATE plans SET default_rate_per_min=0.55, default_min_charge=0.10 WHERE id=%s",
+            (plan_id,),
+        )
+
+        # Edit only TTS/name fields, leave billing fields blank (inherit)
+        csrf = _get_csrf(super_admin_client, f"/admin/plans/{plan_id}/edit")
+        resp = _post(super_admin_client, f"/admin/plans/{plan_id}/edit", {
+            "name": "Billing Stable __ux10",
+            "price_monthly": "0", "included_minutes": "0",
+            "max_flows": "0", "max_users": "0",
+            "credential_policy": "byok_only",
+            "allowed_providers": "edge",
+            "byok_providers": "",
+            "platform_managed_providers": "",
+            "daily_preview_limit": "10",
+            "max_concurrent_tts": "1",
+            # billing fields deliberately omitted → should stay as previously set
+        }, csrf_token=csrf)
+        assert resp.status_code == 200
+
+        row = db_conn.execute(
+            "SELECT default_rate_per_min, default_min_charge FROM plans WHERE id=%s",
+            (plan_id,),
+        ).fetchone()
+        from decimal import Decimal
+        assert row["default_rate_per_min"] is None or row["default_rate_per_min"] == Decimal("0.55"), \
+            "Billing defaults must not be silently zeroed by a TTS-only edit"
+
+        _cleanup_plan(db_conn, plan_id)

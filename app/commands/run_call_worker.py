@@ -359,72 +359,76 @@ def main() -> None:
     else:
         logger.info("call_worker: call monitor disabled (ENABLE_CALL_MONITOR!=true)")
 
-    with app.app_context():
-        from app.db import db
-        from app.monitoring import CALL_WORKER_LAST_POLL, EXPIRED_LEASES_RECOVERED
+    try:
+        with app.app_context():
+            from app.db import db
+            from app.monitoring import CALL_WORKER_LAST_POLL, EXPIRED_LEASES_RECOVERED
 
-        while not _SHUTDOWN:
-            # Respect --max-jobs / --once limit.
-            if max_jobs is not None and jobs_processed >= max_jobs:
-                logger.info("call_worker: reached max-jobs=%d — exiting", max_jobs)
-                break
+            while not _SHUTDOWN:
+                # Respect --max-jobs / --once limit.
+                if max_jobs is not None and jobs_processed >= max_jobs:
+                    logger.info("call_worker: reached max-jobs=%d — exiting", max_jobs)
+                    break
 
-            try:
-                dispatched_in_batch = 0
-                for _ in range(batch_size):
-                    if _SHUTDOWN:
-                        break
-                    if max_jobs is not None and jobs_processed >= max_jobs:
-                        break
-                    with db.transaction() as conn:
-                        job = _lease_job(conn, worker_id, lease_seconds)
-                    if job:
-                        logger.info(
-                            "call_worker: leased job_id=%s order_id=%s tenant_id=%s attempt=%s",
-                            job["id"], job["order_id"], job["tenant_id"], job["attempt_no"],
-                        )
-                        _dispatch_job(app, job)
-                        dispatched_in_batch += 1
-                        jobs_processed += 1
-                    else:
-                        break  # no more jobs; stop this batch
-
-                # Update heartbeat timestamp (last successful poll tick).
-                CALL_WORKER_LAST_POLL.set_to_current_time()
                 try:
-                    db.execute(
-                        """INSERT INTO service_heartbeats (service_name, instance_id, last_seen_at, status)
-                           VALUES ('call_worker', %s, now(), 'ok')
-                           ON CONFLICT (service_name, instance_id) DO UPDATE
-                               SET last_seen_at = now(), status = 'ok'""",
-                        (worker_id,),
-                    )
-                except Exception:
-                    pass  # heartbeat failure is non-fatal
-
-                if dispatched_in_batch == 0:
-                    # In --once/--max-jobs mode with no job found, exit cleanly.
-                    if max_jobs is not None:
-                        logger.info("call_worker: no jobs available — exiting (--max-jobs mode)")
-                        break
-                    # Release expired leases as part of idle maintenance.
-                    try:
+                    dispatched_in_batch = 0
+                    for _ in range(batch_size):
+                        if _SHUTDOWN:
+                            break
+                        if max_jobs is not None and jobs_processed >= max_jobs:
+                            break
                         with db.transaction() as conn:
-                            recovered = release_expired_leases(conn)
-                        if recovered > 0:
-                            EXPIRED_LEASES_RECOVERED.inc(recovered)
+                            job = _lease_job(conn, worker_id, lease_seconds)
+                        if job:
+                            logger.info(
+                                "call_worker: leased job_id=%s order_id=%s tenant_id=%s attempt=%s",
+                                job["id"], job["order_id"], job["tenant_id"], job["attempt_no"],
+                            )
+                            _dispatch_job(app, job)
+                            dispatched_in_batch += 1
+                            jobs_processed += 1
+                        else:
+                            break  # no more jobs; stop this batch
+
+                    # Update heartbeat timestamp (last successful poll tick).
+                    CALL_WORKER_LAST_POLL.set_to_current_time()
+                    try:
+                        db.execute(
+                            """INSERT INTO service_heartbeats (service_name, instance_id, last_seen_at, status)
+                               VALUES ('call_worker', %s, now(), 'ok')
+                               ON CONFLICT (service_name, instance_id) DO UPDATE
+                                   SET last_seen_at = now(), status = 'ok'""",
+                            (worker_id,),
+                        )
                     except Exception:
-                        pass
-                    time.sleep(poll_interval)
+                        pass  # heartbeat failure is non-fatal
 
-            except Exception as exc:
-                logger.error(
-                    "call_worker: poll loop error (type=%s) — will retry in %.1fs",
-                    type(exc).__name__, poll_interval * 2,
-                )
-                time.sleep(poll_interval * 2)
+                    if dispatched_in_batch == 0:
+                        # In --once/--max-jobs mode with no job found, exit cleanly.
+                        if max_jobs is not None:
+                            logger.info("call_worker: no jobs available — exiting (--max-jobs mode)")
+                            break
+                        # Release expired leases as part of idle maintenance.
+                        try:
+                            with db.transaction() as conn:
+                                recovered = release_expired_leases(conn)
+                            if recovered > 0:
+                                EXPIRED_LEASES_RECOVERED.inc(recovered)
+                        except Exception:
+                            pass
+                        time.sleep(poll_interval)
 
-    logger.info("Call worker stopped cleanly.")
+                except Exception as exc:
+                    logger.error(
+                        "call_worker: poll loop error (type=%s) — will retry in %.1fs",
+                        type(exc).__name__, poll_interval * 2,
+                    )
+                    time.sleep(poll_interval * 2)
+    finally:
+        if os.environ.get("ENABLE_CALL_MONITOR", "false").lower() == "true":
+            from app.services.order_service import stop_call_monitor
+            stop_call_monitor(wait=True, timeout=5.0)
+        logger.info("Call worker stopped cleanly.")
 
 
 if __name__ == "__main__":

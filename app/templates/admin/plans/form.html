@@ -1,8 +1,9 @@
 {% extends "admin/base_admin.html" %}
 {% block title %}{{ 'Edit Plan' if plan else 'Create Plan' }} — Admin{% endblock %}
 
-{% block content %}
-<div class="max-w-3xl mx-auto px-4 py-8">
+{% block admin_content %}
+<style>[x-cloak]{display:none!important}</style>
+<div class="max-w-3xl mx-auto">
   <div class="flex items-center gap-3 mb-6">
     <a href="{{ url_for('admin.plans_list') }}" class="text-slate-400 hover:text-slate-200 transition">
       <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -76,45 +77,122 @@
     </div>
 
     <!-- TTS Policy -->
-    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-6 space-y-4">
+    {% set cur_policy = form_values.get('credential_policy', policy.credential_policy if policy else 'byok_only') %}
+    {% set sel_allowed  = form_values.get('allowed_providers')  if form_values.get('allowed_providers')  is not none else (policy.allowed_providers  if policy else []) %}
+    {% set sel_byok     = form_values.get('byok_providers')     if form_values.get('byok_providers')     is not none else (policy.byok_providers     if policy else []) %}
+    {% set sel_platform = form_values.get('platform_managed_providers') if form_values.get('platform_managed_providers') is not none else (policy.platform_managed_providers if policy else []) %}
+
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-6 space-y-5"
+         x-data="{ policy: '{{ cur_policy }}' }">
       <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">TTS Policy</h2>
 
+      <!-- Credential Policy -->
       <div>
         <label class="block text-sm font-medium text-slate-300 mb-1">Credential Policy <span class="text-red-400">*</span></label>
-        <select name="credential_policy"
+        <select name="credential_policy" x-model="policy"
                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-          {% set cur_policy = form_values.get('credential_policy', policy.credential_policy if policy else 'byok_only') %}
           {% for cp in credential_policies %}
           <option value="{{ cp }}" {{ 'selected' if cur_policy == cp }}>{{ cp }}</option>
           {% endfor %}
         </select>
         <p class="mt-1 text-xs text-slate-500">
-          byok_only: tenants must supply their own API keys.
-          platform_managed: platform keys used.
-          hybrid: tenant chooses.
+          <strong class="text-slate-400">byok_only</strong> — tenants supply their own API keys. &nbsp;
+          <strong class="text-slate-400">platform_managed</strong> — C-Call platform credentials are used. &nbsp;
+          <strong class="text-slate-400">hybrid</strong> — tenant may choose either mode.
         </p>
       </div>
 
+      <!-- ── Provider status legend ── -->
+      <div class="flex flex-wrap gap-3 text-[11px]">
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span> Configured</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-sky-400 inline-block"></span> Credential-free</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-yellow-400 inline-block"></span> Disabled</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-slate-500 inline-block"></span> Not configured</span>
+      </div>
+
+      <!-- ── Allowed Providers (always visible) ── -->
       <div>
         <label class="block text-sm font-medium text-slate-300 mb-1">Allowed Providers</label>
-        <input type="text" name="allowed_providers" placeholder="e.g. edge,gtts,gemini"
-               value="{{ form_values.get('allowed_providers', (policy.allowed_providers | join(',') if policy and policy.allowed_providers else '')) }}"
-               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
-        <p class="mt-1 text-xs text-slate-500">Comma-separated. Valid: {{ canonical_providers | join(', ') }}</p>
+        <p class="text-xs text-slate-500 mb-2">All TTS providers available under this plan. Other lists below are subsets of this.</p>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {% for p in canonical_providers %}
+          {% set st = provider_statuses.get(p, 'not_configured') %}
+          <label class="flex items-center gap-2 px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-lg cursor-pointer hover:border-indigo-500/50 transition">
+            <input type="checkbox" name="allowed_providers" value="{{ p }}"
+                   {{ 'checked' if p in sel_allowed }}
+                   class="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0">
+            <span class="flex-1 text-sm text-slate-200">{{ p }}</span>
+            {% if st == 'configured' %}
+              <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Platform credential configured"></span>
+            {% elif st == 'credential_free' %}
+              <span class="w-2 h-2 rounded-full bg-sky-400 shrink-0" title="No credential needed"></span>
+            {% elif st == 'disabled' %}
+              <span class="w-2 h-2 rounded-full bg-yellow-400 shrink-0" title="Platform credential disabled"></span>
+            {% else %}
+              <span class="w-2 h-2 rounded-full bg-slate-500 shrink-0" title="Platform credential not configured"></span>
+            {% endif %}
+          </label>
+          {% endfor %}
+        </div>
       </div>
 
-      <div>
-        <label class="block text-sm font-medium text-slate-300 mb-1">BYOK Providers <span class="text-xs text-slate-500">(subset of allowed)</span></label>
-        <input type="text" name="byok_providers" placeholder="e.g. gemini,elevenlabs"
-               value="{{ form_values.get('byok_providers', (policy.byok_providers | join(',') if policy and policy.byok_providers else '')) }}"
-               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      <!-- ── BYOK Providers (byok_only + hybrid) ── -->
+      <div x-show="policy === 'byok_only' || policy === 'hybrid'" x-cloak>
+        <label class="block text-sm font-medium text-slate-300 mb-1">BYOK Providers</label>
+        <p class="text-xs text-slate-500 mb-2">Providers customers may use with their own API credentials. Must be a subset of Allowed Providers.</p>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {% for p in canonical_providers %}
+          {% set st = provider_statuses.get(p, 'not_configured') %}
+          <label class="flex items-center gap-2 px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-lg cursor-pointer hover:border-indigo-500/50 transition">
+            <input type="checkbox" name="byok_providers" value="{{ p }}"
+                   {{ 'checked' if p in sel_byok }}
+                   :disabled="policy !== 'byok_only' && policy !== 'hybrid'"
+                   class="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0">
+            <span class="flex-1 text-sm text-slate-200">{{ p }}</span>
+            {% if st == 'credential_free' %}
+              <span class="w-2 h-2 rounded-full bg-sky-400 shrink-0" title="No credential needed"></span>
+            {% elif st == 'configured' %}
+              <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Platform credential configured"></span>
+            {% else %}
+              <span class="w-2 h-2 rounded-full bg-slate-500 shrink-0" title="{{ st }}"></span>
+            {% endif %}
+          </label>
+          {% endfor %}
+        </div>
       </div>
 
-      <div>
-        <label class="block text-sm font-medium text-slate-300 mb-1">Platform-Managed Providers <span class="text-xs text-slate-500">(subset of allowed)</span></label>
-        <input type="text" name="platform_managed_providers" placeholder="e.g. gemini"
-               value="{{ form_values.get('platform_managed_providers', (policy.platform_managed_providers | join(',') if policy and policy.platform_managed_providers else '')) }}"
-               class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      <!-- ── Platform-Managed Providers (platform_managed + hybrid) ── -->
+      <div x-show="policy === 'platform_managed' || policy === 'hybrid'" x-cloak>
+        <label class="block text-sm font-medium text-slate-300 mb-1">Platform-Managed Providers</label>
+        <p class="text-xs text-slate-500 mb-2">Providers billed and operated using C-Call platform credentials. Only providers with active credentials or that are credential-free may be selected.</p>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {% for p in canonical_providers %}
+          {% set st = provider_statuses.get(p, 'not_configured') %}
+          {% set selectable = st in ('configured', 'credential_free') %}
+          <label class="flex items-center gap-2 px-3 py-2 bg-slate-900/70 border border-slate-700 rounded-lg {{ 'cursor-pointer hover:border-indigo-500/50' if selectable else 'opacity-40 cursor-not-allowed' }} transition"
+                 title="{{ '' if selectable else 'Configure platform credential at /admin/platform-tts first' }}">
+            <input type="checkbox" name="platform_managed_providers" value="{{ p }}"
+                   {{ 'checked' if p in sel_platform }}
+                   {{ 'disabled' if not selectable }}
+                   :disabled="(policy !== 'platform_managed' && policy !== 'hybrid')"
+                   class="rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 disabled:opacity-50">
+            <span class="flex-1 text-sm text-slate-200">{{ p }}</span>
+            {% if st == 'configured' %}
+              <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0" title="Platform credential active"></span>
+            {% elif st == 'credential_free' %}
+              <span class="w-2 h-2 rounded-full bg-sky-400 shrink-0" title="No credential needed"></span>
+            {% elif st == 'disabled' %}
+              <span class="w-2 h-2 rounded-full bg-yellow-400 shrink-0" title="Platform credential disabled — re-enable at /admin/platform-tts"></span>
+            {% else %}
+              <span class="w-2 h-2 rounded-full bg-slate-500 shrink-0" title="No platform credential — configure at /admin/platform-tts"></span>
+            {% endif %}
+          </label>
+          {% endfor %}
+        </div>
+        <p class="mt-2 text-[11px] text-slate-500">
+          Missing providers?
+          <a href="{{ url_for('admin.platform_tts_page') }}" class="text-indigo-400 hover:text-indigo-300">Configure platform credentials &rarr;</a>
+        </p>
       </div>
 
       <div class="grid grid-cols-2 gap-4">
@@ -135,15 +213,17 @@
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label class="block text-sm font-medium text-slate-300 mb-1">Daily Preview Limit</label>
-          <input type="number" name="daily_preview_limit" min="0"
+          <input type="number" name="daily_preview_limit" min="0" max="1000"
                  value="{{ form_values.get('daily_preview_limit', policy.daily_preview_limit if policy else 10) }}"
                  class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="mt-1 text-xs text-slate-500">Maximum preview TTS generations allowed per tenant per day (resets UTC midnight). 0 = previews disabled.</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-slate-300 mb-1">Max Concurrent TTS</label>
-          <input type="number" name="max_concurrent_tts" min="1"
+          <input type="number" name="max_concurrent_tts" min="1" max="20"
                  value="{{ form_values.get('max_concurrent_tts', policy.max_concurrent_tts if policy else 1) }}"
                  class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="mt-1 text-xs text-slate-500">Maximum simultaneous TTS generation jobs allowed per tenant. Enforced via Redis distributed semaphore (shared preview + order pool). Min 1.</p>
         </div>
       </div>
 
@@ -158,6 +238,93 @@
 
       <div class="bg-slate-700/40 rounded-lg px-3 py-2 text-xs text-slate-400">
         Over-quota policy: <strong class="text-slate-300">block</strong> (requests denied when quota exhausted — no wallet charges).
+      </div>
+    </div>
+
+    <!-- Billing Defaults -->
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-6 space-y-4">
+      <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Default Billing Rates</h2>
+      <p class="text-xs text-slate-500">
+        These are plan-level defaults. Tenant custom rates override each field independently.
+        Leave blank to fall through to platform default (0.80 BDT/min).
+      </p>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Default Rate / min (BDT)</label>
+          <input type="number" name="default_rate_per_min" min="0" step="0.01" placeholder="e.g. 0.70"
+                 value="{{ form_values.get('default_rate_per_min', plan.default_rate_per_min if plan and plan.get('default_rate_per_min') is not none else '') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Default Flat Rate / call (BDT)</label>
+          <input type="number" name="default_rate_per_call" min="0" step="0.01" placeholder="0 = per-min billing"
+                 value="{{ form_values.get('default_rate_per_call', plan.default_rate_per_call if plan and plan.get('default_rate_per_call') is not none else '') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Default Min Charge (BDT)</label>
+          <input type="number" name="default_min_charge" min="0" step="0.01" placeholder="blank = same as rate/min"
+                 value="{{ form_values.get('default_min_charge', plan.default_min_charge if plan and plan.get('default_min_charge') is not none else '') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Default Billing Pulse (secs)</label>
+          <select name="default_billing_pulse_seconds"
+                  class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% set cur_pulse = form_values.get('default_billing_pulse_seconds', plan.default_billing_pulse_seconds if plan else '') | string %}
+            <option value="" {{ 'selected' if cur_pulse in ('', 'None') }}>Platform default (60s)</option>
+            <option value="60" {{ 'selected' if cur_pulse == '60' }}>60s / 1m</option>
+            <option value="30" {{ 'selected' if cur_pulse == '30' }}>30s Pulse</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Default Min Billable (secs)</label>
+          <input type="number" name="default_minimum_billable_seconds" min="0" placeholder="blank = platform default (60)"
+                 value="{{ form_values.get('default_minimum_billable_seconds', plan.default_minimum_billable_seconds if plan and plan.get('default_minimum_billable_seconds') is not none else '') }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Charge Failed/No-Answer Calls</label>
+          <select name="default_charge_failed_calls"
+                  class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% set cur_cfc = form_values.get('default_charge_failed_calls', plan.default_charge_failed_calls if plan else '') | string %}
+            <option value="" {{ 'selected' if cur_cfc in ('', 'None') }}>Platform default (No)</option>
+            <option value="0" {{ 'selected' if cur_cfc in ('0', 'False', 'false') }}>No — do not charge</option>
+            <option value="1" {{ 'selected' if cur_cfc in ('1', 'True', 'true') }}>Yes — charge failed calls</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Number Entitlement -->
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-6 space-y-4">
+      <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Number Entitlement</h2>
+
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Entitlement Type</label>
+          <select name="number_entitlement"
+                  class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            {% set cur_ent = form_values.get('number_entitlement', plan.number_entitlement if plan else 'shared_only') %}
+            <option value="shared_only" {{ 'selected' if cur_ent == 'shared_only' }}>Shared only</option>
+            <option value="dedicated_allowed" {{ 'selected' if cur_ent == 'dedicated_allowed' }}>Dedicated allowed (extra cost)</option>
+            <option value="dedicated_included" {{ 'selected' if cur_ent == 'dedicated_included' }}>Dedicated included in plan</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Included Dedicated Numbers</label>
+          <input type="number" name="included_dedicated_numbers" min="0"
+                 value="{{ form_values.get('included_dedicated_numbers', plan.included_dedicated_numbers if plan else 0) }}"
+                 class="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          <p class="mt-1 text-xs text-slate-500">Only relevant when type is "dedicated_included".</p>
+        </div>
       </div>
     </div>
 

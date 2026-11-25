@@ -8,8 +8,11 @@ version: '3.8'
 
 x-app-base: &app-base
   image: ghcr.io/ccall/app:${VERSION:-latest}
+  build: .
   restart: unless-stopped
-  env_file: .env
+  env_file:
+    - path: .env
+      required: false
   depends_on:
     postgres:
       condition: service_healthy

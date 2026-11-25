@@ -55,10 +55,22 @@ if echo "$DB_URL" | grep -qi "staging\|test\|ccall_prod$"; then
     fi
 fi
 
-info "Docker image: ghcr.io/ccall/app:$VERSION"
-docker pull "ghcr.io/ccall/app:$VERSION" 2>&1 | tail -5
-IMAGE_DIGEST=$(docker inspect "ghcr.io/ccall/app:$VERSION" --format '{{.Id}}' 2>/dev/null)
-info "Image digest: $IMAGE_DIGEST"
+if [[ "${BUILD_FROM_SOURCE:-false}" == "true" ]]; then
+    info "Building application image directly from local source..."
+    $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
+    IMAGE_DIGEST=$(docker images -q "ghcr.io/ccall/app:$VERSION" 2>/dev/null | head -1)
+    [[ -z "$IMAGE_DIGEST" ]] && IMAGE_DIGEST=$(docker images -q "ghcr.io/ccall/app:latest" 2>/dev/null | head -1)
+else
+    info "Docker image: ghcr.io/ccall/app:$VERSION (falling back to local build if registry unavailable)"
+    if docker pull "ghcr.io/ccall/app:$VERSION" 2>&1 | tail -5; then
+        IMAGE_DIGEST=$(docker inspect "ghcr.io/ccall/app:$VERSION" --format '{{.Id}}' 2>/dev/null || true)
+    else
+        warn "Registry pull failed — building image from local source instead."
+        $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
+        IMAGE_DIGEST=$(docker images -q "ghcr.io/ccall/app:latest" 2>/dev/null | head -1)
+    fi
+fi
+info "Image digest: ${IMAGE_DIGEST:-source-build}"
 
 # ── TLS certificate ───────────────────────────────────────────────────────────
 step "PHASE 2 — TLS certificate"
@@ -92,40 +104,10 @@ nginx -t || fatal "Nginx config test failed"
 systemctl reload nginx
 info "Nginx loaded."
 
-# ── Database migration ────────────────────────────────────────────────────────
-step "PHASE 3 — Database migration (one-off)"
+# ── Database startup & migration (one-off) ───────────────────────────────────
+step "PHASE 3 — Start data stores & run database migration"
 
-info "Checking for existing production data..."
-EXISTING=$(docker run --rm \
-    --env-file "$ENV_FILE" \
-    --network ccall_internal \
-    "ghcr.io/ccall/app:$VERSION" \
-    python3 -c "
-import os, psycopg
-try:
-    c=psycopg.connect(os.environ['DATABASE_URL'])
-    cur=c.execute(\"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'\")
-    n=cur.fetchone()[0]
-    print(n)
-    c.close()
-except Exception as e:
-    print('0')
-" 2>/dev/null || echo "0")
-
-if [[ "$EXISTING" -gt 0 ]]; then
-    warn "Existing schema detected ($EXISTING tables). Taking pre-migration backup..."
-    bash scripts/backup.sh || fatal "Pre-migration backup failed. Do not continue."
-fi
-
-info "Running migrations..."
-$COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
-    run --rm migrate
-info "Migration complete."
-
-# ── Start production services ──────────────────────────────────────────────────
-step "PHASE 4 — Starting production services"
-
-info "Starting postgres and redis..."
+info "Starting postgres and redis (creates isolated internal network)..."
 $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
     up -d postgres redis
 
@@ -135,6 +117,34 @@ until docker inspect "$($COMPOSE_CMD -f "$COMPOSE_FILE" ps -q postgres 2>/dev/nu
     sleep 3; echo -n "."
 done
 echo ""
+
+info "Checking for existing production data inside Compose network..."
+EXISTING=$($COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+    run --rm --no-deps migrate python3 -c "
+import os, psycopg
+try:
+    c=psycopg.connect(os.environ['DATABASE_URL'])
+    cur=c.execute(\"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'\")
+    n=cur.fetchone()[0]
+    print(n)
+    c.close()
+except Exception:
+    print('0')
+" 2>/dev/null | tail -1 || echo "0")
+
+if [[ "${EXISTING:-0}" -gt 0 ]]; then
+    warn "Existing schema detected ($EXISTING tables). Taking pre-migration backup..."
+    $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" --profile backup \
+        run --rm backup || fatal "Pre-migration backup failed. Do not continue."
+fi
+
+info "Running migrations..."
+$COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \
+    run --rm migrate
+info "Migration complete."
+
+# ── Start production services ──────────────────────────────────────────────────
+step "PHASE 4 — Starting application services"
 
 info "Starting web, scheduler, call_worker..."
 $COMPOSE_CMD -f "$COMPOSE_FILE" --env-file "$ENV_FILE" \

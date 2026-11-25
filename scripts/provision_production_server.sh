@@ -164,6 +164,31 @@ docker --version
 docker compose version
 info "Docker installed."
 
+# ── 8b. Harden DOCKER-USER chain so published containers never bypass UFW ────
+info "Applying DOCKER-USER firewall chain rules..."
+EXT_IF="$(ip route show default | awk '/default/ {print $5; exit}')"
+if [[ -n "$EXT_IF" ]] && iptables -L DOCKER-USER -n &>/dev/null; then
+    iptables -F DOCKER-USER
+    iptables -A DOCKER-USER -i "$EXT_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    iptables -A DOCKER-USER -i "$EXT_IF" -p tcp -m multiport --dports 5432,6379,5000,9090,9093 -j DROP
+    if [[ -n "${SIP_CARRIER_CIDRS:-}" ]]; then
+        IFS=',' read -ra _D_CIDRS <<< "$SIP_CARRIER_CIDRS"
+        for _dcidr in "${_D_CIDRS[@]}"; do
+            _dcidr="${_dcidr// /}"
+            [[ -z "$_dcidr" ]] && continue
+            iptables -A DOCKER-USER -i "$EXT_IF" -s "$_dcidr" -p udp --dport "$SIP_PORT" -j ACCEPT
+            iptables -A DOCKER-USER -i "$EXT_IF" -s "$_dcidr" -p udp --dport "${RTP_PORT_MIN}:${RTP_PORT_MAX}" -j ACCEPT
+        done
+    fi
+    # Drop any unauthorized public WAN ingress to SIP/RTP ports targeting containers
+    iptables -A DOCKER-USER -i "$EXT_IF" -p udp --dport "$SIP_PORT" -j DROP
+    iptables -A DOCKER-USER -i "$EXT_IF" -p udp --dport "${RTP_PORT_MIN}:${RTP_PORT_MAX}" -j DROP
+    iptables -A DOCKER-USER -j RETURN
+    info "DOCKER-USER hardened on $EXT_IF."
+else
+    warn "Could not auto-detect primary interface ($EXT_IF) for DOCKER-USER; verify manually before production."
+fi
+
 # ── 9. Nginx ──────────────────────────────────────────────────────────────────
 info "Installing Nginx..."
 apt-get install -y -qq nginx
