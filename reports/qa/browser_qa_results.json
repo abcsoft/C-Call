@@ -1,172 +1,146 @@
 {
-  "admin_pages": [
-    {
-      "route": "/admin/dashboard",
+  "admin_sidebar_pages": {
+    "dashboard": {
+      "url": "/admin/dashboard",
       "status": 200,
-      "title": "Admin Dashboard \u2014 C-Call Console"
+      "has_content": true
     },
-    {
-      "route": "/admin/customers",
+    "live_calls": {
+      "url": "/admin/live-calls",
       "status": 200,
-      "title": "Tenants \u2014 C-Call Admin"
+      "has_content": true
     },
-    {
-      "route": "/admin/numbers",
+    "customers": {
+      "url": "/admin/customers",
       "status": 200,
-      "title": "SIP CLI Pool \u2014 C-Call Console"
+      "has_content": true
     },
-    {
-      "route": "/admin/providers",
+    "numbers": {
+      "url": "/admin/numbers",
       "status": 200,
-      "title": "SIP Gateways \u2014 C-Call Console"
+      "has_content": true
     },
-    {
-      "route": "/admin/plans",
+    "providers": {
+      "url": "/admin/providers",
       "status": 200,
-      "title": "Plans \u2014 Admin"
+      "has_content": true
     },
-    {
-      "route": "/admin/platform-tts",
+    "cdr": {
+      "url": "/admin/cdr",
       "status": 200,
-      "title": "Platform TTS Credentials \u2014 Admin"
+      "has_content": true
     },
-    {
-      "route": "/admin/tts-usage",
+    "revenue": {
+      "url": "/admin/revenue",
       "status": 200,
-      "title": "TTS Usage \u2014 Admin"
+      "has_content": true
     },
-    {
-      "route": "/admin/tts-reservations",
+    "settings": {
+      "url": "/admin/settings",
       "status": 200,
-      "title": "TTS Reservations \u2014 Admin"
+      "has_content": true
     },
-    {
-      "route": "/admin/cdr",
+    "plans": {
+      "url": "/admin/plans",
       "status": 200,
-      "title": "Platform CDR Logs \u2014 C-Call Console"
+      "has_content": true
     },
-    {
-      "route": "/admin/live-calls",
+    "platform_tts": {
+      "url": "/admin/platform-tts",
       "status": 200,
-      "title": "Live Call Monitor \u2014 C-Call Console"
+      "has_content": true
     },
-    {
-      "route": "/admin/revenue",
+    "tts_usage": {
+      "url": "/admin/tts-usage",
       "status": 200,
-      "title": "Revenue Reports \u2014 C-Call Console"
-    },
-    {
-      "route": "/admin/settings",
-      "status": 200,
-      "title": "System Settings \u2014 C-Call Console"
+      "has_content": true
     }
-  ],
-  "merchant_pages": [
-    {
-      "route": "/dashboard",
+  },
+  "merchant_sidebar_pages": {
+    "dashboard": {
+      "url": "/dashboard",
       "status": 200,
-      "title": "Dashboard \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/orders",
+    "live_calls": {
+      "url": "/live-calls",
       "status": 200,
-      "title": "Orders Logs \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/flows",
+    "orders": {
+      "url": "/orders",
       "status": 200,
-      "title": "Interactive Voice Flows \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/cdr",
+    "voice_script": {
+      "url": "/script",
       "status": 200,
-      "title": "Call Logs (CDR) \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/live-calls",
+    "retry_settings": {
+      "url": "/retry",
       "status": 200,
-      "title": "Live Calls \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/retry",
+    "flows": {
+      "url": "/flows",
       "status": 200,
-      "title": "Retry & DND Rules \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/wallet",
+    "wallet": {
+      "url": "/wallet",
       "status": 200,
-      "title": "Prepaid Wallet \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/integration",
+    "subscription": {
+      "url": "/settings/subscription",
       "status": 200,
-      "title": "API & Integrations \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/script",
+    "cdr": {
+      "url": "/cdr",
       "status": 200,
-      "title": "Voice Scripts \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/settings",
+    "integration": {
+      "url": "/integration",
       "status": 200,
-      "title": "SMS Fallback Settings \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/settings/team",
+    "settings": {
+      "url": "/settings",
       "status": 200,
-      "title": "Team Management \u2014 C-Call IVR"
+      "has_content": true
     },
-    {
-      "route": "/settings/subscription",
+    "team": {
+      "url": "/settings/team",
       "status": 200,
-      "title": "Subscription & Billing \u2014 C-Call IVR"
+      "has_content": true
     }
-  ],
-  "mobile_pages": [
-    {
-      "route": "/dashboard",
-      "status": 200,
-      "horizontal_overflow": false
-    },
-    {
-      "route": "/orders",
-      "status": 200,
-      "horizontal_overflow": false
-    },
-    {
-      "route": "/flows",
-      "status": 200,
-      "horizontal_overflow": false
-    },
-    {
-      "route": "/wallet",
-      "status": 200,
-      "horizontal_overflow": false
-    },
-    {
-      "route": "/settings/subscription",
-      "status": 200,
-      "horizontal_overflow": false
-    }
-  ],
-  "console_errors": [],
-  "http_500s": [],
-  "failed_requests": [],
+  },
   "workflows": {
-    "invalid_login_blocked": true,
-    "admin_wallet_credit": true,
-    "ivr_validate_ok": true,
-    "ivr_delete_ok": true,
-    "wallet_page_loaded": true,
-    "subscription_page_loaded": true,
-    "team_page_loaded": true,
-    "cdr_page_loaded": true,
-    "live_calls_page_loaded": true,
-    "script_page_loaded": true,
-    "api_key_generated": true,
-    "api_order_queued": true,
-    "order_in_ui": true,
-    "cross_tenant_isolated": true
-  }
+    "merchant_lifecycle": "PASS",
+    "sip_diagnostics_and_channels": "PASS",
+    "admin_numbers": "PASS",
+    "plans_and_tts_usage": "PASS",
+    "self_registration": "PASS",
+    "api_order_ingestion": {
+      "status": 200,
+      "body": "{\"call_id\":null,\"internal_id\":1,\"message\":\"Confirmation call queued successfully.\",\"order_id\":\"QA-ORD-1001\",\"status\":\"CALL_QUEUED\",\"success\":true}\n"
+    },
+    "quick_call_result": "Error: Call audio file is missing.",
+    "merchant_journey": "PASS"
+  },
+  "console_errors": [
+    "http://127.0.0.1:5001/admin/plans: Failed to load resource: net::ERR_NO_BUFFER_SPACE"
+  ],
+  "page_errors": [],
+  "http_500s": [],
+  "failed_requests": [
+    "http://127.0.0.1:5001/static/css/tailwind.css: net::ERR_NO_BUFFER_SPACE"
+  ],
+  "dialogs": [
+    "Change TTS mode for this tenant?",
+    "Are you sure you want to generate a new key? Any existing key will stop working immediately."
+  ]
 }

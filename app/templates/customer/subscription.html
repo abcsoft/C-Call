@@ -1,172 +1,499 @@
 {% extends "customer/base_customer.html" %}
-{% block title %}Subscription — C-Call IVR{% endblock %}
+{% block title %}Subscription & Billing — C-Call IVR{% endblock %}
 
-{% block content %}
-<div class="max-w-3xl mx-auto px-4 py-8">
-  <h1 class="text-2xl font-bold text-white mb-2">Subscription</h1>
-  <p class="text-slate-400 text-sm mb-6">Your current plan, TTS quota, and usage overview.</p>
+{% block customer_content %}
+{# ── Determine comparison context ───────────────────────────────────────── #}
+{% set current_plan_id = plan.id if plan else none %}
+{% set tenant_status   = tenant.status %}
+{% set is_restricted   = tenant_status not in ('active', 'trial') %}
 
-  <!-- Plan Card -->
-  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5 mb-6">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-bold text-white">Plan Details</h2>
-      {% if plan %}
-      <span class="px-3 py-1 bg-teal-700/30 text-teal-300 text-xs font-bold rounded-full uppercase">{{ plan.name }}</span>
-      {% else %}
-      <span class="px-3 py-1 bg-slate-700 text-slate-400 text-xs font-bold rounded-full uppercase">No plan assigned</span>
-      {% endif %}
+{# ── Status badge helper macro ───────────────────────────────────────────── #}
+{% macro status_badge(s) %}
+  {% if s == 'active' %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-700/30 text-emerald-300">Active</span>
+  {% elif s == 'trialing' or s == 'trial' %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-teal-700/30 text-teal-300">Trial</span>
+  {% elif s == 'grace_period' %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-yellow-700/30 text-yellow-300">Grace Period</span>
+  {% elif s == 'past_due' %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-orange-700/30 text-orange-300">Past Due</span>
+  {% elif s == 'expired' %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-700/30 text-red-300">Expired</span>
+  {% elif s == 'suspended' %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-red-900/60 text-red-200">Suspended</span>
+  {% elif s == 'cancelled' %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-700 text-slate-400">Cancelled</span>
+  {% else %}
+    <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-700 text-slate-400">{{ s | replace('_',' ') | title }}</span>
+  {% endif %}
+{% endmacro %}
+
+<div x-data="{ billingCycle: 'monthly' }">
+
+<!-- ── Page header ──────────────────────────────────────────────────────── -->
+<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+  <div>
+    <h1 class="text-2xl font-bold text-white">Subscription &amp; Billing</h1>
+    <p class="text-sm text-slate-400 mt-1">Manage your plan, billing cycle, and renewal.</p>
+  </div>
+  <div class="text-right text-xs text-slate-500">
+    Wallet balance:
+    <span class="text-teal-300 font-semibold text-sm ml-1">৳{{ "%.2f"|format(wallet_balance) }}</span>
+  </div>
+</div>
+
+<!-- ── Flash messages ───────────────────────────────────────────────────── -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="mb-4 px-4 py-3 rounded-lg text-sm font-medium
+      {{ 'bg-green-900/40 text-green-200 border border-green-700' if cat == 'success'
+      else 'bg-red-900/40 text-red-200 border border-red-700' if cat == 'error'
+      else 'bg-yellow-900/40 text-yellow-200 border border-yellow-700' if cat == 'warning'
+      else 'bg-slate-800 text-slate-300 border border-slate-700' }}">
+      {{ msg }}
     </div>
-    {% if plan %}
-    <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
-      <div>
-        <dt class="text-slate-400 text-xs">Credential Mode</dt>
-        <dd class="text-white font-medium mt-0.5">{{ tts_mode }}</dd>
-      </div>
-      {% if tts_policy.get('monthly_character_quota') %}
-      <div>
-        <dt class="text-slate-400 text-xs">Monthly TTS Quota</dt>
-        <dd class="text-white font-medium mt-0.5">{{ "{:,}".format(tts_policy['monthly_character_quota']) }} chars</dd>
-      </div>
-      {% endif %}
-      <div>
-        <dt class="text-slate-400 text-xs">Allowed Providers</dt>
-        <dd class="text-white font-medium mt-0.5">
-          {% for p in tts_policy.get('allowed_providers', []) %}
-          <span class="inline-block px-1.5 py-0.5 bg-slate-700 rounded text-xs mr-1">{{ p }}</span>
-          {% else %}—{% endfor %}
-        </dd>
-      </div>
-      <div>
-        <dt class="text-slate-400 text-xs">Daily Preview Limit</dt>
-        <dd class="text-white font-medium mt-0.5">{{ tts_policy.get('daily_preview_limit', 10) }} previews/day</dd>
-      </div>
-    </dl>
-    {% else %}
-    <p class="text-slate-400 text-sm">No plan assigned. Contact support to get a plan assigned to your account.</p>
+  {% endfor %}
+{% endwith %}
+
+<!-- ── Restricted-mode warning ──────────────────────────────────────────── -->
+{% if tenant_status in ('expired', 'past_due', 'cancelled') %}
+<div class="mb-6 bg-red-950/60 border border-red-500/50 rounded-xl px-5 py-4 flex flex-col sm:flex-row sm:items-start gap-3">
+  <svg class="h-5 w-5 text-red-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+  </svg>
+  <div class="text-sm text-red-200">
+    <strong class="font-bold">Account restricted.</strong>
+    {% if tenant_status == 'expired' %}Your subscription has expired.{% elif tenant_status == 'past_due' %}Payment overdue.{% elif tenant_status == 'cancelled' %}Subscription cancelled.{% endif %}
+    Order creation and calls are paused. Select a plan below to restore access.
+  </div>
+</div>
+{% elif tenant_status == 'grace_period' %}
+<div class="mb-6 bg-yellow-950/60 border border-yellow-500/50 rounded-xl px-5 py-4 flex items-start gap-3">
+  <svg class="h-5 w-5 text-yellow-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>
+  <div class="text-sm text-yellow-200">
+    <strong class="font-bold">Grace period active.</strong>
+    Renew your subscription now to avoid interruption.
+    {% if subscription and subscription.grace_ends_at %}
+    Grace period ends {{ subscription.grace_ends_at.strftime('%Y-%m-%d') }}.
     {% endif %}
   </div>
+</div>
+{% endif %}
 
-  <!-- Quota Usage Card (platform_managed only) -->
-  {% if tts_mode == 'platform_managed' and monthly_quota %}
-  {% set used_pct = ((monthly_used / monthly_quota) * 100) | round(1) if monthly_quota > 0 else 0 %}
-  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5 mb-6">
-    <h2 class="text-lg font-bold text-white mb-4">This Month's TTS Usage</h2>
-    <div class="flex justify-between text-xs text-slate-400 mb-1">
-      <span>Used: {{ "{:,}".format(monthly_used) }}</span>
-      <span>Quota: {{ "{:,}".format(monthly_quota) }}</span>
-    </div>
-    <div class="w-full bg-slate-700 rounded-full h-3 mb-2">
-      <div class="h-3 rounded-full {% if used_pct >= 100 %}bg-red-500{% elif used_pct >= 80 %}bg-orange-400{% else %}bg-teal-500{% endif %}"
-           style="width: {{ [used_pct, 100] | min }}%"></div>
-    </div>
-    <p class="text-xs text-slate-400">
-      {{ "{:,}".format(monthly_used) }} / {{ "{:,}".format(monthly_quota) }} characters used ({{ used_pct }}%)
-    </p>
-  </div>
-  {% endif %}
+<!-- ── PART 1: Current subscription summary ────────────────────────────── -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
 
-  <!-- Platform Provider Availability -->
-  {% if platform_available %}
-  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5 mb-6">
-    <h2 class="text-lg font-bold text-white mb-4">Platform TTS Availability</h2>
-    <div class="space-y-2">
-      {% for provider, active in platform_available.items() %}
-      <div class="flex items-center justify-between text-sm">
-        <span class="text-slate-300 font-medium capitalize">{{ provider }}</span>
-        {% if active %}
-        <span class="px-2 py-0.5 bg-emerald-700/30 text-emerald-300 text-xs rounded-full">Available</span>
-        {% else %}
-        <span class="px-2 py-0.5 bg-slate-700 text-slate-400 text-xs rounded-full">Unavailable</span>
-        {% endif %}
-      </div>
-      {% endfor %}
+  <!-- Plan info -->
+  <div class="lg:col-span-2 bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <h2 class="text-base font-bold text-white">Current Plan</h2>
+      {% if subscription %}{{ status_badge(subscription.status) }}{% elif tenant_status %}{{ status_badge(tenant_status) }}{% endif %}
     </div>
-  </div>
-  {% endif %}
-
-  <!-- Subscription Lifecycle Card -->
-  {% if subscription %}
-  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5 mb-6">
-    <h2 class="text-lg font-bold text-white mb-4">Subscription Status</h2>
-    <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+    {% if plan %}
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-4 text-sm">
       <div>
-        <dt class="text-slate-400 text-xs">Status</dt>
-        <dd class="mt-0.5">
-          {% set s = subscription.status %}
-          <span class="px-2 py-0.5 rounded-full text-xs font-bold
-            {% if s == 'active' %}bg-emerald-700/30 text-emerald-300
-            {% elif s == 'trialing' %}bg-teal-700/30 text-teal-300
-            {% elif s == 'grace_period' %}bg-yellow-700/30 text-yellow-300
-            {% elif s in ('past_due','expired') %}bg-red-700/30 text-red-300
-            {% else %}bg-slate-700 text-slate-400{% endif %}">
-            {{ s | replace('_',' ') | title }}
-          </span>
-        </dd>
+        <div class="text-slate-400 text-xs mb-0.5">Plan</div>
+        <div class="text-white font-semibold">{{ plan.name }}</div>
       </div>
+      {% if subscription %}
       <div>
-        <dt class="text-slate-400 text-xs">Billing Cycle</dt>
-        <dd class="text-white font-medium mt-0.5 capitalize">{{ subscription.billing_cycle }}</dd>
+        <div class="text-slate-400 text-xs mb-0.5">Billing Cycle</div>
+        <div class="text-white font-medium capitalize">{{ subscription.billing_cycle or '—' }}</div>
       </div>
+      {% if subscription.current_period_start %}
+      <div>
+        <div class="text-slate-400 text-xs mb-0.5">Period Start</div>
+        <div class="text-white font-medium">{{ subscription.current_period_start.strftime('%Y-%m-%d') }}</div>
+      </div>
+      {% endif %}
       {% if subscription.current_period_end %}
       <div>
-        <dt class="text-slate-400 text-xs">Current Period Ends</dt>
-        <dd class="text-white font-medium mt-0.5">{{ subscription.current_period_end.strftime('%Y-%m-%d') }}</dd>
+        <div class="text-slate-400 text-xs mb-0.5">
+          {% if subscription.status in ('grace_period','past_due') %}Expired{% else %}Period Ends{% endif %}
+        </div>
+        <div class="text-white font-medium">{{ subscription.current_period_end.strftime('%Y-%m-%d') }}</div>
       </div>
       {% endif %}
       {% if subscription.grace_ends_at %}
       <div>
-        <dt class="text-slate-400 text-xs">Grace Period Ends</dt>
-        <dd class="text-yellow-300 font-medium mt-0.5">{{ subscription.grace_ends_at.strftime('%Y-%m-%d') }}</dd>
+        <div class="text-slate-400 text-xs mb-0.5">Grace Ends</div>
+        <div class="text-yellow-300 font-medium">{{ subscription.grace_ends_at.strftime('%Y-%m-%d') }}</div>
+      </div>
+      {% endif %}
+      {% if tenant.trial_ends_at and tenant_status == 'trial' %}
+      <div>
+        <div class="text-slate-400 text-xs mb-0.5">Trial Ends</div>
+        <div class="text-teal-300 font-medium">{{ tenant.trial_ends_at.strftime('%Y-%m-%d') }}</div>
+      </div>
+      {% endif %}
+      {% if subscription.renewal_count %}
+      <div>
+        <div class="text-slate-400 text-xs mb-0.5">Renewals</div>
+        <div class="text-white font-medium">{{ subscription.renewal_count }}</div>
       </div>
       {% endif %}
       {% if subscription.cancel_at_period_end %}
-      <div class="col-span-2">
-        <dt class="text-slate-400 text-xs">Cancellation</dt>
-        <dd class="text-orange-300 font-medium mt-0.5">Will cancel at end of current period</dd>
+      <div class="col-span-2 sm:col-span-3">
+        <div class="text-slate-400 text-xs mb-0.5">Cancellation</div>
+        <div class="text-orange-300 font-medium">Will cancel at end of current period</div>
       </div>
       {% endif %}
-    </dl>
+      {% endif %}
+      <div>
+        <div class="text-slate-400 text-xs mb-0.5">TTS Mode</div>
+        <div class="text-white font-medium capitalize">{{ tts_mode | replace('_',' ') }}</div>
+      </div>
+      {% if tts_policy.get('monthly_character_quota') %}
+      <div>
+        <div class="text-slate-400 text-xs mb-0.5">TTS Quota</div>
+        <div class="text-white font-medium">{{ "{:,}".format(tts_policy['monthly_character_quota']) }} chars/mo</div>
+      </div>
+      {% endif %}
+      <div>
+        <div class="text-slate-400 text-xs mb-0.5">Daily Previews</div>
+        <div class="text-white font-medium">{{ tts_policy.get('daily_preview_limit', 10) }}/day</div>
+      </div>
+    </div>
+    {% else %}
+    <p class="text-slate-400 text-sm">No plan assigned. Select one below to get started.</p>
+    {% endif %}
 
-    {% if subscription.status in ('active','grace_period') and not subscription.cancel_at_period_end and current_user.role == 'admin' %}
-    <div class="mt-4 border-t border-slate-700 pt-4">
+    {% if subscription and subscription.status in ('active','grace_period') and not subscription.cancel_at_period_end and current_user.role == 'admin' %}
+    <div class="mt-5 pt-4 border-t border-slate-700">
       <details class="text-sm">
-        <summary class="text-slate-400 cursor-pointer hover:text-slate-300">Cancel subscription</summary>
-        <form method="POST" action="{{ url_for('customer.subscription_cancel') }}" class="mt-3" onsubmit="return confirm('Cancel at end of period?')">
+        <summary class="text-slate-400 cursor-pointer hover:text-rose-300 transition-colors text-xs">Cancel subscription at period end</summary>
+        <form method="POST" action="{{ url_for('customer.subscription_cancel') }}" class="mt-3 js-sub-cancel-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="text" name="reason" placeholder="Reason (optional)" class="w-full bg-slate-700 border border-slate-600 text-white text-xs rounded-lg px-3 py-2 mb-2">
-          <button type="submit" class="px-4 py-1.5 bg-red-700 hover:bg-red-600 text-white text-xs rounded-lg">Cancel at Period End</button>
+          <input type="text" name="reason" placeholder="Reason (optional)" class="w-full bg-slate-700 border border-slate-600 text-white text-xs rounded-lg px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-rose-500">
+          <button type="submit" class="px-4 py-1.5 bg-red-800/60 hover:bg-red-700 text-red-200 text-xs rounded-lg transition">Cancel at Period End</button>
         </form>
       </details>
     </div>
     {% endif %}
   </div>
-  {% endif %}
 
-  <!-- Tenant subscription status -->
-  {% if tenant.status == 'trial' %}
-  <div class="bg-teal-950/40 border border-teal-700/50 rounded-xl px-6 py-4 mb-6 text-sm text-teal-200">
-    <strong>Trial account.</strong>
-    {% if tenant.trial_ends_at %}
-    Trial ends on {{ tenant.trial_ends_at.strftime('%Y-%m-%d') }}.
+  <!-- Wallet + TTS usage card -->
+  <div class="space-y-4">
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-5 py-4">
+      <div class="text-slate-400 text-xs mb-1">Wallet Balance</div>
+      <div class="text-2xl font-outfit font-bold text-white">৳{{ "%.2f"|format(wallet_balance) }}</div>
+      {% if current_user.role == 'admin' %}
+      <a href="{{ url_for('customer.wallet_panel') }}"
+         class="mt-3 block w-full py-2 text-center text-xs font-semibold text-teal-400 hover:text-teal-300 bg-slate-900 border border-slate-700 hover:border-slate-600 rounded-xl transition-colors">
+        Recharge Wallet
+      </a>
+      {% endif %}
+    </div>
+
+    {% if tts_mode == 'platform_managed' and monthly_quota %}
+    {% set used_pct = ((monthly_used / monthly_quota) * 100) | round(1) if monthly_quota > 0 else 0 %}
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-5 py-4">
+      <div class="text-slate-400 text-xs mb-2">TTS Usage This Month</div>
+      <div class="flex justify-between text-xs text-slate-400 mb-1">
+        <span>{{ "{:,}".format(monthly_used) }}</span>
+        <span>{{ "{:,}".format(monthly_quota) }}</span>
+      </div>
+      <div class="w-full bg-slate-700 rounded-full h-2 mb-1.5">
+        <div class="h-2 rounded-full {{ 'bg-red-500' if used_pct >= 100 else 'bg-orange-400' if used_pct >= 80 else 'bg-teal-500' }}"
+             style="width: {{ [used_pct, 100]|min }}%"></div>
+      </div>
+      <div class="text-xs text-slate-500">{{ used_pct }}% used</div>
+    </div>
     {% endif %}
-    Contact support or subscribe to activate a paid plan.
   </div>
-  {% endif %}
-
-  <!-- Recent Subscription Events -->
-  {% if subscription_events %}
-  <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-6 py-5 mb-6">
-    <h2 class="text-lg font-bold text-white mb-4">Recent Activity</h2>
-    <ul class="space-y-2">
-    {% for ev in subscription_events %}
-      <li class="flex items-start gap-3 text-xs text-slate-400">
-        <span class="text-slate-500 shrink-0">{{ ev.created_at.strftime('%Y-%m-%d %H:%M') if ev.created_at else '' }}</span>
-        <span class="text-slate-300 capitalize">{{ ev.event_type | replace('_',' ') }}</span>
-        {% if ev.reason %}<span class="text-slate-500">— {{ ev.reason }}</span>{% endif %}
-      </li>
-    {% endfor %}
-    </ul>
-  </div>
-  {% endif %}
 </div>
+
+<!-- ── PART 2: Plan selection ───────────────────────────────────────────── -->
+{% if current_user.role == 'admin' %}
+<div class="mb-8">
+  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-5">
+    <h2 class="text-lg font-bold text-white">Available Plans</h2>
+
+    <!-- Billing cycle toggle -->
+    <div class="flex items-center gap-0 bg-slate-800 border border-slate-700 rounded-xl p-1 self-start">
+      <button type="button"
+              @click="billingCycle = 'monthly'"
+              :class="billingCycle === 'monthly'
+                ? 'bg-teal-600 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200'"
+              class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all">Monthly</button>
+      <button type="button"
+              @click="billingCycle = 'yearly'"
+              :class="billingCycle === 'yearly'
+                ? 'bg-teal-600 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200'"
+              class="px-4 py-1.5 rounded-lg text-xs font-semibold transition-all">
+        Yearly
+        <span class="ml-1 px-1.5 py-0.5 bg-emerald-800 text-emerald-300 rounded text-[10px] font-bold">Save</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+    {% for p in available_plans %}
+    {% set policy = plan_policies.get(p.id, {}) %}
+    {% set is_current = (p.id == current_plan_id) %}
+    {% set monthly_price = p.price_monthly | float %}
+    {% set yearly_price  = p.price_yearly | float if p.price_yearly else (monthly_price * 10) %}
+    {% set yearly_savings = (((monthly_price * 12 - yearly_price) / (monthly_price * 12)) * 100) | round(0) | int if monthly_price > 0 else 0 %}
+
+    <div class="relative bg-slate-800/50 border rounded-xl overflow-hidden flex flex-col
+      {{ 'border-teal-500 ring-2 ring-teal-500/30' if is_current else 'border-slate-700 hover:border-slate-600' }} transition-all">
+
+      {% if is_current %}
+      <div class="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-teal-500 to-indigo-500"></div>
+      {% endif %}
+
+      <div class="px-5 py-5 flex-1">
+        <!-- Plan name + badge -->
+        <div class="flex items-start justify-between mb-3">
+          <h3 class="text-base font-bold text-white">{{ p.name }}</h3>
+          {% if is_current %}
+          <span class="px-2 py-0.5 bg-teal-700/40 text-teal-300 text-[10px] font-bold rounded-full uppercase shrink-0 ml-2">Current</span>
+          {% endif %}
+        </div>
+
+        <!-- Price display -->
+        <div class="mb-4">
+          <div x-show="billingCycle === 'monthly'">
+            <span class="text-2xl font-outfit font-bold text-white">৳{{ "%.0f"|format(monthly_price) }}</span>
+            <span class="text-xs text-slate-400 ml-1">/month</span>
+          </div>
+          <div x-show="billingCycle === 'yearly'" x-cloak>
+            <span class="text-2xl font-outfit font-bold text-white">৳{{ "%.0f"|format(yearly_price) }}</span>
+            <span class="text-xs text-slate-400 ml-1">/year</span>
+            {% if yearly_savings > 0 %}
+            <span class="ml-2 px-2 py-0.5 bg-emerald-900/60 text-emerald-300 text-[10px] font-bold rounded-full">Save {{ yearly_savings }}%</span>
+            {% endif %}
+          </div>
+          {% if monthly_price == 0 %}
+          <div class="text-xs text-slate-500 mt-0.5">Free forever</div>
+          {% endif %}
+        </div>
+
+        <!-- Features -->
+        <ul class="space-y-1.5 text-xs text-slate-400 mb-5">
+          {% if p.included_minutes %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            {{ p.included_minutes }} included minutes/month
+          </li>
+          {% endif %}
+          {% if p.max_flows and p.max_flows > 0 %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            {{ p.max_flows }} voice flow{{ 's' if p.max_flows != 1 }}
+          </li>
+          {% endif %}
+          {% if p.max_users and p.max_users > 0 %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            {{ p.max_users }} team member{{ 's' if p.max_users != 1 }}
+          </li>
+          {% endif %}
+          {% if policy.get('monthly_character_quota') %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            {{ "{:,}".format(policy['monthly_character_quota']) }} TTS chars/month
+          </li>
+          {% else %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            BYOK TTS (unlimited)
+          </li>
+          {% endif %}
+          {% if policy.get('daily_preview_limit') %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            {{ policy.daily_preview_limit }} TTS previews/day
+          </li>
+          {% endif %}
+          {% if policy.get('credential_policy') %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+            </svg>
+            {% if policy.credential_policy == 'byok_only' %}BYOK only
+            {% elif policy.credential_policy == 'platform_managed' %}Platform managed TTS
+            {% elif policy.credential_policy == 'hybrid' %}BYOK or Platform TTS
+            {% else %}{{ policy.credential_policy }}{% endif %}
+          </li>
+          {% endif %}
+          {% if policy.get('allowed_providers') %}
+          <li class="flex items-start gap-2">
+            <svg class="h-3.5 w-3.5 text-slate-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+            </svg>
+            <span>{{ policy.allowed_providers | join(', ') }}</span>
+          </li>
+          {% endif %}
+          {% if p.feature_flags and p.feature_flags.get('sms_fallback') %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            SMS fallback
+          </li>
+          {% endif %}
+          {% if p.feature_flags and p.feature_flags.get('api_access') != false %}
+          <li class="flex items-center gap-2">
+            <svg class="h-3.5 w-3.5 text-teal-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/>
+            </svg>
+            API &amp; WooCommerce access
+          </li>
+          {% endif %}
+        </ul>
+      </div>
+
+      <!-- Action button -->
+      <div class="px-5 pb-5">
+        {% if tenant_status == 'suspended' %}
+          <span class="block w-full text-center py-2.5 px-4 bg-slate-700 text-slate-500 text-sm font-semibold rounded-xl cursor-not-allowed">
+            Contact Support
+          </span>
+        {% elif is_current and tenant_status == 'active' %}
+          <span class="block w-full text-center py-2.5 px-4 bg-teal-900/40 text-teal-400 border border-teal-700/50 text-sm font-semibold rounded-xl cursor-default">
+            Current Plan
+          </span>
+        {% else %}
+          {# Determine button label #}
+          {% if is_current and tenant_status in ('expired', 'past_due', 'cancelled') %}
+            {% set btn_label = 'Renew Plan' %}
+            {% set btn_class = 'bg-teal-600 hover:bg-teal-500 text-white' %}
+          {% elif is_current and tenant_status == 'grace_period' %}
+            {% set btn_label = 'Renew Now' %}
+            {% set btn_class = 'bg-yellow-600 hover:bg-yellow-500 text-white' %}
+          {% elif is_current and tenant_status == 'trial' %}
+            {% set btn_label = 'Activate Plan' %}
+            {% set btn_class = 'bg-teal-600 hover:bg-teal-500 text-white' %}
+          {% elif current_plan_id and p.price_monthly | float > plan.price_monthly | float %}
+            {% set btn_label = 'Upgrade' %}
+            {% set btn_class = 'bg-indigo-600 hover:bg-indigo-500 text-white' %}
+          {% elif current_plan_id and p.price_monthly | float < plan.price_monthly | float %}
+            {% set btn_label = 'Downgrade' %}
+            {% set btn_class = 'bg-slate-600 hover:bg-slate-500 text-white' %}
+          {% else %}
+            {% set btn_label = 'Select Plan' %}
+            {% set btn_class = 'bg-teal-600 hover:bg-teal-500 text-white' %}
+          {% endif %}
+
+          <form method="POST" action="{{ url_for('customer.subscription_select_plan') }}"
+                class="js-sub-plan-form"
+                data-btn-label="{{ btn_label }}"
+                data-plan-name="{{ p.name }}"
+                data-plan-id="{{ p.id }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="plan_id" value="{{ p.id }}">
+            <input type="hidden" name="billing_cycle" :value="billingCycle">
+            <button type="submit"
+                    class="w-full py-2.5 px-4 {{ btn_class }} text-sm font-semibold rounded-xl transition-colors">
+              {{ btn_label }}
+            </button>
+          </form>
+
+          <!-- Hidden price spans for confirm dialog reference -->
+          <span id="price-{{ p.id }}-monthly" class="hidden">{{ "%.0f"|format(monthly_price) }}</span>
+          <span id="price-{{ p.id }}-yearly"  class="hidden">{{ "%.0f"|format(yearly_price) }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="col-span-full py-8 text-center text-slate-500 text-sm">No active plans available. Contact support.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}{# end admin-only plan selection #}
+
+<!-- ── PART 3: Recent activity ──────────────────────────────────────────── -->
+{% if subscription_events %}
+<div class="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
+  <div class="px-5 py-4 border-b border-slate-700/50">
+    <h2 class="text-base font-bold text-white">Recent Activity</h2>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-xs text-slate-300">
+      <thead class="bg-slate-800 text-slate-500 uppercase text-[10px]">
+        <tr>
+          <th class="px-5 py-2.5 text-left">Event</th>
+          <th class="px-5 py-2.5 text-left">From → To</th>
+          <th class="px-5 py-2.5 text-left">Details</th>
+          <th class="px-5 py-2.5 text-left">Date</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-700/40">
+        {% for ev in subscription_events %}
+        <tr class="hover:bg-slate-800/30">
+          <td class="px-5 py-3">
+            <span class="font-medium text-slate-200 capitalize">{{ ev.event_type | replace('_',' ') }}</span>
+          </td>
+          <td class="px-5 py-3 text-slate-400">
+            {% if ev.from_status and ev.to_status %}
+              {{ ev.from_status | replace('_',' ') }} → {{ ev.to_status | replace('_',' ') }}
+            {% elif ev.to_status %}
+              → {{ ev.to_status | replace('_',' ') }}
+            {% else %}—{% endif %}
+          </td>
+          <td class="px-5 py-3 text-slate-400 max-w-xs truncate">
+            {% if ev.reason %}{{ ev.reason }}{% elif ev.metadata %}
+              {% set m = ev.metadata %}
+              {% if m is mapping %}
+                {% if m.get('plan_name') %}{{ m.plan_name }}{% endif %}
+                {% if m.get('billing_cycle') %} · {{ m.billing_cycle }}{% endif %}
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td class="px-5 py-3 text-slate-500 whitespace-nowrap">
+            {{ ev.created_at.strftime('%Y-%m-%d %H:%M') if ev.created_at else '—' }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+</div>{# end x-data billing cycle wrapper #}
+<script nonce="{{ csp_nonce }}">
+(function () {
+  var cancelForm = document.querySelector('.js-sub-cancel-form');
+  if (cancelForm) {
+    cancelForm.addEventListener('submit', function (evt) {
+      if (!window.confirm('Cancel at end of period?')) {
+        evt.preventDefault();
+      }
+    });
+  }
+  document.querySelectorAll('.js-sub-plan-form').forEach(function (form) {
+    form.addEventListener('submit', function (evt) {
+      var label = form.getAttribute('data-btn-label') || 'Select Plan';
+      var planName = form.getAttribute('data-plan-name') || '';
+      var planId = form.getAttribute('data-plan-id') || '';
+      var cycleInput = form.querySelector('input[name="billing_cycle"]');
+      var cycle = (cycleInput && cycleInput.value) ? cycleInput.value : 'monthly';
+      var priceEl = document.getElementById('price-' + planId + '-' + cycle);
+      var priceText = priceEl ? priceEl.textContent : '?';
+      var msg = label + ' to ' + planName + '?\nPrice: ৳' + priceText + '\nThis will deduct from your wallet.';
+      if (!window.confirm(msg)) {
+        evt.preventDefault();
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}

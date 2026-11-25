@@ -232,44 +232,45 @@ def providers_panel():
         if action == "add":
             name = request.form.get("name", "").strip()
             sip_domain = request.form.get("sip_domain", "").strip()
-            sip_port = int(request.form.get("sip_port", 5060))
             sip_user = request.form.get("sip_user", "").strip()
             sip_password = request.form.get("sip_password", "").strip()
-            
             try:
+                sip_port = int(request.form.get("sip_port", 5060) or 5060)
+                max_channels = int(request.form.get("max_channels", 10) or 10)
                 create_provider({
                     "name": name,
                     "sip_domain": sip_domain,
                     "sip_port": sip_port,
                     "sip_user": sip_user,
-                    "sip_password": sip_password
+                    "sip_password": sip_password,
+                    "max_channels": max_channels,
                 })
                 flash(f"SIP provider {name} added successfully.", "success")
             except Exception as exc:
                 flash(f"Failed to add provider: {exc}", "error")
-                
+
         elif action == "edit":
             provider_id = int(request.form.get("provider_id", 0))
             name = request.form.get("name", "").strip()
             sip_domain = request.form.get("sip_domain", "").strip()
-            sip_port = int(request.form.get("sip_port", 5060))
             sip_user = request.form.get("sip_user", "").strip()
             sip_password = request.form.get("sip_password", "").strip()
-            
             password_plaintext = sip_password if sip_password else None
-            
             try:
+                sip_port = int(request.form.get("sip_port", 5060) or 5060)
+                max_channels = int(request.form.get("max_channels", 10) or 10)
                 update_provider(provider_id, {
                     "name": name,
                     "sip_domain": sip_domain,
                     "sip_port": sip_port,
                     "sip_user": sip_user,
-                    "sip_password": password_plaintext
+                    "sip_password": password_plaintext,
+                    "max_channels": max_channels,
                 })
                 flash(f"SIP provider {name} updated successfully.", "success")
             except Exception as exc:
                 flash(f"Failed to update provider: {exc}", "error")
-                
+
         elif action == "delete":
             provider_id = int(request.form.get("provider_id", 0))
             try:
@@ -288,28 +289,48 @@ def providers_panel():
             except Exception as exc:
                 flash(f"Failed to update status: {exc}", "error")
 
+        elif action == "reconcile_stale":
+            from app.models.sip_provider import reconcile_stale_calls
+            provider_id = int(request.form.get("provider_id", 0))
+            try:
+                closed = reconcile_stale_calls(provider_id=provider_id if provider_id > 0 else None)
+                flash(f"Reconciled {closed} stale call(s).", "success")
+            except Exception as exc:
+                flash(f"Failed to reconcile stale calls: {exc}", "error")
+
         return redirect(url_for("admin.providers_panel"))
 
     providers = get_all_providers()
     for p in providers:
         active_row = db.query_one(
-            "SELECT COUNT(*) AS n FROM calls WHERE caller_id IN "
-            "(SELECT number FROM phone_numbers WHERE provider_id = %s) "
-            "AND status IN ('initiated', 'ringing', 'answered')",
-            (p["id"],),
+            """SELECT COUNT(*) AS n FROM calls
+               WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))
+                 AND status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')""",
+            (p["id"], p["id"]),
+        )
+        stale_row = db.query_one(
+            """SELECT COUNT(*) AS n FROM calls
+               WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))
+                 AND status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')
+                 AND started_at IS NOT NULL
+                 AND started_at < now() - interval '60 minutes'""",
+            (p["id"], p["id"]),
         )
         total_row = db.query_one(
-            "SELECT COUNT(*) AS n FROM calls WHERE caller_id IN "
-            "(SELECT number FROM phone_numbers WHERE provider_id = %s)",
-            (p["id"],),
+            """SELECT COUNT(*) AS n FROM calls
+               WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))""",
+            (p["id"], p["id"]),
         )
         p["active_calls"] = active_row["n"] if active_row else 0
+        p["stale_calls"] = stale_row["n"] if stale_row else 0
         p["total_calls"] = total_row["n"] if total_row else 0
     return render_template("admin/providers.html", providers=providers)
 
 @admin_bp.route("/providers/<int:provider_id>/test", methods=["POST"])
 @require_super_admin
 def test_provider_connection(provider_id: int):
-    # Runs the socket-based OPTIONS ping health check
+    # Runs non-calling DNS + UDP OPTIONS + SIP Digest REGISTER diagnostics
     res = test_connection(provider_id)
+    if request.headers.get("HX-Request"):
+        return render_template("admin/_provider_test_result.html", result=res)
     return jsonify(res)

@@ -10,7 +10,6 @@
         dndStart: {{ dnd_start | tojson }},
         dndEnd: {{ dnd_end | tojson }},
         retryEnabled: {{ retry_enabled | tojson }},
-        retryOnOptions: {{ retry_on_options | tojson }},
         maxAttemptsCap: {{ max_attempts_cap }}
      })'>
     <!-- Header -->
@@ -19,13 +18,14 @@
         <p class="text-slate-400 text-sm mt-1">Configure automated retry delays and silent DND hours for customer voice confirmation calls</p>
     </div>
 
-    <form method="POST" action="{{ url_for('customer.retry_settings') }}" class="max-w-4xl space-y-6" @submit="return validate($event)">
+    <form method="POST" action="{{ url_for('customer.retry_settings') }}" class="max-w-4xl space-y-6" @submit="validate($event)">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
         <template x-if="clientErrors.length">
             <div class="p-4 bg-rose-950/60 border border-rose-500/80 rounded-xl text-rose-300 text-xs space-y-1">
+                <p class="font-semibold" x-text="`Could not save — fix ${clientErrors.length} highlighted field(s):`"></p>
                 <template x-for="err in clientErrors" :key="err">
-                    <p x-text="err"></p>
+                    <p class="pl-2" x-text="'• ' + err"></p>
                 </template>
             </div>
         </template>
@@ -54,67 +54,227 @@
                     </h3>
                     <div class="flex items-center gap-2">
                         <label for="max_attempts" class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Max Attempts</label>
-                        <select id="max_attempts" name="max_attempts" x-model.number="maxAttempts" @change="syncRowCount()" :disabled="!retryEnabled"
-                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
-                            <option value="1" {% if max_attempts == 1 %}selected{% endif %}>1</option>
-                            <option value="2" {% if max_attempts == 2 %}selected{% endif %}>2</option>
-                            <option value="3" {% if max_attempts == 3 %}selected{% endif %}>3</option>
-                            <option value="4" {% if max_attempts == 4 %}selected{% endif %}>4</option>
-                            <option value="5" {% if max_attempts == 5 %}selected{% endif %}>5</option>
-
-
+                        <!-- Not disabled when retry is off so max_attempts always submits.
+                             Backend ignores attempt fields when retry_enabled=off. -->
+                        <select id="max_attempts" name="max_attempts" x-model.number="maxAttempts" @change="recalcPreview()"
+                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none">
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                            <option value="5">5</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="overflow-x-auto">
+                    <!-- Static rows avoid <template x-for> inside <tbody> which can be
+                         mishandled by HTML parsers and cause inputs to render outside the
+                         table — breaking form submission. Each row uses x-show + :disabled
+                         so only active-attempt fields are submitted. -->
                     <table class="w-full text-sm">
                         <thead>
                             <tr class="text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-800">
                                 <th class="py-2 pr-4">Attempt</th>
                                 <th class="py-2 pr-4">Delay After Previous Call</th>
-                                <th class="py-2 pr-4">Retry On</th>
+                                <th class="py-2">Retry On</th>
                             </tr>
                         </thead>
                         <tbody>
-                            <template x-for="(row, idx) in rows" :key="row.attempt_no">
-                                <tr class="border-b border-slate-800/50">
-                                    <td class="py-3 pr-4 font-semibold text-slate-200" x-text="'Retry ' + row.attempt_no"></td>
-                                    <td class="py-3 pr-4">
-                                        <div class="flex items-center gap-2">
-                                            <input type="number" min="1" step="1" :name="'delay_value_' + row.attempt_no"
-                                                   x-model.number="row.delay_value" @input="recalcPreview()" :disabled="!retryEnabled"
-                                                   placeholder="e.g. 15" required
-                                                   class="w-24 bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
-                                            <select :name="'delay_unit_' + row.attempt_no" x-model="row.delay_unit" @change="recalcPreview()" :disabled="!retryEnabled"
-                                                    class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
-                                                <option value="minutes">Minutes</option>
-                                                <option value="hours">Hours</option>
-                                                <option value="days">Days</option>
-                                            </select>
-                                        </div>
-                                        <template x-if="!row.delay_value || row.delay_value <= 0">
-                                            <p class="text-[11px] text-rose-400 mt-1">Delay is required and must be positive.</p>
-                                        </template>
-                                    </td>
-                                    <td class="py-3 pr-4">
-                                        <div class="flex flex-wrap gap-3">
-                                            <template x-for="opt in retryOnOptions" :key="opt">
-                                                <label class="flex items-center gap-1.5 text-xs text-slate-300">
-                                                    <input type="checkbox" :name="'retry_on_' + row.attempt_no" :value="opt"
-                                                           :checked="row.retry_on.includes(opt)" :disabled="!retryEnabled"
-                                                           @change="toggleRetryOn(row, opt, $event.target.checked)"
-                                                           class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
-                                                    <span x-text="opt === 'no_answer' ? 'No Answer' : 'Busy'"></span>
-                                                </label>
-                                            </template>
-                                        </div>
-                                        <template x-if="!row.retry_on.length">
-                                            <p class="text-[11px] text-rose-400 mt-1">Select at least one condition.</p>
-                                        </template>
-                                    </td>
-                                </tr>
-                            </template>
+                            <!-- Row 1 -->
+                            <tr class="border-b border-slate-800/50" x-show="maxAttempts >= 1">
+                                <td class="py-3 pr-4 font-semibold text-slate-200">Retry 1</td>
+                                <td class="py-3 pr-4">
+                                    <div class="flex items-center gap-2">
+                                        <input type="number" min="1" step="1" name="delay_value_1"
+                                               x-model.number="rows[0].delay_value" @input="recalcPreview()"
+                                               :disabled="!retryEnabled"
+                                               placeholder="e.g. 15"
+                                               class="w-24 bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                        <select name="delay_unit_1" x-model="rows[0].delay_unit" @change="recalcPreview()"
+                                                :disabled="!retryEnabled"
+                                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                            <option value="minutes">Minutes</option>
+                                            <option value="hours">Hours</option>
+                                            <option value="days">Days</option>
+                                        </select>
+                                    </div>
+                                    <p x-show="rows[0].delay_value <= 0" class="text-[11px] text-rose-400 mt-1">Delay must be a positive number.</p>
+                                </td>
+                                <td class="py-3">
+                                    <div class="flex flex-wrap gap-3">
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_1" value="no_answer"
+                                                   x-model="rows[0].retry_on" :disabled="!retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            No Answer
+                                        </label>
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_1" value="busy"
+                                                   x-model="rows[0].retry_on" :disabled="!retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            Busy
+                                        </label>
+                                    </div>
+                                    <p x-show="!rows[0].retry_on.length" class="text-[11px] text-rose-400 mt-1">Select at least one condition.</p>
+                                </td>
+                            </tr>
+
+                            <!-- Row 2 -->
+                            <tr class="border-b border-slate-800/50" x-show="maxAttempts >= 2">
+                                <td class="py-3 pr-4 font-semibold text-slate-200">Retry 2</td>
+                                <td class="py-3 pr-4">
+                                    <div class="flex items-center gap-2">
+                                        <input type="number" min="1" step="1" name="delay_value_2"
+                                               x-model.number="rows[1].delay_value" @input="recalcPreview()"
+                                               :disabled="maxAttempts < 2 || !retryEnabled"
+                                               placeholder="e.g. 30"
+                                               class="w-24 bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                        <select name="delay_unit_2" x-model="rows[1].delay_unit" @change="recalcPreview()"
+                                                :disabled="maxAttempts < 2 || !retryEnabled"
+                                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                            <option value="minutes">Minutes</option>
+                                            <option value="hours">Hours</option>
+                                            <option value="days">Days</option>
+                                        </select>
+                                    </div>
+                                    <p x-show="rows[1].delay_value <= 0" class="text-[11px] text-rose-400 mt-1">Delay must be a positive number.</p>
+                                </td>
+                                <td class="py-3">
+                                    <div class="flex flex-wrap gap-3">
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_2" value="no_answer"
+                                                   x-model="rows[1].retry_on" :disabled="maxAttempts < 2 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            No Answer
+                                        </label>
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_2" value="busy"
+                                                   x-model="rows[1].retry_on" :disabled="maxAttempts < 2 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            Busy
+                                        </label>
+                                    </div>
+                                    <p x-show="!rows[1].retry_on.length" class="text-[11px] text-rose-400 mt-1">Select at least one condition.</p>
+                                </td>
+                            </tr>
+
+                            <!-- Row 3 -->
+                            <tr class="border-b border-slate-800/50" x-show="maxAttempts >= 3">
+                                <td class="py-3 pr-4 font-semibold text-slate-200">Retry 3</td>
+                                <td class="py-3 pr-4">
+                                    <div class="flex items-center gap-2">
+                                        <input type="number" min="1" step="1" name="delay_value_3"
+                                               x-model.number="rows[2].delay_value" @input="recalcPreview()"
+                                               :disabled="maxAttempts < 3 || !retryEnabled"
+                                               placeholder="e.g. 60"
+                                               class="w-24 bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                        <select name="delay_unit_3" x-model="rows[2].delay_unit" @change="recalcPreview()"
+                                                :disabled="maxAttempts < 3 || !retryEnabled"
+                                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                            <option value="minutes">Minutes</option>
+                                            <option value="hours">Hours</option>
+                                            <option value="days">Days</option>
+                                        </select>
+                                    </div>
+                                    <p x-show="rows[2].delay_value <= 0" class="text-[11px] text-rose-400 mt-1">Delay must be a positive number.</p>
+                                </td>
+                                <td class="py-3">
+                                    <div class="flex flex-wrap gap-3">
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_3" value="no_answer"
+                                                   x-model="rows[2].retry_on" :disabled="maxAttempts < 3 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            No Answer
+                                        </label>
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_3" value="busy"
+                                                   x-model="rows[2].retry_on" :disabled="maxAttempts < 3 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            Busy
+                                        </label>
+                                    </div>
+                                    <p x-show="!rows[2].retry_on.length" class="text-[11px] text-rose-400 mt-1">Select at least one condition.</p>
+                                </td>
+                            </tr>
+
+                            <!-- Row 4 -->
+                            <tr class="border-b border-slate-800/50" x-show="maxAttempts >= 4">
+                                <td class="py-3 pr-4 font-semibold text-slate-200">Retry 4</td>
+                                <td class="py-3 pr-4">
+                                    <div class="flex items-center gap-2">
+                                        <input type="number" min="1" step="1" name="delay_value_4"
+                                               x-model.number="rows[3].delay_value" @input="recalcPreview()"
+                                               :disabled="maxAttempts < 4 || !retryEnabled"
+                                               placeholder="e.g. 120"
+                                               class="w-24 bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                        <select name="delay_unit_4" x-model="rows[3].delay_unit" @change="recalcPreview()"
+                                                :disabled="maxAttempts < 4 || !retryEnabled"
+                                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                            <option value="minutes">Minutes</option>
+                                            <option value="hours">Hours</option>
+                                            <option value="days">Days</option>
+                                        </select>
+                                    </div>
+                                    <p x-show="rows[3].delay_value <= 0" class="text-[11px] text-rose-400 mt-1">Delay must be a positive number.</p>
+                                </td>
+                                <td class="py-3">
+                                    <div class="flex flex-wrap gap-3">
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_4" value="no_answer"
+                                                   x-model="rows[3].retry_on" :disabled="maxAttempts < 4 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            No Answer
+                                        </label>
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_4" value="busy"
+                                                   x-model="rows[3].retry_on" :disabled="maxAttempts < 4 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            Busy
+                                        </label>
+                                    </div>
+                                    <p x-show="!rows[3].retry_on.length" class="text-[11px] text-rose-400 mt-1">Select at least one condition.</p>
+                                </td>
+                            </tr>
+
+                            <!-- Row 5 -->
+                            <tr x-show="maxAttempts >= 5">
+                                <td class="py-3 pr-4 font-semibold text-slate-200">Retry 5</td>
+                                <td class="py-3 pr-4">
+                                    <div class="flex items-center gap-2">
+                                        <input type="number" min="1" step="1" name="delay_value_5"
+                                               x-model.number="rows[4].delay_value" @input="recalcPreview()"
+                                               :disabled="maxAttempts < 5 || !retryEnabled"
+                                               placeholder="e.g. 240"
+                                               class="w-24 bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                        <select name="delay_unit_5" x-model="rows[4].delay_unit" @change="recalcPreview()"
+                                                :disabled="maxAttempts < 5 || !retryEnabled"
+                                                class="bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-sm focus:outline-none disabled:opacity-50">
+                                            <option value="minutes">Minutes</option>
+                                            <option value="hours">Hours</option>
+                                            <option value="days">Days</option>
+                                        </select>
+                                    </div>
+                                    <p x-show="rows[4].delay_value <= 0" class="text-[11px] text-rose-400 mt-1">Delay must be a positive number.</p>
+                                </td>
+                                <td class="py-3">
+                                    <div class="flex flex-wrap gap-3">
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_5" value="no_answer"
+                                                   x-model="rows[4].retry_on" :disabled="maxAttempts < 5 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            No Answer
+                                        </label>
+                                        <label class="flex items-center gap-1.5 text-xs text-slate-300">
+                                            <input type="checkbox" name="retry_on_5" value="busy"
+                                                   x-model="rows[4].retry_on" :disabled="maxAttempts < 5 || !retryEnabled"
+                                                   class="rounded border-slate-700 bg-slate-950 text-teal-500 focus:ring-teal-500/40 disabled:opacity-50">
+                                            Busy
+                                        </label>
+                                    </div>
+                                    <p x-show="!rows[4].retry_on.length" class="text-[11px] text-rose-400 mt-1">Select at least one condition.</p>
+                                </td>
+                            </tr>
                         </tbody>
                     </table>
                 </div>
@@ -128,18 +288,21 @@
                 </h3>
                 <p class="text-xs text-slate-400 leading-relaxed">
                     Calls will not be placed between these hours. A retry due during DND is automatically pushed to just after the window ends.
+                    Start time later than end time means an overnight window (e.g. 9 PM – 9 AM).
                 </p>
 
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6 pt-2">
                     <div>
                         <label for="dnd_start" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Start</label>
                         <input type="time" name="dnd_start" id="dnd_start" x-model="dndStart" @change="recalcPreview()" required
-                               class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none">
+                               :disabled="!retryEnabled"
+                               class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none disabled:opacity-50">
                     </div>
                     <div>
                         <label for="dnd_end" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">End</label>
                         <input type="time" name="dnd_end" id="dnd_end" x-model="dndEnd" @change="recalcPreview()" required
-                               class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none">
+                               :disabled="!retryEnabled"
+                               class="w-full bg-slate-950/80 border border-slate-800 focus:border-teal-500/80 focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 text-sm transition-all focus:outline-none disabled:opacity-50">
                     </div>
                     <div>
                         <label class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Timezone</label>
@@ -150,6 +313,9 @@
                 </div>
                 <template x-if="dndStart === dndEnd">
                     <p class="text-xs text-red-400">DND start and end times must be different.</p>
+                </template>
+                <template x-if="dndStart !== dndEnd && dndStart > dndEnd">
+                    <p class="text-xs text-indigo-300">Overnight window: calls blocked from <span x-text="dndStart"></span> until <span x-text="dndEnd"></span> next morning.</p>
                 </template>
             </div>
 
@@ -176,42 +342,24 @@ function retrySettings(config) {
         dndStart: config.dndStart,
         dndEnd: config.dndEnd,
         retryEnabled: config.retryEnabled,
-        retryOnOptions: config.retryOnOptions,
         rows: [],
         previewText: '',
         clientErrors: [],
 
         init() {
+            // Always initialise all 5 rows so rows[0]..rows[4] always exist —
+            // static table rows reference them directly.
             const byAttempt = {};
             (config.rules || []).forEach(r => { byAttempt[r.attempt_no] = r; });
             this.rows = [];
-            for (let i = 1; i <= this.maxAttempts; i++) {
+            for (let i = 1; i <= 5; i++) {
                 const existing = byAttempt[i];
                 this.rows.push({
                     attempt_no: i,
-                    delay_value: existing ? existing.delay_value : 15,
-                    delay_unit: existing ? existing.delay_unit : 'minutes',
-                    retry_on: existing ? existing.retry_on : ['no_answer', 'busy'],
+                    delay_value: existing ? existing.delay_value : (i === 1 ? 15 : i === 2 ? 30 : 60),
+                    delay_unit:  existing ? existing.delay_unit  : 'minutes',
+                    retry_on:    existing ? [...existing.retry_on] : ['no_answer', 'busy'],
                 });
-            }
-            this.recalcPreview();
-        },
-
-        toggleRetryOn(row, opt, checked) {
-            if (checked) {
-                if (!row.retry_on.includes(opt)) row.retry_on.push(opt);
-            } else {
-                row.retry_on = row.retry_on.filter(v => v !== opt);
-            }
-        },
-
-        syncRowCount() {
-            while (this.rows.length < this.maxAttempts) {
-                const n = this.rows.length + 1;
-                this.rows.push({ attempt_no: n, delay_value: 15, delay_unit: 'minutes', retry_on: ['no_answer', 'busy'] });
-            }
-            while (this.rows.length > this.maxAttempts) {
-                this.rows.pop();
             }
             this.recalcPreview();
         },
@@ -223,10 +371,12 @@ function retrySettings(config) {
 
         validate(event) {
             this.clientErrors = [];
-            if (!this.retryEnabled) return true; // section disabled, nothing to validate
-            for (const row of this.rows) {
+            // When retry is off the form skips attempt validation server-side too.
+            if (!this.retryEnabled) return true;
+            for (let i = 0; i < this.maxAttempts; i++) {
+                const row = this.rows[i];
                 if (!row.delay_value || Number(row.delay_value) <= 0) {
-                    this.clientErrors.push(`Retry ${row.attempt_no}: delay is required and must be a positive number.`);
+                    this.clientErrors.push(`Retry ${row.attempt_no}: delay is required and must be positive.`);
                 }
                 if (!row.retry_on.length) {
                     this.clientErrors.push(`Retry ${row.attempt_no}: select at least one retry condition.`);
@@ -243,8 +393,8 @@ function retrySettings(config) {
             return true;
         },
 
-        // Mirrors app/services/retry_service._apply_dnd in JS for the live
-        // preview — same overnight-window logic, minute-resolution.
+        // Mirrors app/services/retry_service._apply_dnd — same overnight-window
+        // logic at minute resolution for the live preview.
         applyDnd(minutesOfDay, dndStartMin, dndEndMin) {
             let inDnd;
             if (dndStartMin > dndEndMin) {
@@ -253,10 +403,9 @@ function retrySettings(config) {
                 inDnd = minutesOfDay >= dndStartMin && minutesOfDay < dndEndMin;
             }
             if (!inDnd) return minutesOfDay;
-            // Push to dnd_end (+5 min), rolling past midnight if needed.
             let wake = dndEndMin + 5;
             if (minutesOfDay >= dndStartMin && dndStartMin > dndEndMin) {
-                wake += 24 * 60; // evening side of an overnight window -> tomorrow
+                wake += 24 * 60; // evening side of overnight window → push to tomorrow
             }
             return wake;
         },
@@ -267,28 +416,30 @@ function retrySettings(config) {
         },
 
         formatMinutes(totalMinutes) {
-            const days = Math.floor(totalMinutes / (24 * 60));
+            const overflow = Math.floor(totalMinutes / (24 * 60));
             const rem = totalMinutes % (24 * 60);
             const h = Math.floor(rem / 60) % 24;
             const m = rem % 60;
             const ampm = h >= 12 ? 'PM' : 'AM';
             const h12 = h % 12 === 0 ? 12 : h % 12;
             const label = `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
-            return days > 0 ? `Tomorrow ${label}` : label;
+            return overflow > 0 ? `+${overflow}d ${label}` : label;
         },
 
         recalcPreview() {
             if (!this.dndStart || !this.dndEnd) { this.previewText = ''; return; }
             const dndStartMin = this.timeToMinutes(this.dndStart);
-            const dndEndMin = this.timeToMinutes(this.dndEnd);
+            const dndEndMin   = this.timeToMinutes(this.dndEnd);
 
-            let cursor = this.timeToMinutes('14:00'); // example: attempt 1 fails at 2:00 PM
-            const parts = [`If attempt 1 fails at 2:00 PM:`];
-            for (let i = 0; i < this.rows.length; i++) {
-                const minutes = this.delayToMinutes(this.rows[i]) || 30;
-                cursor = cursor + minutes;
+            // Preview anchors the initial unanswered call at 2:00 PM.
+            // Retries are labelled Retry 1..N (matching the table), not "Attempt N+1".
+            let cursor = this.timeToMinutes('14:00');
+            const parts = ['If initial call at 2:00 PM goes unanswered:'];
+            for (let i = 0; i < this.maxAttempts; i++) {
+                const mins = this.delayToMinutes(this.rows[i]) || 30;
+                cursor = cursor + mins;
                 cursor = this.applyDnd(cursor, dndStartMin, dndEndMin);
-                parts.push(`Attempt ${i + 2}: ${this.formatMinutes(cursor)}`);
+                parts.push(`Retry ${i + 1}: ${this.formatMinutes(cursor)}`);
             }
             this.previewText = parts.join(' | ');
         },

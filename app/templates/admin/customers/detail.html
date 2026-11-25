@@ -42,24 +42,29 @@
                    else 'bg-amber-900/50 text-amber-400' if tenant.status == 'trial'
                    else 'bg-red-900/50 text-red-400' }}">{{ tenant.status }}</span>
         </div>
-        <form method="POST" action="{{ url_for('admin.customer_detail', tenant_id=tenant.id) }}" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <form method="POST" action="{{ url_for('admin.customer_edit', tenant_id=tenant.id) }}" class="grid grid-cols-1 md:grid-cols-4 gap-4">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="detail">
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Business Name</label>
+                <input type="text" name="business_name" value="{{ tenant.business_name }}" required
+                       class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
+            </div>
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Business Email</label>
+                <input type="email" name="email" value="{{ tenant.email }}" required
+                       class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
+            </div>
             <div>
                 <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Status</label>
                 <select name="status" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
-                    {% for s in ('active', 'trial', 'suspended', 'cancelled') %}
-                    <option value="{{ s }}" {{ 'selected' if tenant.status == s }}>{{ s | title }}</option>
+                    {% for s in ('active', 'trial', 'suspended', 'cancelled', 'grace_period', 'past_due', 'expired') %}
+                    <option value="{{ s }}" {{ 'selected' if tenant.status == s }}>{{ s | replace('_', ' ') | title }}</option>
                     {% endfor %}
                 </select>
             </div>
-            <div>
-                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Created</label>
-                <div class="bg-slate-950/40 border border-slate-800/60 rounded-xl px-3 py-2.5 text-slate-400 text-sm">
-                    {{ tenant.created_at.strftime('%Y-%m-%d') if tenant.created_at else '—' }}
-                </div>
-            </div>
-            <div class="flex items-end">
-                <button type="submit" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold">Save</button>
+            <div class="flex items-end gap-2">
+                <button type="submit" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl px-4 py-2.5 text-sm font-semibold">Save Profile</button>
             </div>
         </form>
     </div>
@@ -80,29 +85,34 @@
             <div>
                 <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Custom Rate (৳/min)</label>
                 <input type="number" name="rate_per_min" step="0.01" min="0"
-                       value="{{ rate.rate_per_min if rate and rate.rate_per_min is not none else '' }}" placeholder="Platform default"
+                       value="{{ rate.rate_per_min if rate and rate.rate_per_min is not none else '' }}"
+                       placeholder="Blank = use plan default"
                        class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
+                <p class="text-[10px] text-slate-500 mt-1">Leave blank to inherit from plan. Enter 0.00 for free calls.</p>
             </div>
             <div>
                 <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Pulse Seconds</label>
                 <select name="billing_pulse_seconds" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
-                    <option value="60" {{ 'selected' if not rate or rate.billing_pulse_seconds == 60 or rate.billing_pulse_seconds is none }}>60s / 1m (Default)</option>
+                    <option value="" {{ 'selected' if not rate or rate.billing_pulse_seconds is none }}>Use Plan Default</option>
+                    <option value="60" {{ 'selected' if rate and rate.billing_pulse_seconds == 60 }}>60s / 1m</option>
                     <option value="30" {{ 'selected' if rate and rate.billing_pulse_seconds == 30 }}>30s Pulse</option>
-                    <option value="0" {{ 'selected' if rate and rate.billing_pulse_seconds == 0 }}>0s (Fallback to 60s)</option>
                 </select>
             </div>
             <div>
-                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Min Charge Duration (secs)</label>
+                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Min Billable Duration (secs)</label>
                 <input type="number" name="minimum_billable_seconds" min="0"
-                       value="{{ rate.minimum_billable_seconds if rate and rate.minimum_billable_seconds is not none else 60 }}" placeholder="e.g. 60"
+                       value="{{ rate.minimum_billable_seconds if rate and rate.minimum_billable_seconds is not none else '' }}"
+                       placeholder="Blank = use plan default"
                        class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
             </div>
-            <div class="flex items-center md:col-span-2 mt-6">
-                <label class="inline-flex items-center cursor-pointer">
-                    <input type="checkbox" name="charge_failed_calls" class="sr-only peer" {{ 'checked' if rate and rate.charge_failed_calls }}>
-                    <div class="relative w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                    <span class="ms-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Charge Failed/No-Answer Calls</span>
-                </label>
+            <div>
+                <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Charge Failed / No-Answer Calls</label>
+                <select name="charge_failed_calls" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-100 text-sm focus:outline-none">
+                    <option value="" {{ 'selected' if not rate or rate.charge_failed_calls is none }}>Use Plan Default</option>
+                    <option value="1" {{ 'selected' if rate and rate.charge_failed_calls == true }}>Yes — charge failed calls</option>
+                    <option value="0" {{ 'selected' if rate and rate.charge_failed_calls == false and rate.charge_failed_calls is not none }}>No — do not charge</option>
+                </select>
+                <p class="text-[10px] text-slate-500 mt-1">Explicit Yes/No overrides the plan default for this tenant.</p>
             </div>
             <div class="flex items-end md:col-span-3">
                 <button type="submit" class="w-full bg-gradient-to-r from-indigo-500 to-purple-500 text-white font-bold rounded-xl px-4 py-2.5 text-sm">Save Plan & Rates</button>
@@ -203,7 +213,8 @@
             {% endif %}
         </div>
         <form method="POST" action="{{ url_for('admin.tenant_tts_mode_override', tenant_id=tenant.id) }}"
-              class="flex flex-wrap gap-3 items-end">
+              class="flex flex-wrap gap-3 items-end js-confirm-detail-form"
+              data-confirm-message="Change TTS mode for this tenant?">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div>
                 <label class="block text-xs text-slate-400 mb-1">New Mode</label>
@@ -220,8 +231,7 @@
                        class="w-full px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
             </div>
             <button type="submit"
-                    class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition"
-                    onclick="return confirm('Change TTS mode for this tenant?')">
+                    class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition">
                 Apply
             </button>
         </form>
@@ -342,8 +352,8 @@
     </div>
 
     <div x-show="showCancel" x-cloak class="border-t border-slate-800 pt-4 mt-2">
-        <form method="POST" action="{{ url_for('admin.subscription_cancel', tenant_id=tenant.id) }}" class="space-y-3"
-              onsubmit="return confirm('Immediately cancel this tenant\'s subscription?')">
+        <form method="POST" action="{{ url_for('admin.subscription_cancel', tenant_id=tenant.id) }}" class="space-y-3 js-confirm-detail-form"
+              data-confirm-message="Immediately cancel this tenant's subscription?">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <div>
                 <label class="block text-xs font-semibold text-slate-400 mb-1">Reason (required)</label>
@@ -353,4 +363,40 @@
         </form>
     </div>
 </div>
+
+<!-- Lifecycle Danger Zone -->
+<div class="mt-8 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+    <h2 class="font-outfit font-bold text-lg text-slate-100">Account Lifecycle (Archive / Delete)</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <form method="POST" action="{{ url_for('admin.customer_archive', tenant_id=tenant.id) }}" class="space-y-3 bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="detail">
+            <h3 class="text-sm font-semibold text-amber-300">Archive Merchant</h3>
+            <p class="text-xs text-slate-400">Cancels subscription, disables login/API keys, releases numbers, and preserves billing/CDR records.</p>
+            <input type="text" name="reason" placeholder="Archive reason (optional)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+            <button type="submit" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg text-xs">Archive Merchant</button>
+        </form>
+
+        <form method="POST" action="{{ url_for('admin.customer_delete', tenant_id=tenant.id) }}" class="space-y-3 bg-slate-950/60 border border-rose-900/50 rounded-xl p-4">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="detail">
+            <h3 class="text-sm font-semibold text-rose-300">Permanently Delete Merchant</h3>
+            <p class="text-xs text-slate-400">Allowed only for merchants with zero financial, wallet, payment, or CDR history.</p>
+            <input type="text" name="confirm_text" required placeholder="Type DELETE to confirm" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+            <input type="password" name="admin_password" required autocomplete="current-password" placeholder="Super-admin password" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white">
+            <button type="submit" class="px-4 py-2 bg-rose-700 hover:bg-rose-600 text-white font-semibold rounded-lg text-xs">Delete Permanently</button>
+        </form>
+    </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+document.querySelectorAll('.js-confirm-detail-form').forEach(function (form) {
+    form.addEventListener('submit', function (evt) {
+        const msg = form.getAttribute('data-confirm-message') || 'Confirm action?';
+        if (!window.confirm(msg)) {
+            evt.preventDefault();
+        }
+    });
+});
+</script>
 {% endblock %}

@@ -184,7 +184,14 @@ def update_tenant_settings(tenant_id: int, settings: dict[str, Any]) -> None:
     invalidate_tenant_caches(tenant_id)
 
 
-def get_all_tenants(page: int | None = None, per_page: int = 20, search: str | None = None) -> list[dict[str, Any]] | dict[str, Any]:
+def get_all_tenants(
+    page: int | None = None,
+    per_page: int = 20,
+    search: str | None = None,
+    status: str | None = None,
+    plan_id: int | str | None = None,
+    include_archived: bool = False,
+) -> list[dict[str, Any]] | dict[str, Any]:
     """Retrieve tenants, supporting both full list retrieval (backward-compatible) and paginated search."""
     if page is None:
         # Full list mode (backward-compatible)
@@ -192,13 +199,31 @@ def get_all_tenants(page: int | None = None, per_page: int = 20, search: str | N
             "SELECT t.*, p.name as plan_name FROM tenants t LEFT JOIN plans p ON t.plan_id = p.id ORDER BY t.created_at DESC"
         )
 
-    # Paginated search mode
+    # Paginated filtered search mode
     sql = "SELECT t.*, p.name as plan_name FROM tenants t LEFT JOIN plans p ON t.plan_id = p.id"
+    where_clauses: list[str] = []
     params: list[Any] = []
-    if search:
-        sql += " WHERE t.business_name ILIKE %s OR t.email ILIKE %s"
-        search_param = f"%{search}%"
+
+    if search and search.strip():
+        where_clauses.append("(t.business_name ILIKE %s OR t.email ILIKE %s)")
+        search_param = f"%{search.strip()}%"
         params.extend([search_param, search_param])
+
+    if status == "archived":
+        where_clauses.append("COALESCE(t.settings->>'archived_at', '') <> ''")
+    else:
+        if not include_archived:
+            where_clauses.append("COALESCE(t.settings->>'archived_at', '') = ''")
+        if status:
+            where_clauses.append("t.status = %s")
+            params.append(status)
+
+    if plan_id not in (None, ""):
+        where_clauses.append("t.plan_id = %s")
+        params.append(int(plan_id))
+
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
 
     count_sql = f"SELECT COUNT(*) FROM ({sql}) as tmp"
     total_row = db.query_one(count_sql, tuple(params))
@@ -211,5 +236,5 @@ def get_all_tenants(page: int | None = None, per_page: int = 20, search: str | N
     data = db.query(sql, tuple(params))
     return {
         "data": data,
-        "total": total
+        "total": total,
     }

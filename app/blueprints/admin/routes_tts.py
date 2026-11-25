@@ -6,13 +6,15 @@ No secret values in URLs, GET responses, logs, or HTML source.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from flask import abort, flash, jsonify, redirect, render_template, request, url_for
+from flask import Response, abort, flash, jsonify, redirect, render_template, request, url_for
 from flask_login import current_user
 
 from app.blueprints.admin import admin_bp
@@ -723,6 +725,82 @@ def plan_activate(plan_id: int):
     return redirect(url_for("admin.plans_list"))
 
 
+@admin_bp.route("/plans/<int:plan_id>/duplicate", methods=["POST"])
+@require_super_admin
+def plan_duplicate(plan_id: int):
+    plan = _get_plan_or_404(plan_id)
+    policy = get_plan_tts_policy(plan_id) or {}
+
+    base_name = f"{plan['name']}-copy"
+    new_name = base_name
+    suffix = 2
+    while db.query_one("SELECT id FROM plans WHERE name = %s", (new_name,)):
+        new_name = f"{base_name}-{suffix}"
+        suffix += 1
+
+    with db.transaction():
+        new_plan_id = db.insert_returning_id(
+            """
+            INSERT INTO plans (
+                name, price_monthly, included_minutes, max_flows, max_users, feature_flags,
+                default_rate_per_min, default_rate_per_call, default_min_charge,
+                default_billing_pulse_seconds, default_minimum_billable_seconds,
+                default_charge_failed_calls, number_entitlement, included_dedicated_numbers
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+            """,
+            (
+                new_name,
+                plan["price_monthly"],
+                plan["included_minutes"],
+                plan["max_flows"],
+                plan["max_users"],
+                json.dumps(plan.get("feature_flags") or {}),
+                plan.get("default_rate_per_min"),
+                plan.get("default_rate_per_call"),
+                plan.get("default_min_charge"),
+                plan.get("default_billing_pulse_seconds"),
+                plan.get("default_minimum_billable_seconds"),
+                plan.get("default_charge_failed_calls"),
+                plan.get("number_entitlement") or "shared_pool_only",
+                plan.get("included_dedicated_numbers") or 0,
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO plan_tts_policies (
+                plan_id, credential_policy, allowed_providers, byok_providers,
+                platform_managed_providers, monthly_character_quota,
+                monthly_audio_seconds_quota, daily_preview_limit,
+                extra_usage_policy, max_concurrent_tts, premium_voices_enabled
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                new_plan_id,
+                policy.get("credential_policy") or "byok_only",
+                json.dumps(policy.get("allowed_providers") or []),
+                json.dumps(policy.get("byok_providers") or []),
+                json.dumps(policy.get("platform_managed_providers") or []),
+                policy.get("monthly_character_quota"),
+                policy.get("monthly_audio_seconds_quota"),
+                policy.get("daily_preview_limit") if policy.get("daily_preview_limit") is not None else 10,
+                policy.get("extra_usage_policy") or "block",
+                policy.get("max_concurrent_tts") if policy.get("max_concurrent_tts") is not None else 2,
+                bool(policy.get("premium_voices_enabled", False)),
+            ),
+        )
+
+    audit_log(
+        "plan_duplicated",
+        current_user.id,
+        "plan",
+        new_plan_id,
+        {"source_plan_id": plan_id, "source_name": plan.get("name"), "new_name": new_name},
+    )
+    flash(f"Duplicated plan '{plan['name']}' as '{new_name}'.", "success")
+    return redirect(url_for("admin.plan_edit", plan_id=new_plan_id))
+
+
 # ── Platform TTS page ─────────────────────────────────────────────────────────
 
 @admin_bp.route("/platform-tts", methods=["GET"])
@@ -963,10 +1041,7 @@ def platform_tts_disable(provider: str):
 
 # ── TTS usage page ────────────────────────────────────────────────────────────
 
-@admin_bp.route("/tts-usage", methods=["GET"])
-@require_super_admin
-def tts_usage_page():
-    # Filters (validated)
+def _parse_tts_usage_filters():
     today = date.today()
     default_month = today.replace(day=1).strftime("%Y-%m")
 
@@ -996,16 +1071,13 @@ def tts_usage_page():
         except ValueError:
             filter_plan = ""
 
-    # Validate provider filter
     if filter_provider and filter_provider not in VALID_PROVIDERS:
         filter_provider = ""
     if filter_mode and filter_mode not in ("byok", "platform_managed"):
         filter_mode = ""
 
-    # Build query with filters
     where_clauses = ["u.billing_month = %s"]
     params: list[Any] = [billing_month]
-
     if tenant_id_int:
         where_clauses.append("u.tenant_id = %s")
         params.append(tenant_id_int)
@@ -1015,8 +1087,34 @@ def tts_usage_page():
     if filter_mode:
         where_clauses.append("u.credential_mode = %s")
         params.append(filter_mode)
+    if plan_id_int:
+        where_clauses.append("t.plan_id = %s")
+        params.append(plan_id_int)
 
     where_sql = " AND ".join(where_clauses)
+    return (
+        where_sql,
+        params,
+        filter_month,
+        filter_tenant,
+        filter_plan,
+        filter_provider,
+        filter_mode,
+    )
+
+
+@admin_bp.route("/tts-usage", methods=["GET"])
+@require_super_admin
+def tts_usage_page():
+    (
+        where_sql,
+        params,
+        filter_month,
+        filter_tenant,
+        filter_plan,
+        filter_provider,
+        filter_mode,
+    ) = _parse_tts_usage_filters()
 
     # Pagination
     page = max(1, int(request.args.get("page", 1) or 1))
@@ -1029,8 +1127,8 @@ def tts_usage_page():
         FROM tenant_tts_usage u
         JOIN tenants t ON t.id = u.tenant_id
         WHERE {where_sql}
-        """ + (" AND t.plan_id = %s" if plan_id_int else ""),
-        params + ([plan_id_int] if plan_id_int else []),
+        """,
+        params,
     )
     total = int(total_row["cnt"]) if total_row else 0
 
@@ -1057,11 +1155,10 @@ def tts_usage_page():
         LEFT JOIN plan_tts_policies pol ON pol.plan_id = t.plan_id
             AND u.credential_mode = 'platform_managed'
         WHERE {where_sql}
-        {"AND t.plan_id = %s" if plan_id_int else ""}
         ORDER BY u.characters_used DESC, u.tenant_id
         LIMIT %s OFFSET %s
         """,
-        params + ([plan_id_int] if plan_id_int else []) + [per_page, offset],
+        params + [per_page, offset],
     )
 
     # Aggregate totals
@@ -1072,13 +1169,13 @@ def tts_usage_page():
             COALESCE(SUM(audio_seconds), 0) AS total_seconds,
             COALESCE(SUM(preview_requests), 0) AS total_previews,
             COALESCE(SUM(production_requests), 0) AS total_production,
-            COALESCE(SUM(failed_requests), 0) AS total_failed
+            COALESCE(SUM(failed_requests), 0) AS total_failed,
+            COALESCE(SUM(estimated_provider_cost), 0) AS total_cost
         FROM tenant_tts_usage u
         JOIN tenants t ON t.id = u.tenant_id
         WHERE {where_sql}
-        {"AND t.plan_id = %s" if plan_id_int else ""}
         """,
-        params + ([plan_id_int] if plan_id_int else []),
+        params,
     )
 
     # Tenant and plan lists for filter dropdowns
@@ -1102,6 +1199,65 @@ def tts_usage_page():
         all_tenants=[dict(r) for r in all_tenants],
         all_plans=[dict(r) for r in all_plans],
         all_providers=all_providers,
+    )
+
+
+@admin_bp.route("/tts-usage/export.csv", methods=["GET"])
+@require_super_admin
+def tts_usage_export_csv():
+    where_sql, params, filter_month, *_ = _parse_tts_usage_filters()
+    rows = db.query(
+        f"""
+        SELECT
+            u.tenant_id,
+            t.business_name AS tenant_name,
+            pl.name AS plan_name,
+            u.provider,
+            u.credential_mode,
+            u.characters_used,
+            u.audio_seconds,
+            u.preview_requests,
+            u.production_requests,
+            u.failed_requests,
+            u.estimated_provider_cost,
+            u.updated_at
+        FROM tenant_tts_usage u
+        JOIN tenants t ON t.id = u.tenant_id
+        LEFT JOIN plans pl ON pl.id = t.plan_id
+        WHERE {where_sql}
+        ORDER BY u.characters_used DESC, u.tenant_id
+        """,
+        params,
+    )
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Month", "Tenant ID", "Tenant", "Plan", "Provider", "Mode",
+        "Characters Used", "Audio Seconds", "Preview Requests",
+        "Production Requests", "Failed Requests", "Estimated Provider Cost (USD)", "Updated At",
+    ])
+    for r in rows:
+        writer.writerow([
+            filter_month,
+            r["tenant_id"],
+            r["tenant_name"],
+            r.get("plan_name") or "",
+            r["provider"],
+            r["credential_mode"],
+            int(r.get("characters_used") or 0),
+            int(r.get("audio_seconds") or 0),
+            int(r.get("preview_requests") or 0),
+            int(r.get("production_requests") or 0),
+            int(r.get("failed_requests") or 0),
+            f"{float(r.get('estimated_provider_cost') or 0):.4f}",
+            r["updated_at"].isoformat() if r.get("updated_at") else "",
+        ])
+
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="tts-usage-{filter_month}.csv"'},
     )
 
 
@@ -1279,13 +1435,9 @@ def tenant_tts_mode_override(tenant_id: int):
         (new_mode, tenant_id),
     )
 
-    # Invalidate tenant settings cache if Redis available
-    try:
-        from app.extensions import redis_ext
-        cache_key = f"tenant_settings:{tenant_id}"
-        redis_ext.delete(cache_key)
-    except Exception:
-        pass
+    # Invalidate tenant settings cache (Redis key tenant:settings:{id} et al.)
+    from app.models.tenant import invalidate_tenant_caches
+    invalidate_tenant_caches(tenant_id)
 
     audit_log(
         "tenant_tts_mode_changed",

@@ -1,0 +1,25 @@
+<div class="rounded-lg border p-2.5 text-left text-xs space-y-2 {% if result.success %}bg-emerald-950/60 border-emerald-700/70 text-emerald-100{% elif result.udp_reachable %}bg-amber-950/60 border-amber-700/70 text-amber-100{% else %}bg-red-950/60 border-red-700/70 text-red-100{% endif %}" data-provider-test-result data-readiness="{{ result.provider_readiness }}">
+    <div class="flex items-center justify-between gap-2">
+        <span class="font-semibold">
+            {% if result.success %}PASS{% elif result.udp_reachable %}FAIL / WARN{% else %}FAIL{% endif %} — {{ result.readiness_label }}
+        </span>
+        <span class="font-mono text-[11px] opacity-80">{{ result.latency_ms }} ms</span>
+    </div>
+
+    <div class="space-y-1 text-[11px]">
+        {% for step in result.steps %}
+        <div class="flex items-start justify-between gap-2">
+            <span class="text-slate-300">{{ step.label }}</span>
+            <span class="font-mono text-right {% if step.status == 'pass' %}text-emerald-300{% elif step.status == 'warn' %}text-amber-300{% else %}text-red-300{% endif %}">
+                [{{ step.status|upper }}] {{ step.detail }}
+            </span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <p class="text-[11px] leading-snug opacity-90">{{ result.explanation }}</p>
+    <p class="text-[11px] leading-snug text-slate-300"><strong>Next:</strong> {{ result.suggested_action }}</p>
+    <div class="text-[10px] pt-1 border-t border-white/10 text-slate-300">
+        {{ result.caveat }}
+    </div>
+</div>

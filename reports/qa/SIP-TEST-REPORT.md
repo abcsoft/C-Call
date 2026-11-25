@@ -13,5 +13,6 @@
 | Mock UDP SIP REGISTER 401 Digest Challenge + 200 OK (`Call-ID`/`CSeq` validation) | `pytest tests/unit/test_v2_sip_networking.py -k test_mock_udp_sip_register_challenge_and_200` | **PASS** |
 | SIP `CANCEL` During 180 Ringing & Port Cleanup | `pytest tests/unit/test_v2_sip_networking.py -k test_sip_cancel_while_ringing_and_port_cleanup` | **PASS** |
 | Direct SIP Startup ACK Protocol | `pytest tests/unit/test_direct_sip_ack.py` (24 tests) | **PASS** |
+| Admin SIP Diagnostics: `SIP/2.0 404` Reject, Digest `401 -> 200` Non-Calling REGISTER, Wrong Auth `403`, `max_channels`/Port/Duplicate Validation & Stale Call Reconciliation | `pytest tests/unit/test_v2_admin_lifecycle_and_sip_diag.py` + Playwright (`:5001`) | **PASS** |
 | End-to-End Local UDP Mock IP-PBX Rehearsal (REGISTER, INVITE, RTP audio, DTMF, recording, REFER transfer, BYE) | `scripts/ippbx_acceptance.py --mode mock-acceptance --transfer-to 1001` & `test_ippbx_acceptance_mock_rehearsal` | **PASS** |
 | Live Carrier IP-PBX Call, Audio, DTMF, Hangup, Transfer | Requires explicit authorization + live SIP credentials (`scripts/ippbx_acceptance.py --mode full-call --confirm-authorized-test --target ...`) | **BLOCKED** |

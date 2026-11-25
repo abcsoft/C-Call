@@ -1,8 +1,8 @@
 {% extends "admin/base_admin.html" %}
 {% block title %}TTS Usage — Admin{% endblock %}
 
-{% block content %}
-<div class="max-w-7xl mx-auto px-4 py-8">
+{% block admin_content %}
+<div class="max-w-7xl mx-auto">
   <h1 class="text-2xl font-bold text-white mb-6">TTS Usage</h1>
 
   <!-- Filters -->
@@ -53,7 +53,7 @@
         </select>
       </div>
     </div>
-    <div class="mt-3 flex gap-2">
+    <div class="mt-3 flex flex-wrap items-center gap-2">
       <button type="submit"
               class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition">
         Apply Filters
@@ -62,12 +62,16 @@
          class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold rounded-lg transition">
         Reset
       </a>
+      <a href="{{ url_for('admin.tts_usage_export_csv', month=filter_month, tenant_id=filter_tenant, plan_id=filter_plan, provider=filter_provider, credential_mode=filter_mode) }}"
+         class="ml-auto px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold rounded-lg transition">
+        Export CSV
+      </a>
     </div>
   </form>
 
   <!-- Totals summary -->
   {% if totals %}
-  <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+  <div class="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
     {% for label, key, unit in [
       ('Characters', 'total_chars', ''),
       ('Audio (s)', 'total_seconds', 's'),
@@ -80,6 +84,10 @@
       <div class="text-xs text-slate-400 mt-0.5">{{ label }}</div>
     </div>
     {% endfor %}
+    <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-4 py-3 text-center">
+      <div class="text-xl font-bold text-emerald-300">${{ "%.4f"|format(totals.get('total_cost', 0) | float) }}</div>
+      <div class="text-xs text-slate-400 mt-0.5">Est. Provider Cost</div>
+    </div>
   </div>
   {% endif %}
 
@@ -98,6 +106,7 @@
           <th class="px-4 py-3 text-right">Preview</th>
           <th class="px-4 py-3 text-right">Prod</th>
           <th class="px-4 py-3 text-right">Failed</th>
+          <th class="px-4 py-3 text-right">Est. Cost</th>
           <th class="px-4 py-3 text-left">Updated</th>
         </tr>
       </thead>
@@ -139,13 +148,16 @@
           <td class="px-4 py-3 text-right font-mono {{ 'text-red-400' if row.failed_requests > 0 else '' }}">
             {{ row.failed_requests | int }}
           </td>
+          <td class="px-4 py-3 text-right font-mono text-emerald-300">
+            ${{ "%.4f"|format((row.estimated_provider_cost or 0) | float) }}
+          </td>
           <td class="px-4 py-3 text-xs text-slate-500">
             {{ row.updated_at.strftime('%m-%d %H:%M') if row.updated_at else '—' }}
           </td>
         </tr>
         {% else %}
         <tr>
-          <td colspan="11" class="px-4 py-8 text-center text-slate-500">No usage data for the selected filters.</td>
+          <td colspan="12" class="px-4 py-8 text-center text-slate-500">No usage data for the selected filters.</td>
         </tr>
         {% endfor %}
       </tbody>

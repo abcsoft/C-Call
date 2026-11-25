@@ -29,7 +29,6 @@
                     <label class="relative inline-flex items-center cursor-pointer select-none">
                         <input type="checkbox" name="enable_sms_fallback_toggle" id="enable_sms_fallback_toggle" value="true"
                                {% if settings.enable_sms_fallback %}checked{% endif %}
-                               onchange="document.getElementById('enable_sms_fallback').value = this.checked ? 'true' : 'false';"
                                class="sr-only peer">
                         <input type="hidden" name="enable_sms_fallback" id="enable_sms_fallback" value="{% if settings.enable_sms_fallback %}true{% else %}false{% endif %}">
                         <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-500 peer-checked:after:bg-slate-950"></div>
@@ -105,4 +104,15 @@
         </div>
     </div>
 </div>
+<script nonce="{{ csp_nonce }}">
+(function () {
+    var toggle = document.getElementById('enable_sms_fallback_toggle');
+    var hidden = document.getElementById('enable_sms_fallback');
+    if (toggle && hidden) {
+        toggle.addEventListener('change', function () {
+            hidden.value = toggle.checked ? 'true' : 'false';
+        });
+    }
+})();
+</script>
 {% endblock %}

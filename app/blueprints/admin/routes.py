@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import secrets
 from decimal import Decimal, InvalidOperation
 
@@ -88,23 +89,41 @@ def customers_list():
             flash(f"Failed to create tenant: {exc}", "error")
         return redirect(url_for("admin.customers_list"))
 
-    status_filter = request.args.get("status")
-    plan_filter = request.args.get("plan_id")
-    search = request.args.get("search")
+    status_filter = request.args.get("status", "").strip()
+    plan_filter = request.args.get("plan_id", "").strip()
+    search = request.args.get("search", "").strip()
+    show_archived = request.args.get("show_archived", "") in ("1", "true", "yes")
 
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
         page = 1
 
-    result = get_all_tenants(page=page, per_page=20, search=search)
+    per_page = 20
+    result = get_all_tenants(
+        page=page,
+        per_page=per_page,
+        search=search or None,
+        status=status_filter or None,
+        plan_id=plan_filter or None,
+        include_archived=show_archived,
+    )
     tenants = result["data"] if isinstance(result, dict) else result
-    total = result["total"] if isinstance(result, dict) else len(tenants)
+    total = int(result["total"]) if isinstance(result, dict) else len(tenants)
+    pages = max(1, math.ceil(total / per_page)) if total else 1
+    if page > pages and total > 0:
+        page = pages
+        result = get_all_tenants(
+            page=page,
+            per_page=per_page,
+            search=search or None,
+            status=status_filter or None,
+            plan_id=plan_filter or None,
+            include_archived=show_archived,
+        )
+        tenants = result["data"] if isinstance(result, dict) else result
 
-    if status_filter:
-        tenants = [t for t in tenants if t["status"] == status_filter]
-    if plan_filter:
-        tenants = [t for t in tenants if str(t.get("plan_id")) == plan_filter]
+    from app.services.admin_tenant_lifecycle import is_archived_tenant
 
     for tenant in tenants:
         wallet = get_wallet(tenant["id"])
@@ -114,6 +133,7 @@ def customers_list():
             (tenant["id"],),
         )
         tenant["calls_mtd"] = calls_mtd["n"] if calls_mtd else 0
+        tenant["is_archived"] = is_archived_tenant(tenant)
 
     plans = db.query("SELECT * FROM plans ORDER BY id ASC")
 
@@ -122,11 +142,136 @@ def customers_list():
         tenants=tenants,
         total=total,
         page=page,
+        per_page=per_page,
+        pages=pages,
         status_filter=status_filter,
         plan_filter=plan_filter,
         search=search,
+        show_archived=show_archived,
         plans=plans,
     )
+
+
+@admin_bp.route("/customers/cleanup-preview", methods=["GET"])
+@require_super_admin
+def customers_cleanup_preview():
+    from app.services.admin_tenant_lifecycle import list_synthetic_cleanup_candidates
+
+    candidates = list_synthetic_cleanup_candidates(limit=200)
+    return jsonify({"count": len(candidates), "candidates": candidates})
+
+
+@admin_bp.route("/customers/cleanup", methods=["POST"])
+@require_super_admin
+def customers_bulk_cleanup():
+    from app.services.admin_tenant_lifecycle import bulk_cleanup_synthetic_tenants
+
+    tenant_ids_raw = request.form.getlist("tenant_ids")
+    tenant_ids = [int(tid) for tid in tenant_ids_raw if str(tid).isdigit()]
+    admin_password = request.form.get("admin_password", "")
+    confirm_text = request.form.get("confirm_text", "")
+    try:
+        res = bulk_cleanup_synthetic_tenants(
+            tenant_ids=tenant_ids,
+            actor_id=current_user.id,
+            admin_password=admin_password,
+            confirm_text=confirm_text,
+        )
+        deleted_n = len(res["deleted"])
+        skipped_n = len(res["skipped"])
+        msg = f"Deleted {deleted_n} synthetic test merchant(s)."
+        if skipped_n:
+            msg += f" Skipped {skipped_n} ineligible record(s)."
+        flash(msg, "success")
+    except Exception as exc:
+        flash(f"Bulk cleanup failed: {exc}", "error")
+    return redirect(url_for("admin.customers_list"))
+
+
+@admin_bp.route("/customers/<int:tenant_id>/edit", methods=["POST"])
+@require_super_admin
+def customer_edit(tenant_id: int):
+    from app.services.admin_tenant_lifecycle import edit_tenant_profile
+
+    business_name = request.form.get("business_name", "")
+    email = request.form.get("email", "")
+    plan_raw = request.form.get("plan_id", "").strip()
+    status = request.form.get("status", "").strip() or None
+    plan_id = int(plan_raw) if plan_raw.isdigit() else None
+
+    try:
+        edit_tenant_profile(
+            tenant_id=tenant_id,
+            actor_id=current_user.id,
+            business_name=business_name,
+            email=email,
+            plan_id=plan_id,
+            status=status,
+        )
+        flash("Merchant profile updated successfully.", "success")
+    except Exception as exc:
+        flash(f"Failed to update merchant profile: {exc}", "error")
+
+    next_target = request.form.get("next", "")
+    if next_target == "detail":
+        return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+    return redirect(url_for("admin.customers_list"))
+
+
+@admin_bp.route("/customers/<int:tenant_id>/archive", methods=["POST"])
+@require_super_admin
+def customer_archive(tenant_id: int):
+    from app.services.admin_tenant_lifecycle import archive_tenant
+
+    reason = request.form.get("reason", "").strip()
+    try:
+        res = archive_tenant(tenant_id=tenant_id, actor_id=current_user.id, reason=reason)
+        flash(
+            f"Merchant #{tenant_id} archived cleanly (released {res['released_numbers']} number(s)).",
+            "success",
+        )
+    except Exception as exc:
+        flash(f"Failed to archive merchant: {exc}", "error")
+
+    next_target = request.form.get("next", "")
+    if next_target == "detail":
+        return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+    return redirect(url_for("admin.customers_list"))
+
+
+@admin_bp.route("/customers/<int:tenant_id>/delete-preview", methods=["GET"])
+@require_super_admin
+def customer_delete_preview(tenant_id: int):
+    from app.services.admin_tenant_lifecycle import inspect_tenant_dependencies
+
+    deps = inspect_tenant_dependencies(tenant_id)
+    if not deps:
+        return jsonify({"error": "Tenant not found"}), 404
+    return jsonify(deps)
+
+
+@admin_bp.route("/customers/<int:tenant_id>/delete", methods=["POST"])
+@require_super_admin
+def customer_delete(tenant_id: int):
+    from app.services.admin_tenant_lifecycle import delete_tenant_safely
+
+    admin_password = request.form.get("admin_password", "")
+    confirm_text = request.form.get("confirm_text", "")
+    try:
+        res = delete_tenant_safely(
+            tenant_id=tenant_id,
+            actor_id=current_user.id,
+            admin_password=admin_password,
+            confirm_text=confirm_text,
+        )
+        flash(f"Merchant '{res['business_name']}' permanently deleted.", "success")
+        return redirect(url_for("admin.customers_list"))
+    except Exception as exc:
+        flash(f"Delete blocked: {exc}", "error")
+        next_target = request.form.get("next", "")
+        if next_target == "detail":
+            return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
+        return redirect(url_for("admin.customers_list"))
 
 
 def _update_tenant_fields(tenant_id: int, form) -> None:
@@ -203,6 +348,8 @@ def customer_detail(tenant_id: int):
             if request.method == "PUT":
                 return jsonify({"success": False, "error": str(exc)}), 400
             flash(f"Update failed: {exc}", "error")
+        if request.form.get("next") == "list":
+            return redirect(url_for("admin.customers_list"))
         return redirect(url_for("admin.customer_detail", tenant_id=tenant_id))
 
     wallet = get_wallet(tenant_id) or {}

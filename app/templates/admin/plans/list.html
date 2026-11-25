@@ -1,8 +1,8 @@
 {% extends "admin/base_admin.html" %}
 {% block title %}Plans — Admin{% endblock %}
 
-{% block content %}
-<div class="max-w-7xl mx-auto px-4 py-8">
+{% block admin_content %}
+<div class="max-w-7xl mx-auto">
   <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold text-white">Plans</h1>
     <a href="{{ url_for('admin.plan_create') }}"
@@ -90,12 +90,20 @@
           </td>
           <td class="px-4 py-3 text-center">
             <div class="flex items-center justify-center gap-2">
+              <form method="post" action="{{ url_for('admin.plan_duplicate', plan_id=plan.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded text-xs font-medium transition">
+                  Duplicate
+                </button>
+              </form>
               {% if not plan.archived_at %}
               <a href="{{ url_for('admin.plan_edit', plan_id=plan.id) }}"
                  class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-xs font-medium transition">Edit</a>
               {% if plan.tenant_count == 0 %}
               <form method="post" action="{{ url_for('admin.plan_archive', plan_id=plan.id) }}"
-                    onsubmit="return confirm('Archive plan {{ plan.name | e }}? This cannot be undone.')">
+                    class="js-confirm-plan-form"
+                    data-confirm-message="Archive plan '{{ plan.name | e }}'? Tenants already on this plan keep their entitlement until changed. Archived plans are hidden from merchant selection.">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit"
                         class="px-3 py-1.5 bg-red-900/40 hover:bg-red-800/60 text-red-300 rounded text-xs font-medium transition">
@@ -103,10 +111,21 @@
                 </button>
               </form>
               {% else %}
-              <span class="text-xs text-slate-500" title="Reassign tenants first">Archive</span>
+              <span class="text-xs text-slate-500" title="Cannot archive: {{ plan.tenant_count }} tenant(s) assigned. Reassign them first.">Archive ({{ plan.tenant_count }} tenants)</span>
               {% endif %}
               {% else %}
-              <span class="text-xs text-slate-600 italic">Archived {{ plan.archived_at.strftime('%Y-%m-%d') if plan.archived_at }}</span>
+              <span class="text-xs text-slate-600 italic mr-1" title="Archived {{ plan.archived_at.strftime('%Y-%m-%d') if plan.archived_at }}">
+                {{ plan.archived_at.strftime('%Y-%m-%d') if plan.archived_at }}
+              </span>
+              <form method="post" action="{{ url_for('admin.plan_activate', plan_id=plan.id) }}"
+                    class="js-confirm-plan-form"
+                    data-confirm-message="Activate plan '{{ plan.name | e }}'? It will become visible to merchants for selection and renewal.">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit"
+                        class="px-3 py-1.5 bg-green-900/40 hover:bg-green-800/60 text-green-300 rounded text-xs font-medium transition">
+                  Activate
+                </button>
+              </form>
               {% endif %}
             </div>
           </td>
@@ -120,4 +139,14 @@
     </table>
   </div>
 </div>
+<script nonce="{{ csp_nonce }}">
+document.querySelectorAll('.js-confirm-plan-form').forEach(function (form) {
+  form.addEventListener('submit', function (evt) {
+    var msg = form.getAttribute('data-confirm-message') || 'Confirm action?';
+    if (!window.confirm(msg)) {
+      evt.preventDefault();
+    }
+  });
+});
+</script>
 {% endblock %}

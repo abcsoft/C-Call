@@ -65,7 +65,8 @@
                 </button>
                 {% if current_user.role == 'admin' %}
                 <button type="button"
-                        onclick="window.location.href='{{ url_for('customer.orders_export') }}?' + new URLSearchParams(new FormData(this.form)).toString()"
+                        id="orders-export-btn"
+                        data-export-url="{{ url_for('customer.orders_export') }}"
                         class="flex-1 md:flex-none py-3 px-6 bg-teal-600 hover:bg-teal-500 text-white font-bold rounded-xl text-sm transition-all text-center flex items-center justify-center gap-1.5">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
                     Export CSV
@@ -79,4 +80,15 @@
     {% include "customer/orders/_table_rows.html" %}
 
 </div>
+<script nonce="{{ csp_nonce }}">
+(function () {
+    var btn = document.getElementById('orders-export-btn');
+    if (btn && btn.form) {
+        btn.addEventListener('click', function () {
+            var base = btn.getAttribute('data-export-url');
+            window.location.href = base + '?' + new URLSearchParams(new FormData(btn.form)).toString();
+        });
+    }
+})();
+</script>
 {% endblock %}

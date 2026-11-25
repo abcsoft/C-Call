@@ -99,8 +99,8 @@
                                 {% if current_user.role == 'admin' and member.id != current_user.id %}
                                 <form method="POST" action="{{ url_for('customer.team_change_role', user_id=member.id) }}" class="inline-flex items-center">
                                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                                    <select name="role" onchange="this.form.submit()" 
-                                            class="bg-slate-950 border border-slate-800 focus:border-teal-500 rounded-lg px-2.5 py-1 text-slate-200 text-xs focus:outline-none transition-all">
+                                    <select name="role"
+                                            class="bg-slate-950 border border-slate-800 focus:border-teal-500 rounded-lg px-2.5 py-1 text-slate-200 text-xs focus:outline-none transition-all js-team-role-select">
                                         <option value="admin" {% if member.role == 'admin' %}selected{% endif %}>Admin</option>
                                         <option value="agent" {% if member.role == 'agent' %}selected{% endif %}>Agent</option>
                                         <option value="viewer" {% if member.role == 'viewer' %}selected{% endif %}>Viewer</option>
@@ -318,4 +318,13 @@
         </div>
     </div>
 </div>
+<script nonce="{{ csp_nonce }}">
+document.querySelectorAll('.js-team-role-select').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+        if (sel.form) {
+            sel.form.submit();
+        }
+    });
+});
+</script>
 {% endblock %}

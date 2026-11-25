@@ -76,13 +76,13 @@
             <table class="w-full text-left text-xs text-slate-300" id="tenantRevenueTable">
                 <thead class="bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider">
                     <tr>
-                        <th class="px-4 py-3 cursor-pointer" onclick="sortTable(0)">Tenant</th>
-                        <th class="px-4 py-3 cursor-pointer" onclick="sortTable(1)">Plan</th>
-                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(2)">Calls</th>
-                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(3)">Minutes</th>
-                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(4)">Revenue</th>
-                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(5)">Cost</th>
-                        <th class="px-4 py-3 text-right cursor-pointer" onclick="sortTable(6)">Profit</th>
+                        <th class="px-4 py-3 cursor-pointer js-sort-col" data-sort-col="0">Tenant</th>
+                        <th class="px-4 py-3 cursor-pointer js-sort-col" data-sort-col="1">Plan</th>
+                        <th class="px-4 py-3 text-right cursor-pointer js-sort-col" data-sort-col="2">Calls</th>
+                        <th class="px-4 py-3 text-right cursor-pointer js-sort-col" data-sort-col="3">Minutes</th>
+                        <th class="px-4 py-3 text-right cursor-pointer js-sort-col" data-sort-col="4">Revenue</th>
+                        <th class="px-4 py-3 text-right cursor-pointer js-sort-col" data-sort-col="5">Cost</th>
+                        <th class="px-4 py-3 text-right cursor-pointer js-sort-col" data-sort-col="6">Profit</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-800/50">
@@ -144,12 +144,16 @@ function sortTable(colIndex) {
     table.dataset.sortCol = colIndex;
     const dir = table.dataset.sortDir === 'asc' ? 1 : -1;
     rows.sort((a, b) => {
-        let av = a.children[colIndex].innerText.replace(/[৳,]/g, '').trim();
-        let bv = b.children[colIndex].innerText.replace(/[৳,]/g, '').trim();
-        if (isNumeric) { av = parseFloat(av) || 0; bv = parseFloat(bv) || 0; return (av - bv) * dir; }
-        return av.localeCompare(bv) * dir;
+        const av = a.cells[colIndex].textContent.trim().replace(/[৳,]/g, '');
+        const bv = b.cells[colIndex].textContent.trim().replace(/[৳,]/g, '');
+        return isNumeric ? (parseFloat(av) - parseFloat(bv)) * dir : av.localeCompare(bv) * dir;
     });
     rows.forEach(r => tbody.appendChild(r));
 }
+document.querySelectorAll('.js-sort-col').forEach(function (th) {
+    th.addEventListener('click', function () {
+        sortTable(parseInt(th.getAttribute('data-sort-col'), 10));
+    });
+});
 </script>
 {% endblock %}
