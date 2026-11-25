@@ -1,0 +1,310 @@
+{
+  "initial_tenants": 101,
+  "admin_pages": {
+    "dashboard": {
+      "status": 200,
+      "h1": "Platform Overview",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_dashboard.png"
+    },
+    "live_calls": {
+      "status": 200,
+      "h1": "Live Call Monitor",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_live_calls.png"
+    },
+    "customers": {
+      "status": 200,
+      "h1": "Tenants",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_customers.png"
+    },
+    "numbers": {
+      "status": 200,
+      "h1": "SIP CLI Pool Manager",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_numbers.png"
+    },
+    "providers": {
+      "status": 200,
+      "h1": "SIP Trunk Gateways",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "after_admin_providers_fixed.png"
+    },
+    "cdr": {
+      "status": 200,
+      "h1": "Platform Call Records (CDR)",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_cdr.png"
+    },
+    "revenue": {
+      "status": 200,
+      "h1": "Revenue & Profitability",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_revenue.png"
+    },
+    "settings": {
+      "status": 200,
+      "h1": "System Settings",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_settings.png"
+    },
+    "plans": {
+      "status": 200,
+      "h1": "Plans",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_plans.png"
+    },
+    "platform_tts": {
+      "status": 200,
+      "h1": "Platform TTS Credentials",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_platform_tts.png"
+    },
+    "tts_usage": {
+      "status": 200,
+      "h1": "TTS Usage",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_tts_usage.png"
+    }
+  },
+  "admin_subpages": {
+    "customer_detail": {
+      "status": 200,
+      "h1": "UI QA Merchant Temp",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_customer_detail.png"
+    },
+    "plan_create": {
+      "status": 200,
+      "h1": "Create New Plan",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_plan_create.png"
+    },
+    "plan_edit": {
+      "status": 200,
+      "h1": "Edit Plan: free",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_admin_plan_edit.png"
+    },
+    "tts_reservations": {
+      "status": 200,
+      "h1": "TTS Reservations",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "after_admin_tts_reservations_fixed.png"
+    }
+  },
+  "merchant_pages": {
+    "dashboard": {
+      "status": 200,
+      "h1": "Merchant Console",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_dashboard.png"
+    },
+    "live_calls": {
+      "status": 200,
+      "h1": "Live Calls",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_live_calls.png"
+    },
+    "orders": {
+      "status": 200,
+      "h1": "Order Logs",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_orders.png"
+    },
+    "script": {
+      "status": 200,
+      "h1": "Voice Script Configurator",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_script.png"
+    },
+    "retry": {
+      "status": 200,
+      "h1": "Retry & DND Settings",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_retry.png"
+    },
+    "flows": {
+      "status": 200,
+      "h1": "Interactive IVR Voice Flows",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_flows.png"
+    },
+    "wallet": {
+      "status": 200,
+      "h1": "Prepaid Wallet",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_wallet.png"
+    },
+    "subscription": {
+      "status": 200,
+      "h1": "Subscription & Billing",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_subscription.png"
+    },
+    "cdr": {
+      "status": 200,
+      "h1": "Call Detail Records (CDR)",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_cdr.png"
+    },
+    "integration": {
+      "status": 200,
+      "h1": "API & Integrations",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_integration.png"
+    },
+    "settings": {
+      "status": 200,
+      "h1": "SMS Fallback Settings",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_settings.png"
+    },
+    "team": {
+      "status": 200,
+      "h1": "Team Management",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_team.png"
+    }
+  },
+  "merchant_subpages": {
+    "order_detail": {
+      "status": 200,
+      "h1": "UIQA-ORDER-1",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_order_detail.png"
+    },
+    "flow_edit": {
+      "status": 200,
+      "h1": "UIQA Flow 1",
+      "main_x": 256,
+      "overflow_px": 0,
+      "active_matched": true,
+      "shot": "v2_merchant_flow_edit.png"
+    }
+  },
+  "sip_gateway_crud": {
+    "add_and_masking": "PASS",
+    "edit_channels": "PASS",
+    "deactivate_activate": "PASS",
+    "diagnostic_separation_and_layout": {
+      "options": "OPTIONS: 404",
+      "register": "REGISTER: 200",
+      "ok": true
+    },
+    "reconcile_stale": "PASS",
+    "delete": "PASS"
+  },
+  "navigation_matrix": {
+    "admin": {
+      "dashboard": "PASS",
+      "live_calls": "PASS",
+      "customers": "PASS",
+      "numbers": "PASS",
+      "providers": "PASS",
+      "cdr": "PASS",
+      "revenue": "PASS",
+      "settings": "PASS",
+      "plans": "PASS",
+      "platform_tts": "PASS",
+      "tts_usage": "PASS"
+    },
+    "merchant": {
+      "dashboard": "PASS",
+      "live_calls": "PASS",
+      "orders": "PASS",
+      "script": "PASS",
+      "retry": "PASS",
+      "flows": "PASS",
+      "wallet": "PASS",
+      "subscription": "PASS",
+      "cdr": "PASS",
+      "integration": "PASS",
+      "settings": "PASS",
+      "team": "PASS"
+    }
+  },
+  "viewport_matrix": {
+    "chromium": {
+      "1920x1080": "PASS",
+      "1440x900": "PASS",
+      "1366x768": "PASS",
+      "1024x768": "PASS",
+      "768x1024": "PASS",
+      "390x844": "PASS"
+    },
+    "firefox": {
+      "1920x1080": "PASS",
+      "1440x900": "PASS",
+      "1366x768": "PASS",
+      "1024x768": "PASS",
+      "768x1024": "PASS",
+      "390x844": "PASS"
+    }
+  },
+  "errors": {
+    "console": [],
+    "page": [],
+    "http_500": [],
+    "failed_requests": [],
+    "leaked_secrets": []
+  },
+  "final_tenants": 101
+}

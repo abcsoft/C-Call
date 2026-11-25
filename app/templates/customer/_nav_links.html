@@ -30,12 +30,12 @@
 <!-- Orders -->
 <a href="{{ url_for('customer.orders_list') }}" 
    class="group flex items-center px-4 py-3 text-sm font-semibold rounded-xl transition-all duration-200 
-   {% if request.endpoint == 'customer.orders_list' %}
+   {% if request.endpoint in ('customer.orders_list', 'customer.order_detail') %}
      bg-gradient-to-r from-teal-500/15 to-indigo-500/10 text-teal-300 border-l-4 border-teal-500 pl-3
    {% else %}
      text-slate-400 hover:text-slate-200 hover:bg-slate-800/40 border-l-4 border-transparent
    {% endif %}">
-    <svg class="mr-3 h-5 w-5 shrink-0 transition-colors {% if request.endpoint == 'customer.orders_list' %}text-teal-400{% else %}text-slate-400 group-hover:text-slate-300{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <svg class="mr-3 h-5 w-5 shrink-0 transition-colors {% if request.endpoint in ('customer.orders_list', 'customer.order_detail') %}text-teal-400{% else %}text-slate-400 group-hover:text-slate-300{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
     </svg>
     Orders

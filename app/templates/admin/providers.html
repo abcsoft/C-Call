@@ -1,8 +1,7 @@
-{% extends "base.html" %}
+{% extends "admin/base_admin.html" %}
 {% block title %}SIP Providers - C-Call Admin{% endblock %}
-{% block page_title %}SIP Trunk Gateways{% endblock %}
 
-{% block content %}
+{% block admin_content %}
 <div x-data="{
     showAddModal: false,
     editMode: false,
@@ -34,9 +33,12 @@
     }
 }">
 
-    <div class="flex justify-between items-center mb-6">
-        <p class="text-slate-400 text-sm">Manage outbound SIP gateways, credentials, channel capacity, and non-calling trunk diagnostics.</p>
-        <button @click="openAdd()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow transition">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+        <div>
+            <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">SIP Trunk Gateways</h1>
+            <p class="text-slate-400 text-sm mt-1">Manage outbound SIP gateways, credentials, channel capacity, and non-calling trunk diagnostics.</p>
+        </div>
+        <button type="button" @click="openAdd()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow transition shrink-0">
             + Add SIP Provider
         </button>
     </div>
@@ -96,23 +98,23 @@
     </div>
 
     <!-- Providers Table -->
-    <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow">
-        <table class="w-full text-left text-sm text-slate-300">
-            <thead class="bg-slate-900/50 text-xs uppercase text-slate-400 border-b border-slate-700">
+    <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-x-auto shadow">
+        <table class="w-full text-left text-xs text-slate-300">
+            <thead class="bg-slate-900/50 text-[11px] uppercase text-slate-400 border-b border-slate-700">
                 <tr>
-                    <th class="px-6 py-4">Provider</th>
-                    <th class="px-6 py-4">Host &amp; Port</th>
-                    <th class="px-6 py-4">Username</th>
-                    <th class="px-6 py-4">Status</th>
-                    <th class="px-6 py-4 text-center">Channels / Calls</th>
-                    <th class="px-6 py-4">Diagnostic Check</th>
-                    <th class="px-6 py-4 text-right">Actions</th>
+                    <th class="px-3 py-3">Provider</th>
+                    <th class="px-3 py-3">Host &amp; Port</th>
+                    <th class="px-3 py-3">Username</th>
+                    <th class="px-3 py-3">Status</th>
+                    <th class="px-3 py-3 text-center">Channels / Calls</th>
+                    <th class="px-3 py-3">Diagnostic Check</th>
+                    <th class="px-3 py-3 text-right">Actions</th>
                 </tr>
             </thead>
             <tbody class="divide-y divide-slate-700">
                 {% for p in providers %}
                 <tr class="hover:bg-slate-750 align-top">
-                    <td class="px-6 py-4 font-semibold text-white">
+                    <td class="px-3 py-3 font-semibold text-white">
                         {{ p.name }}
                         {% if p.stale_calls and p.stale_calls > 0 %}
                         <div class="mt-1">
@@ -122,32 +124,33 @@
                         </div>
                         {% endif %}
                     </td>
-                    <td class="px-6 py-4 font-mono text-xs text-slate-400">{{ p.sip_domain }}:{{ p.sip_port }}</td>
-                    <td class="px-6 py-4 font-mono text-xs text-slate-400">{{ p.sip_user }}</td>
-                    <td class="px-6 py-4">
+                    <td class="px-3 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">{{ p.sip_domain }}:{{ p.sip_port }}</td>
+                    <td class="px-3 py-3 font-mono text-xs text-slate-400">{{ p.sip_user }}</td>
+                    <td class="px-3 py-3 whitespace-nowrap">
                         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if p.status == 'active' %}bg-emerald-900/50 text-emerald-400 border border-emerald-800{% else %}bg-red-900/50 text-red-400 border border-red-800{% endif %}">
                             {{ p.status|capitalize }}
                         </span>
                     </td>
-                    <td class="px-6 py-4 text-center font-mono text-xs">
+                    <td class="px-3 py-3 text-center font-mono text-xs whitespace-nowrap">
                         <span class="text-white font-semibold">{{ p.active_calls }}</span> / {{ p.max_channels or 10 }} ch
                         <span class="block text-slate-500 mt-0.5">{{ p.total_calls }} total</span>
                     </td>
-                    <td class="px-6 py-4 min-w-[240px]">
+                    <td class="px-3 py-3 min-w-[180px]">
                         <div class="flex flex-col gap-2">
                             <div>
                                 <button hx-post="{{ url_for('admin.test_provider_connection', provider_id=p.id) }}"
                                         hx-headers='{"X-CSRFToken": "{{ csrf_token() }}"}'
                                         hx-target="#test-res-{{ p.id }}"
                                         hx-swap="innerHTML"
-                                        class="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-xs text-blue-300 rounded border border-slate-600 transition">
+                                        class="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-xs text-blue-300 rounded border border-slate-600 transition whitespace-nowrap">
                                     Run SIP Diagnostic
                                 </button>
                             </div>
                             <div id="test-res-{{ p.id }}" class="text-xs"></div>
                         </div>
                     </td>
-                    <td class="px-6 py-4 text-right space-x-2 whitespace-nowrap">
+                    <td class="px-3 py-3 text-right">
+                        <div class="flex flex-wrap justify-end gap-2">
                         <button type="button"
                             data-provider-id="{{ p.id }}"
                             data-provider-name="{{ p.name }}"
@@ -180,6 +183,7 @@
                             <input type="hidden" name="provider_id" value="{{ p.id }}">
                             <button type="submit" class="text-xs text-red-400 hover:text-red-300 underline">Delete</button>
                         </form>
+                        </div>
                     </td>
                 </tr>
                 {% else %}

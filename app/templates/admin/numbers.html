@@ -166,31 +166,31 @@
             <!-- Numbers List -->
             <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md">
                 <div class="overflow-x-auto">
-                    <table class="w-full text-left text-sm text-slate-300">
-                        <thead class="bg-slate-950/60 text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-950/60 text-[11px] text-slate-400 font-semibold uppercase tracking-wider">
                             <tr>
-                                <th class="px-6 py-4">Phone Number</th>
-                                <th class="px-6 py-4">Type</th>
-                                <th class="px-6 py-4">Assigned Tenant</th>
-                                <th class="px-6 py-4">SIP Gateway</th>
-                                <th class="px-6 py-4">Calls Today</th>
-                                <th class="px-6 py-4">Monthly Cost</th>
-                                <th class="px-6 py-4">Status</th>
-                                <th class="px-6 py-4 text-right">Actions</th>
+                                <th class="px-3 py-3">Phone Number</th>
+                                <th class="px-3 py-3">Type</th>
+                                <th class="px-3 py-3">Assigned Tenant</th>
+                                <th class="px-3 py-3">SIP Gateway</th>
+                                <th class="px-3 py-3">Calls</th>
+                                <th class="px-3 py-3">Cost</th>
+                                <th class="px-3 py-3">Status</th>
+                                <th class="px-3 py-3 text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-800/50">
                             {% for n in numbers %}
                             <tr class="hover:bg-slate-900/20 transition-colors">
-                                <td class="px-6 py-4 font-mono font-bold text-slate-200">{{ n.number }}</td>
-                                <td class="px-6 py-4">
+                                <td class="px-3 py-3 font-mono font-bold text-slate-200 whitespace-nowrap">{{ n.number }}</td>
+                                <td class="px-3 py-3">
                                     {% if n.number_type == 'dedicated' %}
                                         <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/15">DEDICATED</span>
                                     {% else %}
                                         <span class="px-2 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 border border-slate-700">SHARED</span>
                                     {% endif %}
                                 </td>
-                                <td class="px-6 py-4">
+                                <td class="px-3 py-3">
                                     {% if n.number_type == 'shared' %}
                                         <span class="text-slate-500 italic text-xs">Shared Pool</span>
                                     {% elif n.number_type == 'dedicated' %}
@@ -206,18 +206,18 @@
                                         {% endif %}
                                     {% endif %}
                                 </td>
-                                <td class="px-6 py-4 text-slate-400 text-xs">{{ n.provider_name or 'N/A' }}</td>
-                                <td class="px-6 py-4 font-mono font-semibold text-slate-300 text-xs">{{ n.call_count_today or 0 }}</td>
-                                <td class="px-6 py-4 font-mono text-xs text-slate-400">৳{{ "%.2f"|format(n.monthly_cost or 0) }}</td>
-                                <td class="px-6 py-4">
+                                <td class="px-3 py-3 text-slate-400 text-xs">{{ n.provider_name or 'N/A' }}</td>
+                                <td class="px-3 py-3 font-mono font-semibold text-slate-300 text-xs">{{ n.call_count_today or 0 }}</td>
+                                <td class="px-3 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">৳{{ "%.2f"|format(n.monthly_cost or 0) }}</td>
+                                <td class="px-3 py-3">
                                     {% if n.status == 'active' %}
                                         <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">ACTIVE</span>
                                     {% else %}
                                         <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/15 font-mono">INACTIVE</span>
                                     {% endif %}
                                 </td>
-                                <td class="px-6 py-4 text-right">
-                                    <div class="flex items-center justify-end gap-2">
+                                <td class="px-3 py-3 text-right">
+                                    <div class="flex flex-wrap items-center justify-end gap-1.5">
                                         <!-- Toggle status -->
                                         <form method="POST" action="{{ url_for('admin.update_number_details', number_id=n.id) }}" class="inline">
                                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

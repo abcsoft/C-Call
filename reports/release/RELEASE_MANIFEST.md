@@ -3,12 +3,13 @@
 ## 1. Release Identity
 - **Repository:** `https://github.com/abcsoft/C-Call`
 - **Release Branch:** `feat/c-call-v2-production-foundation` (do NOT merge directly to `main` until external staging + live carrier acceptance complete)
-- **Prior Verified Baselines:** `4880385` (`1,001 passed, 0 failed, 0 skipped` clean archive, `task-1742`; full `:5000` acceptance, `task-1715`), `11468ee` (release artifact & firewall hardening)
+- **Prior Verified Baselines:** `4880385` (`1,001 passed, 0 failed, 0 skipped` clean archive, `task-1742`), `db8f923` (WIP reconciliation & release freeze)
 - **Latest Database Schema Migration (`28/28` applied):** `028_v2_security_and_reliability.sql` (`migrations/001_initial_schema.sql` through `migrations/028_v2_security_and_reliability.sql`, applied via `python migrations/run_migrations.py`)
-- **Final Integrated Verification (`task-1915` & `task-1951` + clean `git archive` freeze verification):**
-  - Targeted integrated test suites + deployment checks (`task-1915`): **298 passed, 0 failed, 0 skipped** (`tests/unit/test_v2_deployment_release_checks.py`, `test_plan_lifecycle.py`, `test_tts_limits.py`, `test_retry_settings.py`, `test_admin_tts_management.py`, `test_subscription_e2e.py`).
-  - Live port `:5000` focused browser verification (`task-1951`): Admin `/admin/platform-tts` & `/admin/plans/create` sidebar layout, Merchant `_nav_links` `Subscription & Billing` boosted navigation (`0` CSP console errors after `htmx-config` `inlineScriptNonce` fix in [base.html](file:///c:/xampp_lite_8_3/www/ccall/app/templates/base.html#L7)), and `/retry` disabled auto-retry save (`PASS`, `0` console/page/HTTP500 errors, `101 -> 101` tenants intact).
-  - Full clean-environment `git archive HEAD` `pytest` verification executed on the release freeze commit against `ccall_test` (`BILLING_PROCESS_TEST_DB`).
+- **Live UI Regression Fix & Cross-Browser Verification (`task-2170`, `task-2287` & clean `git archive HEAD` verification):**
+  - Resolved missing Admin sidebar & heading regressions in [providers.html](file:///c:/xampp_lite_8_3/www/ccall/app/templates/admin/providers.html) and [tts_reservations.html](file:///c:/xampp_lite_8_3/www/ccall/app/templates/admin/tts_reservations.html), fixed responsive table/header button clipping at laptop/tablet widths, fixed order detail `<h1>` & sidebar active highlights, and moved shared Chart.js + Alpine component factories into [base.html](file:///c:/xampp_lite_8_3/www/ccall/app/templates/base.html) `<head>` / [alpine_components.js](file:///c:/xampp_lite_8_3/www/ccall/static/js/alpine_components.js) to eliminate `hx-boost="true"` navigation JS errors.
+  - Permanent UI layout & Playwright Chromium regression suite ([test_v2_ui_layout_regression.py](file:///c:/xampp_lite_8_3/www/ccall/tests/integration/test_v2_ui_layout_regression.py)): **29 passed, 0 failed, 0 skipped** (`task-2287`).
+  - Dual-browser live verification on port `5000` (Playwright Chromium `149` + Firefox `151`, `task-2170`): `11/11` Admin primary + `4/4` subpages, `12/12` Merchant primary + `2/2` subpages, SIP Gateway CRUD + `OPTIONS: 404` / `REGISTER: 200`, all `6` viewports, `0` console/page/HTTP500/secret errors, `101 -> 101` tenants intact.
+  - Full clean-environment `git archive HEAD` `pytest` verification executed on the release commit against `ccall_test` (`BILLING_PROCESS_TEST_DB`).
 - **Backup & Restore Verification:** Pre-acceptance `pg_dump` (`473,156` bytes) restored cleanly (`psql.exe -v ON_ERROR_STOP=1`, exit `0`) into isolated `ccall_restore_verify` (`tables=44`, `migrations=28`, `tenants=101`, `sip_providers=3`, `plans=3`), then dropped cleanly.
 
 ---

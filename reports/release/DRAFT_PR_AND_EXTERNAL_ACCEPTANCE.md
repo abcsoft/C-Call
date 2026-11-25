@@ -22,7 +22,8 @@ Brings C-Call V2 (`feat/c-call-v2-production-foundation`) to frozen release read
 - **Reconciled UI & Workflow Fixes:**
   - `retry.py`: auto-retry disabled state cleanly sets `retry_rules.is_enabled = FALSE` without failing on disabled attempt inputs.
   - `plans/form.html` & `platform_tts.html`: fixed `{% block admin_content %}` inheritance so admin sidebar & policy controls render properly.
-  - `_nav_links.html`: added merchant `Subscription & Billing` navigation link (`customer.subscription_page`).
+  - `providers.html` & `tts_reservations.html`: fixed `"admin/base_admin.html"` + `{% block admin_content %}` inheritance, `<h1>` heading, and `overflow-x-auto` layout; fixed responsive table/header wrapping across `customers/list.html`, `numbers.html`, `cdr.html`, and `orders/list.html`; fixed `hx-boost="true"` Chart.js/Alpine script races via `base.html` `<head>` loading and shared `static/js/alpine_components.js`.
+  - `_nav_links.html`: added merchant `Subscription & Billing` navigation link (`customer.subscription_page`) and fixed `order_detail` / `tts_reservations_page` active states.
 - **Database Schema & Atomic Billing (`migrations/001`–`028`):** Expand-first schema through `028_v2_security_and_reliability.sql`, durable `call_jobs` leasing (`FOR UPDATE SKIP LOCKED`), atomic wallet ledger constraints (`025`, `027`), rate snapshot immutability, and orphan lease/billing reconciliation.
 - **SIP / RTP NAT & Non-Disruptive Diagnostics:**
   - Separate bind vs. advertised IPs (`SIP_BIND_IP`, `SIP_ADVERTISED_IP`, `RTP_BIND_IP`, `RTP_ADVERTISED_IP`) across `ivr_engine.py`, `direct_sip_call.py`, and `rtp_probe.py`; UDP-only SIP enforcement; RFC 3550 jitter/loss/latency telemetry; process-safe RTP port allocation.

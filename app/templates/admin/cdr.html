@@ -26,7 +26,7 @@
 
     <!-- Filters & Search -->
     <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-5" x-data="{ tenantQuery: '' }">
-        <form method="GET" action="{{ url_for('admin.cdr_logs') }}" class="flex flex-col md:flex-row gap-4 items-end">
+        <form method="GET" action="{{ url_for('admin.cdr_logs') }}" class="flex flex-col md:flex-row flex-wrap gap-4 items-end">
             <!-- Tenant Filter (searchable) -->
             <div class="flex-1 w-full">
                 <label for="tenant_search" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Filter by Merchant</label>

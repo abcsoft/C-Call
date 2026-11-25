@@ -177,30 +177,35 @@
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script nonce="{{ csp_nonce }}">
-const revenueData = {{ daily_revenue | tojson }};
-const labels = revenueData.map(r => r.day);
-const values = revenueData.map(r => parseFloat(r.revenue));
+(function () {
+    const canvas = document.getElementById('revenueChart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    const prev = Chart.getChart(canvas);
+    if (prev) prev.destroy();
+    const revenueData = {{ daily_revenue | tojson }};
+    const labels = revenueData.map(r => r.day);
+    const values = revenueData.map(r => parseFloat(r.revenue));
 
-new Chart(document.getElementById('revenueChart'), {
-    type: 'bar',
-    data: {
-        labels: labels,
-        datasets: [{
-            label: 'Revenue (BDT)',
-            data: values,
-            backgroundColor: 'rgba(45, 212, 191, 0.6)',
-            borderRadius: 4,
-        }],
-    },
-    options: {
-        scales: {
-            x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
-            y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+    new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Revenue (BDT)',
+                data: values,
+                backgroundColor: 'rgba(45, 212, 191, 0.6)',
+                borderRadius: 4,
+            }],
         },
-        plugins: { legend: { labels: { color: '#cbd5e1' } } },
-    },
-});
+        options: {
+            scales: {
+                x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+            },
+            plugins: { legend: { labels: { color: '#cbd5e1' } } },
+        },
+    });
+})();
 </script>
 {% endblock %}

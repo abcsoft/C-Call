@@ -45,8 +45,14 @@
     <!-- HTMX CDN -->
     <script src="https://unpkg.com/htmx.org@1.9.10" integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC" crossorigin="anonymous"></script>
     
+    <!-- Shared Alpine factories (loaded before Alpine so hx-boost never races) -->
+    <script defer src="{{ url_for('static', filename='js/alpine_components.js') }}"></script>
+
     <!-- Alpine.js CDN (pinned 3.13.5 with SRI hash) -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.5/dist/cdn.min.js" integrity="sha256-ygV4Me+b49juR+FAeAif0jgdx4ILS7f724WkkPW49ow=" crossorigin="anonymous"></script>
+
+    <!-- Chart.js CDN (loaded once in head so hx-boost transitions never race) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 
     <!-- Custom CSS styles for smooth transitions and scrollbars -->
     <style>

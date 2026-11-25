@@ -142,29 +142,29 @@
             <table class="w-full text-left text-sm text-slate-300">
                 <thead class="bg-slate-950/60 text-slate-400 text-[11px] font-semibold uppercase tracking-wider">
                     <tr>
-                        <th class="px-5 py-3">Business Name</th>
-                        <th class="px-5 py-3">Email</th>
-                        <th class="px-5 py-3">Plan</th>
-                        <th class="px-5 py-3">Balance</th>
-                        <th class="px-5 py-3">Calls MTD</th>
-                        <th class="px-5 py-3">Status</th>
-                        <th class="px-5 py-3">Created</th>
-                        <th class="px-5 py-3 text-right">Actions</th>
+                        <th class="px-3 py-3">Business Name</th>
+                        <th class="px-3 py-3">Email</th>
+                        <th class="px-3 py-3">Plan</th>
+                        <th class="px-3 py-3">Balance</th>
+                        <th class="px-3 py-3">Calls MTD</th>
+                        <th class="px-3 py-3">Status</th>
+                        <th class="px-3 py-3">Created</th>
+                        <th class="px-3 py-3 text-right">Actions</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-800/50">
                     {% for t in tenants %}
                     <tr class="hover:bg-slate-950/30">
-                        <td class="px-5 py-3.5 font-semibold text-slate-100">
+                        <td class="px-3 py-3 font-semibold text-slate-100">
                             <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="hover:text-indigo-400 hover:underline">{{ t.business_name }}</a>
                         </td>
-                        <td class="px-5 py-3.5 text-slate-400">{{ t.email }}</td>
-                        <td class="px-5 py-3.5">{{ t.plan_name or '—' }}</td>
-                        <td class="px-5 py-3.5 font-mono {{ 'text-emerald-400' if t.balance > 100 else ('text-amber-400' if t.balance > 10 else 'text-red-400') }}">
+                        <td class="px-3 py-3 text-slate-400 break-all">{{ t.email }}</td>
+                        <td class="px-3 py-3">{{ t.plan_name or '—' }}</td>
+                        <td class="px-3 py-3 font-mono whitespace-nowrap {{ 'text-emerald-400' if t.balance > 100 else ('text-amber-400' if t.balance > 10 else 'text-red-400') }}">
                             ৳{{ "%.2f"|format(t.balance) }}
                         </td>
-                        <td class="px-5 py-3.5">{{ t.calls_mtd }}</td>
-                        <td class="px-5 py-3.5">
+                        <td class="px-3 py-3">{{ t.calls_mtd }}</td>
+                        <td class="px-3 py-3 whitespace-nowrap">
                             <span class="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase
                                 {{ 'bg-emerald-900/50 text-emerald-400' if t.status == 'active'
                                    else 'bg-amber-900/50 text-amber-400' if t.status == 'trial'
@@ -175,8 +175,9 @@
                             <span class="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-slate-800 text-slate-400">Archived</span>
                             {% endif %}
                         </td>
-                        <td class="px-5 py-3.5 text-slate-500 text-xs">{{ t.created_at.strftime('%Y-%m-%d') if t.created_at else '—' }}</td>
-                        <td class="px-5 py-3.5 text-right space-x-2 whitespace-nowrap">
+                        <td class="px-3 py-3 text-slate-500 text-xs whitespace-nowrap">{{ t.created_at.strftime('%Y-%m-%d') if t.created_at else '—' }}</td>
+                        <td class="px-3 py-3 text-right">
+                            <div class="flex flex-wrap justify-end gap-2">
                             <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="text-indigo-400 hover:underline text-xs font-semibold">View</a>
                             <button type="button"
                                 data-tenant-id="{{ t.id }}"
@@ -209,6 +210,7 @@
                                 <input type="hidden" name="reason" value="">
                                 <button type="submit" class="text-teal-400 hover:underline text-xs font-semibold">Impersonate</button>
                             </form>
+                            </div>
                         </td>
                     </tr>
                     {% else %}

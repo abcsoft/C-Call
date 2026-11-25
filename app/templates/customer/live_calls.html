@@ -3,7 +3,7 @@
 {% block title %}Live Calls — C-Call IVR{% endblock %}
 
 {% block customer_content %}
-<div class="space-y-6" x-data="liveCallMonitor()" x-init="start()">
+<div class="space-y-6" x-data="liveCallMonitor({ mode: 'customer', pollUrl: '{{ url_for('customer.api_live_calls') }}' })" x-init="start()">
     <div>
         <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Live Calls</h1>
         <p class="text-slate-400 text-sm mt-1">Calls currently in progress for your store.</p>
@@ -72,51 +72,4 @@
         </div>
     </div>
 </div>
-
-<script nonce="{{ csp_nonce }}">
-function liveCallMonitor() {
-    return {
-        calls: [],
-        summary: { active_calls: 0, confirmed_today: 0, cancelled_today: 0, no_answer_today: 0 },
-        timer: null,
-
-        start() {
-            this.poll();
-        },
-        async poll() {
-            try {
-                const resp = await fetch("{{ url_for('customer.api_live_calls') }}", { headers: { 'Accept': 'application/json' } });
-                const data = await resp.json();
-                if (data.success) {
-                    this.calls = data.calls;
-                    this.summary = data.summary;
-                }
-            } catch (e) { /* keep last known state on transient error */ }
-            clearTimeout(this.timer);
-            const interval = this.calls.length > 0 ? 1000 : 5000;
-            this.timer = setTimeout(() => this.poll(), interval);
-        },
-        async hangup(callId) {
-            if (!confirm('Cancel this call?')) return;
-            const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-            await fetch(`/api/live-calls/${callId}/hangup`, {
-                method: 'POST',
-                headers: { 'X-CSRFToken': csrfToken }
-            });
-            this.poll();
-        },
-        statusBadge(status) {
-            const map = {
-                ringing: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-                answered: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-                waiting_dtmf: 'bg-sky-500/10 text-sky-400 border-sky-500/20',
-                playing_tts: 'bg-sky-500/10 text-sky-400 border-sky-500/20',
-                failed: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
-                completed: 'bg-teal-500/10 text-teal-400 border-teal-500/20',
-            };
-            return map[status] || 'bg-slate-800 text-slate-400 border-slate-700';
-        }
-    };
-}
-</script>
 {% endblock %}
