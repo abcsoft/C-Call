@@ -392,7 +392,7 @@ def test_tts_mode_cache_invalidation_plan_duplicate_and_htmx_diag(client, app, m
     assert "Estimated Provider Cost (USD)" in csv_resp.get_data(as_text=True)
 
     # Test HTMX provider diagnostic response returns HTML (not raw JSON) on 404
-    port, stop, _, srv_sock = _start_mock_sip_server("always_404")
+    port, stop, _, srv_sock, _ = _start_mock_sip_server("always_404")
     try:
         with app.app_context():
             pid = add_sip_provider("HTMX 404 Trunk", "127.0.0.1", port, "u_htmx", "secret_pw")
@@ -401,6 +401,8 @@ def test_tts_mode_cache_invalidation_plan_duplicate_and_htmx_diag(client, app, m
         assert htmx_resp.status_code == 200
         assert "data-provider-test-result" in html
         assert "FAIL" in html
+        assert "OPTIONS: 404" in html
+        assert "REGISTER: 404" in html
         assert "404 Not Found" in html
         assert "secret_pw" not in html
     finally:
