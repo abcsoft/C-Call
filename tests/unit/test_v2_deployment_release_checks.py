@@ -101,3 +101,18 @@ def test_call_worker_stops_call_monitor_on_exit(app, monkeypatch):
 
     mock_start.assert_called_once_with(app)
     mock_stop.assert_called_once_with(wait=True, timeout=5.0)
+
+
+def test_compose_coolify_lowmem_staging_limits_and_isolation():
+    text = (ROOT / "docker-compose.staging.lowmem.yml").read_text(encoding="utf-8")
+    assert "WEB_WORKERS: \"1\"" in text
+    assert "WEB_THREADS: \"2\"" in text
+    assert "CALL_WORKERS: \"1\"" in text
+    assert "replicas: 1" in text
+    assert "shared_buffers=32MB" in text
+    assert "--maxmemory 48mb" in text
+    assert "127.0.0.1:${STAGING_LOOPBACK_PORT:-5050}:5000" in text
+    assert "ccall_staging_internal" in text
+    assert "memory: 220M" in text
+    assert "memory: 160M" in text
+
