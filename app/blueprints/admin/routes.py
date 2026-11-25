@@ -155,34 +155,59 @@ def customers_list():
 @admin_bp.route("/customers/cleanup-preview", methods=["GET"])
 @require_super_admin
 def customers_cleanup_preview():
-    from app.services.admin_tenant_lifecycle import list_synthetic_cleanup_candidates
+    from app.services.admin_tenant_lifecycle import build_cleanup_audit_preview
 
-    candidates = list_synthetic_cleanup_candidates(limit=200)
-    return jsonify({"count": len(candidates), "candidates": candidates})
+    audit = build_cleanup_audit_preview(limit=500)
+    return jsonify({
+        "count": len(audit["candidates"]),
+        "summary": audit["summary"],
+        "candidates": audit["candidates"],
+        "all_accounts": audit["all_accounts"],
+    })
 
 
 @admin_bp.route("/customers/cleanup", methods=["POST"])
 @require_super_admin
 def customers_bulk_cleanup():
-    from app.services.admin_tenant_lifecycle import bulk_cleanup_synthetic_tenants
+    from app.services.admin_tenant_lifecycle import (
+        bulk_archive_tenants,
+        bulk_cleanup_synthetic_tenants,
+    )
 
     tenant_ids_raw = request.form.getlist("tenant_ids")
     tenant_ids = [int(tid) for tid in tenant_ids_raw if str(tid).isdigit()]
     admin_password = request.form.get("admin_password", "")
     confirm_text = request.form.get("confirm_text", "")
+    action_mode = request.form.get("action_mode", "delete").strip().lower()
+    reason = request.form.get("reason", "").strip()
     try:
-        res = bulk_cleanup_synthetic_tenants(
-            tenant_ids=tenant_ids,
-            actor_id=current_user.id,
-            admin_password=admin_password,
-            confirm_text=confirm_text,
-        )
-        deleted_n = len(res["deleted"])
-        skipped_n = len(res["skipped"])
-        msg = f"Deleted {deleted_n} synthetic test merchant(s)."
-        if skipped_n:
-            msg += f" Skipped {skipped_n} ineligible record(s)."
-        flash(msg, "success")
+        if action_mode == "archive":
+            res = bulk_archive_tenants(
+                tenant_ids=tenant_ids,
+                actor_id=current_user.id,
+                admin_password=admin_password,
+                confirm_text=confirm_text,
+                reason=reason or "Owner-approved bulk archive from cleanup preview",
+            )
+            archived_n = len(res["archived"])
+            skipped_n = len(res["skipped"])
+            msg = f"Archived {archived_n} merchant(s)."
+            if skipped_n:
+                msg += f" Skipped {skipped_n} ineligible record(s)."
+            flash(msg, "success")
+        else:
+            res = bulk_cleanup_synthetic_tenants(
+                tenant_ids=tenant_ids,
+                actor_id=current_user.id,
+                admin_password=admin_password,
+                confirm_text=confirm_text,
+            )
+            deleted_n = len(res["deleted"])
+            skipped_n = len(res["skipped"])
+            msg = f"Deleted {deleted_n} synthetic test merchant(s)."
+            if skipped_n:
+                msg += f" Skipped {skipped_n} ineligible record(s)."
+            flash(msg, "success")
     except Exception as exc:
         flash(f"Bulk cleanup failed: {exc}", "error")
     return redirect(url_for("admin.customers_list"))

@@ -21,6 +21,11 @@
     deletePreview: null,
     deletePreviewLoading: false,
     cleanupCandidates: [],
+    cleanupAccounts: [],
+    cleanupSummary: null,
+    cleanupFilter: 'all',
+    cleanupActionMode: 'delete',
+    cleanupSelectedIds: [],
     cleanupLoading: false,
     openEdit(el) {
         this.editTenantId = el.dataset.tenantId || '';
@@ -50,16 +55,41 @@
             this.deletePreviewLoading = false;
         }
     },
+    filteredCleanupAccounts() {
+        if (this.cleanupFilter === 'all') return this.cleanupAccounts;
+        return this.cleanupAccounts.filter(a => a.classification === this.cleanupFilter);
+    },
+    selectSafeDeleteEligible() {
+        this.cleanupActionMode = 'delete';
+        this.cleanupSelectedIds = this.cleanupAccounts
+            .filter(a => a.safe_delete_eligible)
+            .map(a => String(a.id));
+    },
+    selectArchiveRecommended() {
+        this.cleanupActionMode = 'archive';
+        this.cleanupSelectedIds = this.cleanupAccounts
+            .filter(a => a.archive_eligible && a.classification === 'synthetic_with_balance_or_activity')
+            .map(a => String(a.id));
+    },
     async openCleanup() {
         this.cleanupCandidates = [];
+        this.cleanupAccounts = [];
+        this.cleanupSummary = null;
+        this.cleanupFilter = 'all';
+        this.cleanupActionMode = 'delete';
+        this.cleanupSelectedIds = [];
         this.cleanupLoading = true;
         this.showCleanupModal = true;
         try {
             const resp = await fetch('/admin/customers/cleanup-preview');
             const data = await resp.json();
             this.cleanupCandidates = data.candidates || [];
+            this.cleanupAccounts = data.all_accounts || [];
+            this.cleanupSummary = data.summary || null;
         } catch (e) {
             this.cleanupCandidates = [];
+            this.cleanupAccounts = [];
+            this.cleanupSummary = null;
         } finally {
             this.cleanupLoading = false;
         }
@@ -368,58 +398,150 @@
         </div>
     </div>
 
-    <!-- G. Synthetic Test Cleanup Modal -->
+    <!-- G. Multi-Signal Merchant Cleanup Preview & Bulk Action Modal -->
     <div x-show="showCleanupModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center p-4" style="display:none;">
         <div class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm" @click="showCleanupModal = false"></div>
-        <div class="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-2xl space-y-4">
-            <h3 class="font-outfit font-bold text-lg text-amber-300">Synthetic Test Merchant Cleanup Preview</h3>
-            <p class="text-xs text-slate-400">Only empty synthetic/QA test accounts with zero wallet balance, transactions, payments, orders, calls, and CDR records are listed below.</p>
+        <div class="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-6xl max-h-[90vh] flex flex-col space-y-4">
+            <div class="flex items-start justify-between gap-4">
+                <div>
+                    <h3 class="font-outfit font-bold text-lg text-amber-300">Merchant Account Audit &amp; Bulk Cleanup Preview</h3>
+                    <p class="text-xs text-slate-400">Multi-signal classification (reserved synthetic domain + financial/call/order/login signals). Accounts with financial/billing/order history are blocked from hard deletion; nothing is modified without explicit selection &amp; password approval.</p>
+                </div>
+                <button type="button" @click="showCleanupModal = false" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs">Close</button>
+            </div>
 
             <template x-if="cleanupLoading">
-                <p class="text-xs text-slate-400">Scanning for eligible synthetic test accounts...</p>
+                <p class="text-xs text-slate-400 py-8 text-center">Auditing all merchant accounts &amp; financial dependencies...</p>
             </template>
 
-            <template x-if="!cleanupLoading && cleanupCandidates.length === 0">
-                <div class="text-xs text-slate-400 bg-slate-950/60 border border-slate-800 rounded-xl p-4">
-                    No eligible empty synthetic test merchants found.
-                    <div class="mt-3 text-right">
-                        <button type="button" @click="showCleanupModal = false" class="px-3 py-1.5 bg-slate-800 text-slate-200 rounded-lg">Close</button>
+            <template x-if="!cleanupLoading && cleanupSummary">
+                <div class="grid grid-cols-2 md:grid-cols-6 gap-2 text-xs">
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2">
+                        <div class="text-slate-400">Total Audited</div>
+                        <div class="text-white font-bold text-base" x-text="cleanupSummary.total"></div>
+                    </div>
+                    <div class="bg-emerald-950/40 border border-emerald-800/60 rounded-xl px-3 py-2">
+                        <div class="text-emerald-300">Safe-Delete Eligible</div>
+                        <div class="text-white font-bold text-base" x-text="cleanupSummary.safe_delete_eligible"></div>
+                    </div>
+                    <div class="bg-amber-950/40 border border-amber-800/60 rounded-xl px-3 py-2">
+                        <div class="text-amber-300">Synthetic (Bal/Orders)</div>
+                        <div class="text-white font-bold text-base" x-text="cleanupSummary.synthetic_with_balance_or_activity"></div>
+                    </div>
+                    <div class="bg-sky-950/40 border border-sky-800/60 rounded-xl px-3 py-2">
+                        <div class="text-sky-300">Manual Review</div>
+                        <div class="text-white font-bold text-base" x-text="cleanupSummary.manual_review"></div>
+                    </div>
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2">
+                        <div class="text-slate-300">Protected</div>
+                        <div class="text-white font-bold text-base" x-text="cleanupSummary.protected_merchant"></div>
+                    </div>
+                    <div class="bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2">
+                        <div class="text-slate-300">Selected</div>
+                        <div class="text-amber-300 font-bold text-base" x-text="cleanupSelectedIds.length"></div>
                     </div>
                 </div>
             </template>
 
-            <template x-if="!cleanupLoading && cleanupCandidates.length > 0">
-                <form method="POST" action="{{ url_for('admin.customers_bulk_cleanup') }}" class="space-y-4">
+            <template x-if="!cleanupLoading && cleanupAccounts.length > 0">
+                <form method="POST" action="{{ url_for('admin.customers_bulk_cleanup') }}" class="flex flex-col flex-1 min-h-0 space-y-3">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <div class="max-h-56 overflow-y-auto border border-slate-800 rounded-xl divide-y divide-slate-800/70 bg-slate-950/60">
-                        <template x-for="c in cleanupCandidates" :key="c.id">
-                            <label class="flex items-center justify-between px-4 py-2.5 text-xs hover:bg-slate-900/50 cursor-pointer">
-                                <div class="flex items-center gap-3">
-                                    <input type="checkbox" name="tenant_ids" :value="c.id" checked class="rounded border-slate-700 bg-slate-950 text-amber-500">
-                                    <div>
-                                        <span class="font-semibold text-white" x-text="c.business_name"></span>
-                                        <span class="text-slate-400 ml-2" x-text="c.email"></span>
-                                    </div>
-                                </div>
-                                <span class="text-slate-500 font-mono" x-text="'#' + c.id + ' · ' + c.created_at"></span>
-                            </label>
-                        </template>
+                    <input type="hidden" name="action_mode" :value="cleanupActionMode">
+
+                    <!-- Filter & Selection Toolbar -->
+                    <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div class="flex flex-wrap gap-1.5">
+                            <button type="button" @click="cleanupFilter = 'all'" :class="cleanupFilter === 'all' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300'" class="px-2.5 py-1 rounded-lg font-medium">All</button>
+                            <button type="button" @click="cleanupFilter = 'synthetic_empty'" :class="cleanupFilter === 'synthetic_empty' ? 'bg-emerald-700 text-white' : 'bg-slate-800 text-slate-300'" class="px-2.5 py-1 rounded-lg font-medium">Safe-Delete Eligible</button>
+                            <button type="button" @click="cleanupFilter = 'synthetic_with_balance_or_activity'" :class="cleanupFilter === 'synthetic_with_balance_or_activity' ? 'bg-amber-700 text-white' : 'bg-slate-800 text-slate-300'" class="px-2.5 py-1 rounded-lg font-medium">Synthetic w/ Bal/Orders</button>
+                            <button type="button" @click="cleanupFilter = 'manual_review'" :class="cleanupFilter === 'manual_review' ? 'bg-sky-700 text-white' : 'bg-slate-800 text-slate-300'" class="px-2.5 py-1 rounded-lg font-medium">Manual Review</button>
+                            <button type="button" @click="cleanupFilter = 'protected_merchant'" :class="cleanupFilter === 'protected_merchant' ? 'bg-slate-600 text-white' : 'bg-slate-800 text-slate-300'" class="px-2.5 py-1 rounded-lg font-medium">Protected</button>
+                        </div>
+                        <div class="flex flex-wrap gap-1.5">
+                            <button type="button" @click="selectSafeDeleteEligible()" class="px-2.5 py-1 bg-emerald-900/50 hover:bg-emerald-800/60 border border-emerald-700/60 text-emerald-200 rounded-lg">Select Safe-Delete Eligible</button>
+                            <button type="button" @click="selectArchiveRecommended()" class="px-2.5 py-1 bg-amber-900/50 hover:bg-amber-800/60 border border-amber-700/60 text-amber-200 rounded-lg">Select Synthetic for Archive</button>
+                            <button type="button" @click="cleanupSelectedIds = []" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg">Clear</button>
+                        </div>
                     </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+                    <!-- 9-Column Audit Table -->
+                    <div class="overflow-auto flex-1 max-h-72 border border-slate-800 rounded-xl bg-slate-950/70">
+                        <table class="w-full text-left text-[11px] text-slate-300">
+                            <thead class="bg-slate-900 text-slate-400 uppercase sticky top-0">
+                                <tr>
+                                    <th class="px-3 py-2">Sel</th>
+                                    <th class="px-3 py-2">ID</th>
+                                    <th class="px-3 py-2">Business / Email</th>
+                                    <th class="px-3 py-2">Classification</th>
+                                    <th class="px-3 py-2 text-right">Wallet</th>
+                                    <th class="px-3 py-2">Financial Hist</th>
+                                    <th class="px-3 py-2">Calls / Orders</th>
+                                    <th class="px-3 py-2">Safe-Del</th>
+                                    <th class="px-3 py-2">Archive</th>
+                                    <th class="px-3 py-2">Restriction Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800/60">
+                                <template x-for="c in filteredCleanupAccounts()" :key="c.id">
+                                    <tr class="hover:bg-slate-900/40">
+                                        <td class="px-3 py-2">
+                                            <input type="checkbox" name="tenant_ids" :value="c.id" x-model="cleanupSelectedIds"
+                                                   :disabled="cleanupActionMode === 'delete' ? !c.safe_delete_eligible : !c.archive_eligible"
+                                                   class="rounded border-slate-700 bg-slate-950 text-amber-500 disabled:opacity-30">
+                                        </td>
+                                        <td class="px-3 py-2 font-mono text-slate-400" x-text="'#' + c.id"></td>
+                                        <td class="px-3 py-2">
+                                            <div class="font-semibold text-white" x-text="c.business_name"></div>
+                                            <div class="text-slate-400 font-mono" x-text="c.email"></div>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                                                  :class="c.classification === 'synthetic_empty' ? 'bg-emerald-900/50 text-emerald-300' : (c.classification === 'synthetic_with_balance_or_activity' ? 'bg-amber-900/50 text-amber-300' : (c.classification === 'manual_review' ? 'bg-sky-900/50 text-sky-300' : 'bg-slate-800 text-slate-300'))"
+                                                  x-text="c.classification_label"></span>
+                                        </td>
+                                        <td class="px-3 py-2 text-right font-mono" x-text="'৳' + Number(c.wallet_balance || 0).toFixed(2)"></td>
+                                        <td class="px-3 py-2 font-mono" x-text="c.financial_history.wallet_tx_count + ' tx / ' + c.financial_history.payment_count + ' pay / ' + c.financial_history.cdr_count + ' cdr'"></td>
+                                        <td class="px-3 py-2 font-mono" x-text="c.call_order_history.calls_count + ' calls / ' + c.call_order_history.orders_count + ' ord'"></td>
+                                        <td class="px-3 py-2">
+                                            <span :class="c.safe_delete_eligible ? 'text-emerald-400 font-semibold' : 'text-rose-400'" x-text="c.safe_delete_eligible ? 'Eligible' : 'Blocked'"></span>
+                                        </td>
+                                        <td class="px-3 py-2">
+                                            <span :class="c.archive_eligible ? 'text-amber-300' : 'text-slate-500'" x-text="c.archive_eligible ? 'Eligible' : 'Archived'"></span>
+                                        </td>
+                                        <td class="px-3 py-2 text-slate-400 max-w-xs" x-text="c.restriction_reason"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Mode & Approval Controls -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end pt-1">
                         <div>
-                            <label class="block text-xs font-semibold text-slate-400 mb-1">Type DELETE to confirm</label>
-                            <input type="text" name="confirm_text" required placeholder="DELETE"
-                                   class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-sm">
+                            <label class="block text-xs font-semibold text-slate-400 mb-1">Action Mode</label>
+                            <select x-model="cleanupActionMode" @change="cleanupSelectedIds = []"
+                                    class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-xs">
+                                <option value="delete">Safe-Delete Selected (Empty Synthetic Only)</option>
+                                <option value="archive">Archive Selected (Preserves Financial History)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-400 mb-1" x-text="cleanupActionMode === 'delete' ? 'Type DELETE to confirm' : 'Type ARCHIVE to confirm'"></label>
+                            <input type="text" name="confirm_text" required :placeholder="cleanupActionMode === 'delete' ? 'DELETE' : 'ARCHIVE'"
+                                   class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-xs">
                         </div>
                         <div>
                             <label class="block text-xs font-semibold text-slate-400 mb-1">Super-Admin Password</label>
                             <input type="password" name="admin_password" required autocomplete="current-password"
-                                   class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-sm">
+                                   class="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 text-xs">
                         </div>
-                    </div>
-                    <div class="flex justify-end gap-3">
-                        <button type="button" @click="showCleanupModal = false" class="px-4 py-2 text-slate-400 text-sm">Cancel</button>
-                        <button type="submit" class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-sm">Delete Selected Test Merchants</button>
+                        <div>
+                            <button type="submit"
+                                    :disabled="cleanupSelectedIds.length === 0"
+                                    class="w-full px-4 py-2 font-bold rounded-xl text-xs text-white disabled:opacity-40"
+                                    :class="cleanupActionMode === 'delete' ? 'bg-rose-600 hover:bg-rose-500' : 'bg-amber-600 hover:bg-amber-500'"
+                                    x-text="cleanupActionMode === 'delete' ? ('Delete Selected (' + cleanupSelectedIds.length + ')') : ('Archive Selected (' + cleanupSelectedIds.length + ')')"></button>
+                        </div>
                     </div>
                 </form>
             </template>

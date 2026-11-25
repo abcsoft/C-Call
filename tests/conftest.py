@@ -131,6 +131,30 @@ class MockRedis:
     def publish(self, channel, message):
         return 0
 
+    def pipeline(self, transaction=True):
+        return _MockPipeline(self)
+
+
+class _MockPipeline:
+    """Minimal pipeline stub for MockRedis."""
+
+    def __init__(self, redis_obj: MockRedis):
+        self._r = redis_obj
+        self._ops: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def __getattr__(self, name: str):
+        def _queued(*args, **kwargs):
+            self._ops.append((name, args, kwargs))
+            return self
+        return _queued
+
+    def execute(self):
+        results = []
+        for name, args, kwargs in self._ops:
+            results.append(getattr(self._r, name)(*args, **kwargs))
+        self._ops.clear()
+        return results
+
 
 def _schema_is_current(conn) -> bool:
     """Return True if ccall_test already has all migration tables including migration 017."""

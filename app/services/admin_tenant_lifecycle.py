@@ -316,7 +316,28 @@ def delete_tenant_safely(
     }
 
 
-def list_synthetic_cleanup_candidates(limit: int = 200) -> list[dict[str, Any]]:
+_RESERVED_SYNTHETIC_DOMAINS = (
+    "@test.local",
+    "@test.example",
+    "@example.com",
+    "@example.org",
+    "@example.net",
+    "@ccall.example.com",
+    "@ccall.local",
+)
+
+
+def _has_reserved_synthetic_domain(email: str) -> bool:
+    em = (email or "").strip().lower()
+    return any(em.endswith(dom) for dom in _RESERVED_SYNTHETIC_DOMAINS)
+
+
+def build_cleanup_audit_preview(limit: int = 500) -> dict[str, Any]:
+    """Multi-signal audit classification for merchant cleanup preview.
+
+    Never classifies an account as synthetic solely from its business name.
+    Financial/billing/CDR history always blocks hard deletion.
+    """
     rows = db.query(
         """
         SELECT
@@ -324,46 +345,186 @@ def list_synthetic_cleanup_candidates(limit: int = 200) -> list[dict[str, Any]]:
             t.business_name,
             t.email,
             t.status,
+            t.settings,
             t.created_at,
             COALESCE(w.balance, 0) AS wallet_balance,
+            (SELECT COUNT(*) FROM users u WHERE u.tenant_id = t.id) AS users_count,
+            (SELECT MAX(last_login_at) FROM users u WHERE u.tenant_id = t.id) AS last_login_at,
             (SELECT COUNT(*) FROM wallet_transactions wt WHERE wt.tenant_id = t.id) AS wallet_tx_count,
             (SELECT COUNT(*) FROM payment_intents pi WHERE pi.tenant_id = t.id) AS payment_intent_count,
             (SELECT COUNT(*) FROM subscription_payments sp WHERE sp.tenant_id = t.id) AS sub_payment_count,
             (SELECT COUNT(*) FROM cdr_records cr WHERE cr.tenant_id = t.id) AS cdr_count,
             (SELECT COUNT(*) FROM calls c WHERE c.tenant_id = t.id) AS calls_count,
-            (SELECT COUNT(*) FROM orders o WHERE o.tenant_id = t.id) AS orders_count
+            (SELECT COUNT(*) FROM orders o WHERE o.tenant_id = t.id) AS orders_count,
+            (SELECT COUNT(*) FROM flows f WHERE f.tenant_id = t.id) AS flows_count,
+            (SELECT COUNT(*) FROM customer_number_assignments cna WHERE cna.tenant_id = t.id) AS num_count
         FROM tenants t
         LEFT JOIN wallets w ON w.tenant_id = t.id
-        ORDER BY t.created_at DESC
+        ORDER BY t.id ASC
         LIMIT %s
         """,
-        (max(1, min(limit, 500)),),
+        (max(1, min(limit, 1000)),),
     )
 
-    candidates: list[dict[str, Any]] = []
+    accounts: list[dict[str, Any]] = []
+    safe_candidates: list[dict[str, Any]] = []
+    summary = {
+        "total": 0,
+        "synthetic_empty": 0,
+        "synthetic_with_balance_or_activity": 0,
+        "manual_review": 0,
+        "protected_merchant": 0,
+        "safe_delete_eligible": 0,
+        "archive_eligible": 0,
+    }
+
     for r in rows:
         name = (r.get("business_name") or "").strip()
         email = (r.get("email") or "").strip()
-        matches_pattern = bool(_SYNTHETIC_PATTERN.search(email) or _SYNTHETIC_PATTERN.search(name))
-        has_financial = (
-            Decimal(str(r.get("wallet_balance") or 0)) != Decimal("0")
-            or int(r.get("wallet_tx_count") or 0) > 0
-            or int(r.get("payment_intent_count") or 0) > 0
-            or int(r.get("sub_payment_count") or 0) > 0
-            or int(r.get("cdr_count") or 0) > 0
+        bal = Decimal(str(r.get("wallet_balance") or 0))
+        wtx = int(r.get("wallet_tx_count") or 0)
+        pi_cnt = int(r.get("payment_intent_count") or 0)
+        sp_cnt = int(r.get("sub_payment_count") or 0)
+        cdr_cnt = int(r.get("cdr_count") or 0)
+        calls_cnt = int(r.get("calls_count") or 0)
+        orders_cnt = int(r.get("orders_count") or 0)
+        flows_cnt = int(r.get("flows_count") or 0)
+        num_cnt = int(r.get("num_count") or 0)
+        archived = is_archived_tenant(r)
+
+        financial_reasons: list[str] = []
+        if bal != Decimal("0"):
+            financial_reasons.append(f"wallet balance ৳{bal:.2f}")
+        if wtx > 0:
+            financial_reasons.append(f"{wtx} wallet tx")
+        if pi_cnt > 0:
+            financial_reasons.append(f"{pi_cnt} payment intent(s)")
+        if sp_cnt > 0:
+            financial_reasons.append(f"{sp_cnt} subscription payment(s)")
+        if cdr_cnt > 0:
+            financial_reasons.append(f"{cdr_cnt} CDR record(s)")
+        has_financial = bool(financial_reasons)
+        has_traffic = calls_cnt > 0 or orders_cnt > 0
+
+        reserved_dom = _has_reserved_synthetic_domain(email)
+        name_or_email_hint = bool(_SYNTHETIC_PATTERN.search(email) or _SYNTHETIC_PATTERN.search(name))
+        no_real_infra = (num_cnt == 0 and pi_cnt == 0 and sp_cnt == 0 and cdr_cnt == 0)
+
+        if reserved_dom and not has_financial and not has_traffic and num_cnt == 0:
+            classification = "synthetic_empty"
+            classification_label = "Synthetic Test (Empty)"
+            safe_delete_eligible = True
+            restriction_reason = "Eligible — reserved synthetic domain, zero balance, zero financial/call/order history"
+        elif reserved_dom and no_real_infra:
+            classification = "synthetic_with_balance_or_activity"
+            classification_label = "Synthetic Domain (Balance/Activity)"
+            safe_delete_eligible = False
+            details = financial_reasons + ([f"{orders_cnt} order(s)"] if orders_cnt else []) + ([f"{calls_cnt} call(s)"] if calls_cnt else [])
+            restriction_reason = "Blocked from hard delete (" + ", ".join(details) + ") — archive recommended"
+        elif name_or_email_hint and not reserved_dom:
+            classification = "manual_review"
+            classification_label = "Manual Review (Non-Synthetic Domain)"
+            safe_delete_eligible = False
+            extra = financial_reasons + ([f"{orders_cnt} order(s)"] if orders_cnt else []) + ([f"{calls_cnt} call(s)"] if calls_cnt else [])
+            if extra:
+                restriction_reason = "Non-synthetic email domain & activity (" + ", ".join(extra) + ") — never auto-classified by name"
+            else:
+                restriction_reason = "Non-synthetic email domain — never auto-classified solely by name; manual confirmation required"
+        else:
+            classification = "protected_merchant"
+            classification_label = "Protected Merchant"
+            safe_delete_eligible = False
+            prot_bits = financial_reasons + ([f"{calls_cnt} call(s)"] if calls_cnt else []) + ([f"{orders_cnt} order(s)"] if orders_cnt else []) + ([f"{num_cnt} CLI number(s)"] if num_cnt else [])
+            restriction_reason = "Protected (" + (", ".join(prot_bits) if prot_bits else "real domain account") + ")"
+
+        archive_eligible = not archived
+        item = {
+            "id": int(r["id"]),
+            "business_name": name,
+            "email": email,
+            "status": r["status"],
+            "is_archived": archived,
+            "created_at": r["created_at"].strftime("%Y-%m-%d") if r.get("created_at") else "—",
+            "classification": classification,
+            "classification_label": classification_label,
+            "wallet_balance": float(bal),
+            "financial_history": {
+                "has_financial_history": has_financial,
+                "wallet_tx_count": wtx,
+                "payment_count": pi_cnt + sp_cnt,
+                "cdr_count": cdr_cnt,
+            },
+            "call_order_history": {
+                "calls_count": calls_cnt,
+                "orders_count": orders_cnt,
+                "flows_count": flows_cnt,
+                "assigned_numbers": num_cnt,
+            },
+            "safe_delete_eligible": safe_delete_eligible,
+            "archive_eligible": archive_eligible,
+            "restriction_reason": restriction_reason,
+        }
+        accounts.append(item)
+        summary["total"] += 1
+        summary[classification] += 1
+        if safe_delete_eligible:
+            summary["safe_delete_eligible"] += 1
+            safe_candidates.append(item)
+        if archive_eligible:
+            summary["archive_eligible"] += 1
+
+    return {
+        "summary": summary,
+        "candidates": safe_candidates,
+        "all_accounts": accounts,
+    }
+
+
+def list_synthetic_cleanup_candidates(limit: int = 200) -> list[dict[str, Any]]:
+    audit = build_cleanup_audit_preview(limit=limit)
+    return audit["candidates"]
+
+
+def bulk_archive_tenants(
+    tenant_ids: list[int],
+    actor_id: int,
+    admin_password: str,
+    confirm_text: str,
+    reason: str = "Bulk archive via admin cleanup review",
+) -> dict[str, Any]:
+    _verify_admin_password(actor_id, admin_password)
+    if (confirm_text or "").strip().upper() != "ARCHIVE":
+        raise ValueError("Type ARCHIVE to confirm bulk archive.")
+
+    requested = {int(tid) for tid in (tenant_ids or []) if str(tid).isdigit()}
+    if not requested:
+        raise ValueError("Select at least one merchant account to archive.")
+
+    audit = build_cleanup_audit_preview(limit=1000)
+    account_map = {a["id"]: a for a in audit["all_accounts"]}
+    archived: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for tid in sorted(requested):
+        acct = account_map.get(tid)
+        if not acct:
+            skipped.append({"id": tid, "reason": "Tenant not found"})
+            continue
+        if not acct["archive_eligible"]:
+            skipped.append({"id": tid, "reason": "Already archived"})
+            continue
+        res = archive_tenant(tid, actor_id, reason=reason)
+        archived.append({"id": tid, "business_name": acct["business_name"], "released_numbers": res["released_numbers"]})
+
+    if archived:
+        audit_log(
+            "tenant_bulk_archived",
+            actor_id,
+            "tenant_bulk",
+            None,
+            {"archived_count": len(archived), "archived_tenants": archived, "skipped": skipped},
         )
-        has_traffic = int(r.get("calls_count") or 0) > 0 or int(r.get("orders_count") or 0) > 0
-        if matches_pattern and not has_financial and not has_traffic:
-            candidates.append(
-                {
-                    "id": int(r["id"]),
-                    "business_name": name,
-                    "email": email,
-                    "status": r["status"],
-                    "created_at": r["created_at"].strftime("%Y-%m-%d") if r.get("created_at") else "—",
-                }
-            )
-    return candidates
+    return {"archived": archived, "skipped": skipped}
 
 
 def bulk_cleanup_synthetic_tenants(

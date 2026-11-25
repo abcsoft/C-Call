@@ -199,39 +199,117 @@ def delete_sip_provider(provider_id: int) -> None:
     db.execute("DELETE FROM sip_providers WHERE id = %s", (provider_id,))
 
 
-def reconcile_stale_calls(provider_id: int | None = None, stale_minutes: int = 60) -> int:
-    """Close abandoned active calls older than ``stale_minutes`` and sync call_jobs."""
+def _live_registry_call_ids() -> list[int]:
+    try:
+        from call_engine import active_calls as registry
+        entries = registry.list_active_calls(tenant_id=None)
+        return [int(e["call_id"]) for e in entries if e.get("call_id")]
+    except Exception:
+        return []
+
+
+def get_provider_call_counts(provider_id: int, stale_minutes: int = 60) -> dict[str, int]:
+    """Return accurate active, stale-reconcilable, and total call counts for a SIP provider."""
     mins = max(1, int(stale_minutes))
+    live_ids = _live_registry_call_ids()
+    live_filter = "AND NOT (id = ANY(%s))" if live_ids else ""
+    stale_params: tuple[Any, ...] = (
+        (provider_id, provider_id, str(mins), live_ids)
+        if live_ids
+        else (provider_id, provider_id, str(mins))
+    )
+
+    active_row = db.query_one(
+        """SELECT COUNT(*) AS n FROM calls
+           WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))
+             AND status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')""",
+        (provider_id, provider_id),
+    )
+    stale_row = db.query_one(
+        f"""SELECT COUNT(*) AS n FROM calls
+            WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))
+              AND status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')
+              AND started_at IS NOT NULL
+              AND started_at < now() - (%s || ' minutes')::interval
+              AND (answered_at IS NULL OR answered_at < now() - interval '30 minutes')
+              AND NOT EXISTS (
+                  SELECT 1 FROM call_jobs cj
+                  WHERE cj.call_id = calls.id AND cj.lease_expires_at IS NOT NULL AND cj.lease_expires_at > now()
+              )
+              {live_filter}""",
+        stale_params,
+    )
+    total_row = db.query_one(
+        """SELECT COUNT(*) AS n FROM calls
+           WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))""",
+        (provider_id, provider_id),
+    )
+    return {
+        "active_calls": int(active_row["n"]) if active_row else 0,
+        "stale_calls": int(stale_row["n"]) if stale_row else 0,
+        "total_calls": int(total_row["n"]) if total_row else 0,
+    }
+
+
+def reconcile_stale_calls(provider_id: int | None = None, stale_minutes: int = 60) -> int:
+    """Close abandoned active calls older than ``stale_minutes`` and sync call_jobs.
+
+    Never releases genuinely active calls tracked in live Redis/in-memory registry,
+    calls with an active worker lease (call_jobs.lease_expires_at > now()), or calls
+    answered within the last 30 minutes.
+    """
+    mins = max(1, int(stale_minutes))
+    live_ids = _live_registry_call_ids()
+    live_filter = "AND NOT (id = ANY(%s))" if live_ids else ""
+
     with db.transaction() as conn:
         if provider_id is not None:
+            params: tuple[Any, ...] = (
+                (str(mins), provider_id, provider_id, live_ids)
+                if live_ids
+                else (str(mins), provider_id, provider_id)
+            )
             rows = conn.execute(
-                """
+                f"""
                 UPDATE calls
                 SET status = 'failed',
                     ended_at = COALESCE(ended_at, now())
                 WHERE status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')
                   AND started_at IS NOT NULL
                   AND started_at < now() - (%s || ' minutes')::interval
+                  AND (answered_at IS NULL OR answered_at < now() - interval '30 minutes')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM call_jobs cj
+                      WHERE cj.call_id = calls.id AND cj.lease_expires_at IS NOT NULL AND cj.lease_expires_at > now()
+                  )
                   AND (
                     sip_gateway_id = %s
                     OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s)
                   )
+                  {live_filter}
                 RETURNING id
                 """,
-                (str(mins), provider_id, provider_id),
+                params,
             ).fetchall()
         else:
+            params = (str(mins), live_ids) if live_ids else (str(mins),)
             rows = conn.execute(
-                """
+                f"""
                 UPDATE calls
                 SET status = 'failed',
                     ended_at = COALESCE(ended_at, now())
                 WHERE status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')
                   AND started_at IS NOT NULL
                   AND started_at < now() - (%s || ' minutes')::interval
+                  AND (answered_at IS NULL OR answered_at < now() - interval '30 minutes')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM call_jobs cj
+                      WHERE cj.call_id = calls.id AND cj.lease_expires_at IS NOT NULL AND cj.lease_expires_at > now()
+                  )
+                  {live_filter}
                 RETURNING id
                 """,
-                (str(mins),),
+                params,
             ).fetchall()
         call_ids = [int(r["id"]) for r in (rows or [])]
         if call_ids:

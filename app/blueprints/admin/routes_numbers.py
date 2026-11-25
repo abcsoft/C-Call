@@ -300,30 +300,14 @@ def providers_panel():
 
         return redirect(url_for("admin.providers_panel"))
 
+    from app.models.sip_provider import get_provider_call_counts
+
     providers = get_all_providers()
     for p in providers:
-        active_row = db.query_one(
-            """SELECT COUNT(*) AS n FROM calls
-               WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))
-                 AND status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')""",
-            (p["id"], p["id"]),
-        )
-        stale_row = db.query_one(
-            """SELECT COUNT(*) AS n FROM calls
-               WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))
-                 AND status IN ('queued', 'initiated', 'preparing', 'dialing', 'calling', 'ringing', 'answered')
-                 AND started_at IS NOT NULL
-                 AND started_at < now() - interval '60 minutes'""",
-            (p["id"], p["id"]),
-        )
-        total_row = db.query_one(
-            """SELECT COUNT(*) AS n FROM calls
-               WHERE (sip_gateway_id = %s OR caller_id IN (SELECT number FROM phone_numbers WHERE provider_id = %s))""",
-            (p["id"], p["id"]),
-        )
-        p["active_calls"] = active_row["n"] if active_row else 0
-        p["stale_calls"] = stale_row["n"] if stale_row else 0
-        p["total_calls"] = total_row["n"] if total_row else 0
+        counts = get_provider_call_counts(p["id"])
+        p["active_calls"] = counts["active_calls"]
+        p["stale_calls"] = counts["stale_calls"]
+        p["total_calls"] = counts["total_calls"]
     return render_template("admin/providers.html", providers=providers)
 
 @admin_bp.route("/providers/<int:provider_id>/test", methods=["POST"])

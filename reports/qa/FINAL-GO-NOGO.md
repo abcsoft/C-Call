@@ -1,12 +1,14 @@
 # C-Call — Final GO / NO-GO Release Decision
 
 ## Verification Summary
-- **Complete Repository `pytest` Suite (`pytest -q --tb=short` with `BILLING_PROCESS_TEST_DB`, `task-1397` post-final-edit):** **1,079 passed, 0 failed, 1 skipped** in 591.62s (0:09:51).
-  - Includes new unit/integration regression suite [test\_v2\_admin\_lifecycle\_and\_sip\_diag.py](file:///c:/xampp_lite_8_3/www/ccall/tests/unit/test_v2_admin_lifecycle_and_sip_diag.py) (`6/6` passed): SIP `404` non-success guard, RFC 2617 `401 -> 200` Digest REGISTER without `INVITE`, `403` wrong-auth fail, domain/port/`max_channels`/duplicate checks, `reconcile_stale_calls()`, financial-history delete block, archive/restore, password-confirmed hard delete + `audit_log`, synthetic bulk cleanup, SQL filter ordering, `invalidate_tenant_caches(tenant_id)` (`tenant:settings:{id}`), plan duplicate, TTS cost CSV export, and HTMX HTML diagnostic partial.
-  - Note on `1 skipped`: conditional plan-presence skip in user-modified `tests/integration/test_admin_tts_management.py`.
-- **Exhaustive Live Browser QA (Playwright against isolated `ccall_test` on `:5001` with CSRF enabled, `task-1385`):**
-  - Walked all **11/11** Admin Sidebar routes + **12/12** Merchant Sidebar routes (all HTTP `200`, `has_content: true`), **0 uncaught `page_errors`**, **0 HTTP `500`s**, and **0 inline `on*=` CSP handlers** across `app/templates/`. (`failed_requests` recorded 1 transient localhost Windows `net::ERR_NO_BUFFER_SPACE` on `tailwind.css` under rapid loop navigation.)
-  - Verified Admin Customer lifecycle (Create, Search/Filter, Edit, Suspend/Unsuspend, Financial Delete Guard + Archive modal, Safe Delete with password confirmation, Synthetic Test Bulk Cleanup), Admin SIP Diagnostics (`404 Not Found` HTML `FAIL` card vs Digest `200 OK` HTML `PASS` card + `max_channels` edit), Plan Duplicate, TTS Usage Cost (`$0.0480` + CSV), Merchant Self-Registration, SMS Fallback CSP-clean toggle, REST API Key + `POST /api/v1/orders` (`200`, `CALL_QUEUED`). Screenshots saved under [screenshots](file:///c:/xampp_lite_8_3/www/ccall/reports/qa/screenshots).
+- **Complete Repository `pytest` Suite (`pytest -q --tb=short` with `BILLING_PROCESS_TEST_DB`, `task-1519` post-final-edit):** **1,081 passed, 0 failed, 0 skipped** in 839.15s (0:13:59).
+  - Resolved the remaining conditional test skip in `tests/integration/test_admin_tts_management.py` (`TestPlanArchive.test_archive_blocks_if_tenants_assigned`) using a deterministic plan+tenant fixture, achieving **0 skipped** across all `1,081` tests (`60/60` passed in `test_admin_tts_management.py`).
+  - Expanded [test_v2_admin_lifecycle_and_sip_diag.py](file:///c:/xampp_lite_8_3/www/ccall/tests/unit/test_v2_admin_lifecycle_and_sip_diag.py) (`7/7` passed): verifies SIP `404` fail, Digest `401 -> 200` non-calling REGISTER, `403` wrong auth, active-call stale-reconciliation protection (`call_jobs.lease_expires_at > now()`, `answered_at > now() - 30m`, live registry `ccall:active:*`), multi-signal 9-column cleanup audit classification (`build_cleanup_audit_preview()`), bulk archive confirmation guard, and cache invalidation.
+- **Owner-Facing Live Acceptance Test on Port `5000` (`http://127.0.0.1:5000`, `ccall` DB, `28/28` migrations applied, `task-1512`):**
+  - Pre-acceptance DB & `.env` backup captured in scratch (`pg_dump`, `473,156` bytes).
+  - Audited all **101** existing merchant accounts in [SYNTHETIC-ACCOUNT-AUDIT-101.md](file:///c:/xampp_lite_8_3/www/ccall/reports/qa/SYNTHETIC-ACCOUNT-AUDIT-101.md) (`4` safe-delete eligible, `89` synthetic domain w/ balance/orders archive-eligible only, `8` protected real-domain/activity accounts, `101` archive-eligible; **0** accounts modified without owner approval).
+  - Verified all 5 owner-reported pages in Chromium ([live_5000_acceptance_results.json](file:///c:/xampp_lite_8_3/www/ccall/reports/qa/live_5000_acceptance_results.json)): `/admin/customers`, `/admin/providers`, `/admin/plans`, `/admin/platform-tts`, `/admin/tts-usage` + `/admin/tts-usage/export.csv`, temp synthetic create/edit/safe-delete roundtrip (`101` preserved), non-calling diagnostic on `203.188.247.3` (`[FAIL] OPTIONS SIP/2.0 404 Not Found` separated from `[PASS] REGISTER SIP/2.0 200 OK`, `No outbound call was placed`), **0 leaked secrets**, **0 console errors**, **0 page errors**, **0 failed requests**, **0 HTTP 500s**. Screenshots saved as `live5000_*.png` under [screenshots](file:///c:/xampp_lite_8_3/www/ccall/reports/qa/screenshots).
+- **Isolated Full Browser QA on Port `5001` (`task-1385`):** 11/11 Admin routes + 12/12 Merchant routes HTTP `200`, 0 `page_errors`, 0 HTTP `500`s.
 - **SIP/RTP & NAT Networking + IP-PBX Acceptance Harness:**
   - Fixed `self.local_ip` leaks in `_refer()` (`Via`, `Contact`) and `_invite_bridge_leg()` `ack()` (`Via`) in [ivr_engine.py](file:///c:/xampp_lite_8_3/www/ccall/call_engine/ivr_engine.py), and added SIP latency (`register_latency_ms`, `invite_setup_latency_ms`), RFC 3550 RTP jitter (`rtp_jitter_ms`), and RTP packet-loss tracking (`rtp_packets_received`, `rtp_packets_lost`).
   - Upgraded [ippbx_acceptance.py](file:///c:/xampp_lite_8_3/www/ccall/scripts/ippbx_acceptance.py) with NAT env passthrough, latency/jitter/loss reporting, `--mode mock-acceptance` (rehearsed cleanly against local UDP mock IP-PBX: all 7 checks `true`), and strict `--confirm-authorized-test --target <approved_number>` gating on `--mode full-call`.
@@ -17,9 +19,9 @@
 - **Secret Scan:** `scripts/secret_scan.py --staged` → **PASS — no likely secrets found**.
 
 ## Test Counts Breakdown
-- **Executed & Passed:** **1,079** (`pytest` full repository suite with `BILLING_PROCESS_TEST_DB`, `task-1397`) + Playwright walkthrough across 11 Admin + 12 Merchant routes & E2E workflows (`0` page errors, `0` HTTP 500s).
+- **Executed & Passed:** **1,081** (`pytest` full repository suite with `BILLING_PROCESS_TEST_DB`, `task-1519`) + Live `:5000` acceptance (`task-1512`: `0` console/page/HTTP500/failed-request errors, `0` leaked secrets) + Isolated `:5001` walkthrough (`11` Admin + `12` Merchant routes & E2E workflows).
 - **Failed:** 0.
-- **Skipped:** 1 (conditional plan-presence skip in `tests/integration/test_admin_tts_management.py`).
+- **Skipped:** 0.
 - **Blocked (External Dependencies):**
   1. **AWS Coolify Server Inspection & Isolated Staging Deployment (`BLOCKED`):** No Coolify URL/API credentials, `~/.ssh/config`, or `~/.aws` configuration exists on this host; `ssh -o BatchMode=yes` to AWS IPs in `~/.ssh/known_hosts` (`18.143.131.230`, `184.197.175.205`, `52.206.238.79`) failed authentication (`exit 255`).
   2. **Docker Build, Container Runtime, & Backup Restore Execution (`BLOCKED`):** `docker` CLI/daemon is absent on this Windows host and no remote Linux/Coolify SSH access is configured.
@@ -28,5 +30,5 @@
   5. **Automated GitHub CLI Draft PR (`BLOCKED`):** `gh` CLI and `GITHUB_TOKEN` are not present on this host; create via `https://github.com/abcsoft/C-Call/pull/new/feat/c-call-v2-production-foundation`.
 
 ## Release Decision
-- **Codebase & Local PostgreSQL Verification:** **GO** (1,079 passed, 0 failed, 1 skipped; 0 Playwright `page_errors`, 0 HTTP 500s).
+- **Codebase & Local Verification (`:5000` Live Acceptance & `:5001` Full Regression):** **GO** (`1,081 passed, 0 failed, 0 skipped`; `0` live `:5000` browser/console/HTTP500/secret-leak errors).
 - **AWS Coolify Staging Deployment & Public Production Cutover:** **NO-GO** until AWS/Coolify credentials & SSH key are provided to execute staging Docker build/migrations/workers/backup-restore verification, live server NAT wiring, and an authorized IP-PBX acceptance call.

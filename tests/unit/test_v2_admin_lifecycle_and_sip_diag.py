@@ -23,6 +23,8 @@ from app.models.sip_provider import (
 from app.models.tenant import create_tenant, get_all_tenants, get_tenant_by_id
 from app.services.admin_tenant_lifecycle import (
     archive_tenant,
+    build_cleanup_audit_preview,
+    bulk_archive_tenants,
     bulk_cleanup_synthetic_tenants,
     delete_tenant_safely,
     edit_tenant_profile,
@@ -205,9 +207,9 @@ def test_sip_provider_validation_duplicates_and_stale_reconciliation(app):
         update_sip_provider(pid, "Alpha Carrier Updated", "sip1.example.com", 5062, "acct1", max_channels=30)
         assert get_sip_provider_by_id(pid)["max_channels"] == 30
 
-        # Insert a stale active call > 60m old scoped to this gateway and reconcile it
+        # Insert: (1) truly stale abandoned call, (2) genuinely active call in live registry, (3) recently answered call
         tid = create_tenant({"business_name": "Stale Call Tenant", "email": "stale_call@test.local", "status": "active"})
-        cid = db.insert_returning_id(
+        stale_cid = db.insert_returning_id(
             """
             INSERT INTO calls (tenant_id, number, caller_id, sip_gateway_id, status, started_at)
             VALUES (%s, '01700000001', '09600000001', %s, 'calling', now() - interval '90 minutes')
@@ -215,10 +217,68 @@ def test_sip_provider_validation_duplicates_and_stale_reconciliation(app):
             """,
             (tid, pid),
         )
-        closed = reconcile_stale_calls(provider_id=pid, stale_minutes=60)
-        assert closed == 1
-        row = db.query_one("SELECT status, ended_at FROM calls WHERE id = %s", (cid,))
-        assert row["status"] == "failed" and row["ended_at"] is not None
+        answered_recent_cid = db.insert_returning_id(
+            """
+            INSERT INTO calls (tenant_id, number, caller_id, sip_gateway_id, status, started_at, answered_at)
+            VALUES (%s, '01700000002', '09600000001', %s, 'answered', now() - interval '70 minutes', now() - interval '5 minutes')
+            RETURNING id
+            """,
+            (tid, pid),
+        )
+        live_cid = db.insert_returning_id(
+            """
+            INSERT INTO calls (tenant_id, number, caller_id, sip_gateway_id, status, started_at)
+            VALUES (%s, '01700000003', '09600000001', %s, 'calling', now() - interval '75 minutes')
+            RETURNING id
+            """,
+            (tid, pid),
+        )
+        from call_engine import active_calls as registry
+        registry.register_active_call(
+            live_cid,
+            tenant_id=tid,
+            order_id=None,
+            call_type="direct",
+            phone="01700000003",
+            caller_id="09600000001",
+            sip_gateway_id=pid,
+            status="answered",
+        )
+        try:
+            closed = reconcile_stale_calls(provider_id=pid, stale_minutes=60)
+            assert closed == 1
+            assert db.query_one("SELECT status FROM calls WHERE id = %s", (stale_cid,))["status"] == "failed"
+            assert db.query_one("SELECT status FROM calls WHERE id = %s", (answered_recent_cid,))["status"] == "answered"
+            assert db.query_one("SELECT status FROM calls WHERE id = %s", (live_cid,))["status"] == "calling"
+        finally:
+            registry.remove_active_call(live_cid)
+
+
+def test_multi_signal_cleanup_preview_and_bulk_archive(app):
+    with app.app_context():
+        admin_id = _make_super_admin("audit_admin@ccall.com", "AdminSecret99!")
+        synth_empty = create_tenant({"business_name": "Synth Empty", "email": "synth_empty@test.local", "status": "active"})
+        synth_bal = create_tenant({"business_name": "QueueTest-bal", "email": "qtest-bal@test.example", "status": "active"})
+        db.execute("UPDATE wallets SET balance = 500.00 WHERE tenant_id = %s", (synth_bal,))
+        real_test_name = create_tenant({"business_name": "Test Merchant RealDomain", "email": "owner@realstore.bd", "status": "active"})
+
+        audit = build_cleanup_audit_preview(limit=200)
+        by_id = {a["id"]: a for a in audit["all_accounts"]}
+
+        assert by_id[synth_empty]["classification"] == "synthetic_empty"
+        assert by_id[synth_empty]["safe_delete_eligible"] is True
+
+        assert by_id[synth_bal]["classification"] == "synthetic_with_balance_or_activity"
+        assert by_id[synth_bal]["safe_delete_eligible"] is False
+        assert by_id[synth_bal]["archive_eligible"] is True
+
+        # Must NEVER classify as synthetic based solely on business name!
+        assert by_id[real_test_name]["classification"] in ("manual_review", "protected_merchant")
+        assert by_id[real_test_name]["safe_delete_eligible"] is False
+
+        arch_res = bulk_archive_tenants([synth_bal], admin_id, "AdminSecret99!", "ARCHIVE", reason="QA cleanup")
+        assert [a["id"] for a in arch_res["archived"]] == [synth_bal]
+        assert get_tenant_by_id(synth_bal)["status"] == "cancelled"
 
 
 def test_merchant_lifecycle_guards_archive_delete_cleanup_and_sql_filtering(client, app):

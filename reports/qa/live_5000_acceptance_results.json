@@ -1,0 +1,56 @@
+{
+  "base_url": "http://127.0.0.1:5000",
+  "audit_101_summary": {
+    "total": 101,
+    "synthetic_empty": 4,
+    "synthetic_with_balance_or_activity": 89,
+    "manual_review": 0,
+    "protected_merchant": 8,
+    "safe_delete_eligible": 4,
+    "archive_eligible": 101
+  },
+  "pages": {
+    "customers": {
+      "status": 200,
+      "total_text_present": true,
+      "pagination_present": true
+    },
+    "providers": {
+      "status": 200,
+      "max_channels_visible": true
+    },
+    "plans": {
+      "status": 200
+    },
+    "platform_tts": {
+      "status": 200
+    },
+    "tts_usage": {
+      "status": 200,
+      "csv_export_status": 200
+    }
+  },
+  "synthetic_crud_on_5000": {
+    "cleanup_preview_default_unchecked": true,
+    "create_edit_safe_delete_temp_tenant": "PASS"
+  },
+  "sip_diagnostic_on_5000": [
+    {
+      "readiness": "registered",
+      "summary": "PASS \u2014 SIP Trunk Registered",
+      "has_non_calling_caveat": true,
+      "steps_text": "PASS \u2014 SIP Trunk Registered\n5 ms\nDNS / Host Resolution\n[PASS] 203.188.247.3 -> 203.188.247.3\nUDP Socket Reachability\n[PASS] UDP packet response received from 203.188.247.3:5060\nSIP OPTIONS Ping\n[FAIL] SIP/2.0 404 Not Found\nSIP Digest Challenge\n[PASS] SIP/2.0 401 Unauthorized (realm=asterisk)\nSIP REGISTER Auth\n[PASS] SIP/2.0 200 OK\n\nDNS resolved to 203.188.247.3, UDP signaling is reachable on port 5060, and SIP REGISTER succeeded (SIP/2.0 200 OK). Note: OPTIONS returned SIP/2.0 404 Not Found, which some carriers disable while still accepting calls.\n\nNext: Assign a pool number to this trunk and place an authorized test call before live traffic.\n\nDiagnostic only (DNS + SIP OPTIONS + SIP REGISTER). No outbound call was placed or verified."
+    }
+  ],
+  "tts_usage_db_check": {
+    "chars": 0,
+    "seconds": 0,
+    "cost": 0.0
+  },
+  "leaked_secrets": [],
+  "console_errors": [],
+  "page_errors": [],
+  "http_500s": [],
+  "failed_requests": [],
+  "final_live_tenants_count": 101
+}
