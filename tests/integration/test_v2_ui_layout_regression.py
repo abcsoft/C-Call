@@ -105,6 +105,55 @@ class TestAdminAndMerchantLayoutContracts:
         assert "global.liveCallMonitor" in js
         assert "global.retrySettings" in js
 
+    def test_newly_fixed_template_contracts_and_csrf(self):
+        cdr_tpl = (ROOT / "app" / "templates" / "customer" / "cdr.html").read_text(encoding="utf-8")
+        cdr_rows_tpl = (ROOT / "app" / "templates" / "customer" / "_cdr_table_rows.html").read_text(encoding="utf-8")
+        numbers_tpl = (ROOT / "app" / "templates" / "admin" / "numbers.html").read_text(encoding="utf-8")
+        cust_settings_tpl = (ROOT / "app" / "templates" / "customer" / "settings.html").read_text(encoding="utf-8")
+        order_detail_tpl = (ROOT / "app" / "templates" / "customer" / "orders" / "detail.html").read_text(encoding="utf-8")
+        order_rows_tpl = (ROOT / "app" / "templates" / "customer" / "orders" / "_tr_rows.html").read_text(encoding="utf-8")
+        flow_edit_tpl = (ROOT / "app" / "templates" / "customer" / "flow_edit.html").read_text(encoding="utf-8")
+        base_tpl = (ROOT / "app" / "templates" / "base.html").read_text(encoding="utf-8")
+
+        assert 'id="cdr-status"' in cdr_tpl and 'name="status"' in cdr_tpl and "window.updateFilters" in cdr_tpl
+        assert "x-show=\"expanded\"" not in cdr_rows_tpl and "detail-row-{{ call.id }}" in cdr_rows_tpl
+        assert "flex-wrap" in numbers_tpl and "min-w-0" in numbers_tpl
+        assert 'name="csrf_token"' in cust_settings_tpl
+        assert 'name="csrf_token"' in order_detail_tpl
+        assert 'name="csrf_token"' in order_rows_tpl
+        assert "text-slate-3:00" not in flow_edit_tpl
+        assert 'rel="icon"' in base_tpl
+
+    def test_wallet_mutations_invalidate_redis_cache_immediately(self, create_tenant, app):
+        from decimal import Decimal
+        from app.models.wallet import (
+            credit_balance,
+            deduct_balance,
+            get_wallet,
+            refund_balance,
+            update_balance,
+            update_low_balance_threshold,
+        )
+
+        t, _ = create_tenant("WalletCacheCo", "wallet_cache_reg@example.com")
+        tid = t["id"]
+        assert Decimal(str(get_wallet(tid)["balance"])) == Decimal("0")
+
+        credit_balance(tid, Decimal("250.00"), "reg credit")
+        assert Decimal(str(get_wallet(tid)["balance"])) == Decimal("250.00")
+
+        deduct_balance(tid, Decimal("50.00"), "reg debit")
+        assert Decimal(str(get_wallet(tid)["balance"])) == Decimal("200.00")
+
+        refund_balance(tid, Decimal("25.00"), "reg refund")
+        assert Decimal(str(get_wallet(tid)["balance"])) == Decimal("225.00")
+
+        update_low_balance_threshold(tid, Decimal("85.00"))
+        assert Decimal(str(get_wallet(tid)["low_balance_threshold"])) == Decimal("85.00")
+
+        update_balance(tid, Decimal("300.00"))
+        assert Decimal(str(get_wallet(tid)["balance"])) == Decimal("300.00")
+
 
 def _assert_layout_geometry(page, expected_brand_tokens: tuple[str, str], expected_h1: str | None = None, mobile: bool = False):
     """Assert visible sidebar (desktop) or drawer toggle (mobile), H1, main shift, and zero viewport overflow."""
@@ -341,6 +390,11 @@ class TestPlaywrightLiveLayoutRegression:
                     page.goto(f"{base_url}{url_path}", wait_until="networkidle")
                     _assert_layout_geometry(page, ("C-CALL", "ADMIN"), h1_text)
 
+                # Tablet 768x1024 must not clip Search button on /admin/numbers
+                page.set_viewport_size({"width": 768, "height": 1024})
+                page.goto(f"{base_url}/admin/numbers", wait_until="networkidle")
+                _assert_layout_geometry(page, ("C-CALL", "ADMIN"), "SIP CLI Pool Manager")
+
                 # Mobile 390x844 drawer open & close cleanly without overflow
                 page.set_viewport_size({"width": 390, "height": 844})
                 page.goto(f"{base_url}/admin/providers", wait_until="networkidle")
@@ -358,12 +412,21 @@ class TestPlaywrightLiveLayoutRegression:
                     ("/orders", "Order Logs"),
                     ("/retry", "Retry & DND Settings"),
                     ("/live-calls", "Live Calls"),
+                    ("/cdr", "Call Detail Records (CDR)"),
                     ("/settings/subscription", "Subscription & Billing"),
                 ]:
                     page.locator(f'.md\\:w-64 nav a[href="{url_path}"]').first.click()
                     page.wait_for_url(f"**{url_path}", timeout=5000)
                     page.wait_for_load_state("networkidle")
                     _assert_layout_geometry(page, ("C-CALL", "IVR"), h1_text)
+
+                # Confirm /cdr filter syncs Export CSV link without JS errors
+                page.locator('.md\\:w-64 nav a[href="/cdr"]').first.click()
+                page.wait_for_url("**/cdr", timeout=5000)
+                page.wait_for_load_state("networkidle")
+                page.select_option("#cdr-status", "completed")
+                page.wait_for_timeout(200)
+                assert "status=completed" in (page.get_attribute("#export-link", "href") or "")
 
                 # Re-visit /dashboard via boost to confirm Chart.js re-init has 0 errors
                 page.locator('.md\\:w-64 nav a[href="/dashboard"]').first.click()

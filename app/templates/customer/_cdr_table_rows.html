@@ -4,8 +4,7 @@
     hx-target="#detail-{{ call.id }}"
     hx-swap="innerHTML"
     hx-trigger="click"
-    x-data="{ expanded: false }"
-    @click="expanded = !expanded">
+    @click="document.getElementById('detail-row-{{ call.id }}')?.classList.toggle('hidden')">
     <td class="px-5 py-3.5 align-middle text-slate-300 font-medium">{{ call.formatted_start }}</td>
     <td class="px-5 py-3.5 align-middle text-slate-200 font-semibold">{{ call.external_order_id or '—' }}</td>
     <td class="px-5 py-3.5 align-middle text-slate-300 font-mono">{{ call.masked_phone }}</td>
@@ -51,7 +50,7 @@
         {% endif %}
     </td>
 </tr>
-<tr x-show="expanded" style="display: none;" @click.stop>
+<tr id="detail-row-{{ call.id }}" class="hidden" @click.stop>
     <td colspan="8" class="p-0">
         <div id="detail-{{ call.id }}" class="bg-slate-950/40 border-t border-b border-slate-800/40 p-6 space-y-4">
             <div class="flex items-center justify-center py-4">

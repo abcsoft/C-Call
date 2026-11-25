@@ -61,6 +61,8 @@ def update_low_balance_threshold(tenant_id: int, threshold: Decimal) -> None:
         "UPDATE wallets SET low_balance_threshold = %s, updated_at = now() WHERE tenant_id = %s",
         (threshold, tenant_id)
     )
+    invalidate_wallet_cache(tenant_id)
+
 
 def credit_balance(tenant_id: int, amount: Decimal, description: str, ref_id: str | None = None) -> Decimal:
     """Atomic wallet credit. Uses SELECT FOR UPDATE transaction."""
@@ -87,7 +89,9 @@ def credit_balance(tenant_id: int, amount: Decimal, description: str, ref_id: st
             """,
             (wallet["id"], tenant_id, amount, new_balance, description, ref_id)
         )
-        return new_balance
+    invalidate_wallet_cache(tenant_id)
+    return new_balance
+
 
 def deduct_balance(tenant_id: int, amount: Decimal, description: str, ref_id: str | None = None) -> Decimal:
     """Atomic wallet deduction. Uses SELECT FOR UPDATE transaction. Throws InsufficientBalanceError."""
@@ -117,7 +121,9 @@ def deduct_balance(tenant_id: int, amount: Decimal, description: str, ref_id: st
             """,
             (wallet["id"], tenant_id, amount, new_balance, description, ref_id)
         )
-        return new_balance
+    invalidate_wallet_cache(tenant_id)
+    return new_balance
+
 
 def refund_balance(tenant_id: int, amount: Decimal, description: str, ref_id: str | None = None) -> Decimal:
     """Atomic wallet refund (adds balance as type=refund)."""
@@ -144,7 +150,8 @@ def refund_balance(tenant_id: int, amount: Decimal, description: str, ref_id: st
             """,
             (wallet["id"], tenant_id, amount, new_balance, description, ref_id)
         )
-        return new_balance
+    invalidate_wallet_cache(tenant_id)
+    return new_balance
 
 def get_transactions(tenant_id: int, page: int = 1, per_page: int = 20) -> list[dict[str, Any]]:
     """Fetch paginated transactions by tenant_id (was wallet_id — standardized so
@@ -176,6 +183,7 @@ def update_balance(tenant_id: int, new_balance: Decimal) -> None:
         "UPDATE wallets SET balance = %s, updated_at = now() WHERE tenant_id = %s",
         (new_balance, tenant_id)
     )
+    invalidate_wallet_cache(tenant_id)
 
 # --- Payment Intents CRUD ---
 

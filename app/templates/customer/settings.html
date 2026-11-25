@@ -20,6 +20,7 @@
             </div>
 
             <form method="POST" action="{{ url_for('customer.settings_page') }}" class="space-y-6">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <!-- Toggle -->
                 <div class="flex items-center justify-between p-4 bg-slate-950/40 rounded-xl border border-slate-800/60">
                     <div>

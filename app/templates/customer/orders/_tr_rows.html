@@ -53,6 +53,7 @@
             </a>
             {% if order.order_status in ('PENDING', 'NO_ANSWER', 'RETRY_SCHEDULED', 'UNREACHABLE', 'FAILED') and current_user.role in ('admin', 'agent') %}
             <form method="POST" action="{{ url_for('customer.order_recall', external_order_id=order.external_order_id) }}" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="py-1.5 px-3 bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/30 text-teal-400 text-xs font-semibold rounded-lg transition-colors">
                     Re-call
                 </button>
