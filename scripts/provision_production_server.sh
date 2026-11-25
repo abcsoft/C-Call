@@ -93,9 +93,24 @@ ufw default allow outgoing
 ufw allow ssh
 ufw allow 80/tcp comment "HTTP (Certbot + redirect)"
 ufw allow 443/tcp comment "HTTPS"
-# SIP/RTP NAT/media ports (allow outbound; open inbound UDP RTP if carrier requires symmetric firewall allow)
-ufw allow 10000:20000/udp comment "RTP media range (SIP trunk media)"
-# Explicitly deny ports that must never be public
+# SIP/RTP NAT/media ports — NEVER open UDP 5060/10000:20000 to 0.0.0.0/0.
+# Supply comma-separated authorized SIP carrier IPs/CIDRs via SIP_CARRIER_CIDRS
+# (e.g. SIP_CARRIER_CIDRS="203.188.247.3/32").
+RTP_PORT_MIN="${RTP_PORT_MIN:-10000}"
+RTP_PORT_MAX="${RTP_PORT_MAX:-20000}"
+SIP_PORT="${SIP_PORT:-5060}"
+if [[ -n "${SIP_CARRIER_CIDRS:-}" ]]; then
+    IFS=',' read -ra _CIDRS <<< "$SIP_CARRIER_CIDRS"
+    for _cidr in "${_CIDRS[@]}"; do
+        _cidr="${_cidr// /}"
+        [[ -z "$_cidr" ]] && continue
+        ufw allow from "$_cidr" to any port "$SIP_PORT" proto udp comment "SIP carrier signaling"
+        ufw allow from "$_cidr" to any port "${RTP_PORT_MIN}:${RTP_PORT_MAX}" proto udp comment "SIP carrier RTP media"
+    done
+else
+    warn "SIP_CARRIER_CIDRS not set — skipping inbound UDP $SIP_PORT and ${RTP_PORT_MIN}:${RTP_PORT_MAX} allow rules (do NOT open to 0.0.0.0/0)."
+fi
+# Explicitly deny ports that must never be public (also enforce DOCKER-USER below for container binds)
 ufw deny 5432/tcp comment "PostgreSQL — internal only"
 ufw deny 6379/tcp comment "Redis — internal only"
 ufw deny 9090/tcp comment "Prometheus — internal only"
@@ -178,8 +193,8 @@ cat > /etc/sysctl.d/99-ccall-hardening.conf << 'EOF'
 # Prevent SYN flood
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_max_syn_backlog = 2048
-# Disable IP forwarding (not a router)
-net.ipv4.ip_forward = 0
+# Enable IPv4 forwarding required by Docker bridge egress networking (outbound SIP/TTS/webhooks)
+net.ipv4.ip_forward = 1
 # Ignore ICMP broadcasts
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 # Log martian packets

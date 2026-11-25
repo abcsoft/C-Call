@@ -6,7 +6,15 @@ version: '3.8'
 # Usage in Coolify:
 #   Compose files: docker-compose.production.yml:docker-compose.staging.coolify.yml
 #   Required env:  DB_PASSWORD, REDIS_PASSWORD, FLASK_SECRET_KEY,
-#                  SIP_PASSWORD_ENCRYPTION_KEY, STAGING_DOMAIN
+#                  API_KEY_PEPPER, SIP_PASSWORD_ENCRYPTION_KEY, STAGING_DOMAIN,
+#                  STAGING_DATABASE_URL (e.g. postgresql://ccall_staging_app:CHANGE_ME_DB_PASSWORD@postgres:5432/ccall_staging)
+
+x-staging-env: &staging-env
+  POSTGRES_DB: ccall_staging
+  POSTGRES_USER: ccall_staging_app
+  DATABASE_URL: ${STAGING_DATABASE_URL}
+  MIGRATION_DATABASE_URL: ${STAGING_MIGRATION_DATABASE_URL:-${STAGING_DATABASE_URL}}
+  REDIS_URL: ${STAGING_REDIS_URL:-${REDIS_URL}}
 
 services:
   postgres:
@@ -28,9 +36,20 @@ services:
 
   migrate:
     build: .
+    environment:
+      <<: *staging-env
+      FLASK_ENV: production
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
 
   web:
     build: .
+    environment:
+      <<: *staging-env
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
     # Override host port binding so Coolify Traefik routes by hostname without port 5000 conflict
     ports: []
     expose:
@@ -44,17 +63,33 @@ services:
 
   scheduler:
     build: .
+    environment:
+      <<: *staging-env
+      ENABLE_SCHEDULER: "true"
+      ENABLE_CALL_WORKER: "false"
+      ENABLE_CALL_MONITOR: "false"
     volumes:
       - staging_audio_data:/app/instance
 
   call_worker:
     build: .
+    environment:
+      <<: *staging-env
+      ENABLE_SCHEDULER: "false"
+      ENABLE_CALL_WORKER: "true"
+      ENABLE_CALL_MONITOR: "true"
     volumes:
       - staging_audio_data:/app/instance
     deploy:
       replicas: 1
 
   backup:
+    environment:
+      DATABASE_URL: ${STAGING_DATABASE_URL}
+      BACKUP_ENCRYPTION_PASSPHRASE: ${BACKUP_ENCRYPTION_PASSPHRASE}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: "14"
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
     volumes:
       - staging_backup_data:/backups
       - ./scripts/backup.sh:/backup.sh:ro

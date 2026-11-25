@@ -44,8 +44,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
-      POSTGRES_DB: ccall_prod
-      POSTGRES_USER: ccall_app
+      POSTGRES_DB: ${POSTGRES_DB:-ccall_production}
+      POSTGRES_USER: ${POSTGRES_USER:-ccall_app}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
       TZ: UTC
@@ -68,7 +68,7 @@ services:
           cpus: '2.0'
           memory: 1024M
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ccall_app -d ccall_prod"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ccall_app} -d ${POSTGRES_DB:-ccall_production}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -168,13 +168,16 @@ services:
       retries: 3
 
   # ── Call worker (can scale to 2-4 instances) ───────────────────────────────
+  # Note on SIP/RTP networking: Docker bridge egress handles outbound-initiated
+  # symmetric SIP/RTP; carrier-originated inbound SIP/RTP requires either host
+  # networking or publishing a tight RTP range (avoid 10,000 docker-proxy ports).
   call_worker:
     <<: *app-base
     command: ["python", "-m", "app.commands.run_call_worker"]
     environment:
       ENABLE_SCHEDULER: "false"
       ENABLE_CALL_WORKER: "true"
-      ENABLE_CALL_MONITOR: "false"   # monitor runs in scheduler (replicas=1) only
+      ENABLE_CALL_MONITOR: "true"    # singleton-guarded via PG advisory lock 99999 + Redis fail-closed lock
       SIP_TRANSPORT: ${SIP_TRANSPORT:-udp}
       SIP_BIND_IP: ${SIP_BIND_IP:-0.0.0.0}
       RTP_BIND_IP: ${RTP_BIND_IP:-0.0.0.0}
