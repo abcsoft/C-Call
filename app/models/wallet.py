@@ -16,33 +16,38 @@ def _wallet_cache_key(tenant_id: int) -> str:
     return f"wallet:{tenant_id}"
 
 
+def _stats_cache_key(tenant_id: int) -> str:
+    return f"tenant:stats:{tenant_id}"
+
+
 def invalidate_wallet_cache(tenant_id: int) -> None:
-    """Delete the cached wallet row for tenant_id. Called by every deduct/credit/refund."""
+    """Delete cached wallet and dashboard stats rows for tenant_id."""
     try:
         from app.extensions import redis_ext
-        redis_ext.client.delete(_wallet_cache_key(tenant_id))
+        redis_ext.client.delete(_wallet_cache_key(tenant_id), _stats_cache_key(tenant_id))
     except Exception as exc:
         logger.warning("wallet cache invalidation failed for tenant %s: %s", tenant_id, exc)
 
 
-def get_wallet(tenant_id: int) -> dict[str, Any] | None:
+def get_wallet(tenant_id: int, use_cache: bool = True) -> dict[str, Any] | None:
     """Return wallet row, cached in Redis for 8s. Short TTL because balance is
-    used for live pre-call balance checks — stale data must not block a call."""
-    try:
-        from app.extensions import redis_ext
-        cached = redis_ext.client.get(_wallet_cache_key(tenant_id))
-        if cached:
-            row = json.loads(cached.decode("utf-8") if isinstance(cached, bytes) else cached)
-            # Re-hydrate Decimal fields so callers always get correct types
-            for field in ("balance", "low_balance_threshold", "total_credited", "total_debited"):
-                if row.get(field) is not None:
-                    row[field] = Decimal(str(row[field]))
-            return row
-    except Exception as exc:
-        logger.warning("wallet cache read failed for tenant %s: %s", tenant_id, exc)
+    used for live UI checks; pass use_cache=False for authoritative DB reads."""
+    if use_cache:
+        try:
+            from app.extensions import redis_ext
+            cached = redis_ext.client.get(_wallet_cache_key(tenant_id))
+            if cached:
+                row = json.loads(cached.decode("utf-8") if isinstance(cached, bytes) else cached)
+                # Re-hydrate Decimal fields so callers always get correct types
+                for field in ("balance", "low_balance_threshold", "total_credited", "total_debited"):
+                    if row.get(field) is not None:
+                        row[field] = Decimal(str(row[field]))
+                return row
+        except Exception as exc:
+            logger.warning("wallet cache read failed for tenant %s: %s", tenant_id, exc)
 
     row = db.query_one("SELECT * FROM wallets WHERE tenant_id = %s", (tenant_id,))
-    if row:
+    if row and use_cache:
         try:
             from app.extensions import redis_ext
             # Serialize Decimal/datetime as string so json round-trips cleanly.

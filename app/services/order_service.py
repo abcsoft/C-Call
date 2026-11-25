@@ -349,7 +349,7 @@ def create_order(tenant_id: int, data: dict[str, Any]) -> dict[str, Any]:
     validate_outbound_call(tenant_id, normalized_phone, min_charge)
     if not check_balance(tenant_id, min_charge):
         from app.services.wallet_service import get_balance
-        current_bal = get_balance(tenant_id)
+        current_bal = get_balance(tenant_id, use_cache=False)
         from app.exceptions import InsufficientBalanceError
         raise InsufficientBalanceError(current_bal, min_charge)
 
@@ -668,7 +668,7 @@ def queue_confirmation_call(order_id: int, tenant_id: int, attempt_no: int) -> i
     from app.services.number_service import get_sip_trunk_for_caller_id
     sip_override = get_sip_trunk_for_caller_id(caller_id) if caller_id else None
     from app.services.wallet_service import get_balance
-    balance = get_balance(tenant_id)
+    balance = get_balance(tenant_id, use_cache=False)
 
     # [SAAS STEP 5] Tenant active/wallet/caller ID/SIP config check
     logger.info(
@@ -1140,7 +1140,7 @@ def manual_recall(order_id: int, tenant_id: int) -> int:
     balance_ok = check_balance(tenant_id, min_charge)
     if not balance_ok:
         from app.services.wallet_service import get_balance
-        raise InsufficientBalanceError(get_balance(tenant_id), min_charge)
+        raise InsufficientBalanceError(get_balance(tenant_id, use_cache=False), min_charge)
 
     update_order_status_system(order_id, "CALL_QUEUED")
     # attempt_no = one beyond however many have been made so far.

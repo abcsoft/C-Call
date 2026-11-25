@@ -142,9 +142,9 @@ def refund(tenant_id: int, amount: Decimal, ref_id: str | None = None, descripti
     return dict(txn)
 
 
-def get_balance(tenant_id: int) -> Decimal:
+def get_balance(tenant_id: int, use_cache: bool = True) -> Decimal:
     """Get current wallet balance for the tenant."""
-    wallet = get_wallet(tenant_id)
+    wallet = get_wallet(tenant_id, use_cache=use_cache)
     if not wallet:
         return Decimal("0.0000")
     return Decimal(str(wallet["balance"]))

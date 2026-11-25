@@ -154,6 +154,66 @@ class TestAdminAndMerchantLayoutContracts:
         update_balance(tid, Decimal("300.00"))
         assert Decimal(str(get_wallet(tid)["balance"])) == Decimal("300.00")
 
+    def test_dashboard_kpi_updates_immediately_after_wallet_credit(self, create_tenant, app):
+        from decimal import Decimal
+        from app.models.wallet import credit_balance
+        from app.services.dashboard_service import get_dashboard_stats
+
+        t, _ = create_tenant("DashCacheCo", "dash_cache_reg@example.com")
+        tid = t["id"]
+        s1 = get_dashboard_stats(tid)
+        assert Decimal(str(s1["wallet_balance"])) == Decimal("0")
+
+        credit_balance(tid, Decimal("300.00"), "dash cache credit")
+        s2 = get_dashboard_stats(tid)
+        assert Decimal(str(s2["wallet_balance"])) == Decimal("300.00")
+
+    def test_newly_fixed_csrf_forms_pass_with_csrf_enabled(self, app, create_tenant, client):
+        import re
+        from app.db import db
+
+        t, u = create_tenant("CsrfCheckCo", "csrf_check_reg@example.com")
+        db.execute("UPDATE users SET email_verified = true WHERE id = %s", (u["id"],))
+        db.execute("UPDATE tenants SET status = 'active' WHERE id = %s", (t["id"],))
+        oid = db.insert_returning_id(
+            "INSERT INTO orders (tenant_id, external_order_id, phone, customer_name, amount, order_status) "
+            "VALUES (%s, 'CSRF-ORD-1', '01700000999', 'Csrf Buyer', 250.00, 'NO_ANSWER') RETURNING id",
+            (t["id"],),
+        )
+
+        prev_csrf = app.config.get("WTF_CSRF_ENABLED")
+        app.config["WTF_CSRF_ENABLED"] = True
+        try:
+            login_html = client.get("/auth/login").get_data(as_text=True)
+            m = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', login_html) or re.search(
+                r'<meta\s+name="csrf-token"\s+content="([^"]+)"', login_html
+            )
+            assert m, "Missing login CSRF token"
+            client.post("/auth/login", data={"email": u["email"], "password": "Password123!", "csrf_token": m.group(1)})
+
+            # 1. /settings SMS Configuration form must include csrf_token and accept CSRF-enabled POST
+            s_html = client.get("/settings").get_data(as_text=True)
+            sm = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', s_html)
+            assert sm, "Missing csrf_token on /settings"
+            r1 = client.post(
+                "/settings",
+                data={"csrf_token": sm.group(1), "enable_sms_fallback": "false", "sms_template": "Order {order_id} ok"},
+                follow_redirects=False,
+            )
+            assert r1.status_code in (200, 302)
+
+            # 2. /orders/<ext_id> detail recall form must include csrf_token (rejected without it, handled with it)
+            d_html = client.get("/orders/CSRF-ORD-1").get_data(as_text=True)
+            dm = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', d_html)
+            assert dm, "Missing csrf_token on /orders/<ext_id>"
+            r_no_csrf = client.post("/orders/CSRF-ORD-1/recall", follow_redirects=False)
+            assert r_no_csrf.status_code == 400
+            r2 = client.post("/orders/CSRF-ORD-1/recall", data={"csrf_token": dm.group(1)}, follow_redirects=False)
+            assert r2.status_code == 302
+        finally:
+            app.config["WTF_CSRF_ENABLED"] = prev_csrf
+            db.execute("DELETE FROM orders WHERE id = %s", (oid,))
+
 
 def _assert_layout_geometry(page, expected_brand_tokens: tuple[str, str], expected_h1: str | None = None, mobile: bool = False):
     """Assert visible sidebar (desktop) or drawer toggle (mobile), H1, main shift, and zero viewport overflow."""

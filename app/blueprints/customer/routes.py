@@ -66,7 +66,7 @@ def dashboard():
     stats = get_dashboard_stats(tenant_id)
 
     wallet = get_wallet(tenant_id) or {}
-    balance = stats["wallet_balance"]
+    balance = Decimal(str(wallet.get("balance") or 0))
     low_balance = balance < Decimal(str(wallet.get("low_balance_threshold") or 50))
 
     # Check if integrated: has active API keys
@@ -119,15 +119,16 @@ def api_dashboard_stats():
     tenant_id = g.tenant_id
     stats = get_dashboard_stats(tenant_id)
     
+    wallet = get_wallet(tenant_id) or {}
+    fresh_balance = Decimal(str(wallet.get("balance") or 0))
+
     # If HTMX request, render only the KPI cards template block
     if request.headers.get("HX-Request"):
-        wallet = get_wallet(tenant_id) or {}
-        balance = stats["wallet_balance"]
-        low_balance = balance < Decimal(str(wallet.get("low_balance_threshold") or 50))
+        low_balance = fresh_balance < Decimal(str(wallet.get("low_balance_threshold") or 50))
         return render_template(
             "customer/_dashboard_kpis.html",
             stats=stats,
-            balance=balance,
+            balance=fresh_balance,
             low_balance=low_balance
         )
         
@@ -139,7 +140,7 @@ def api_dashboard_stats():
         "today_no_answer": stats["today_no_answer"],
         "today_pending_retry": stats["today_pending_retry"],
         "today_unreachable": stats["today_unreachable"],
-        "wallet_balance": float(stats["wallet_balance"]),
+        "wallet_balance": float(fresh_balance),
         "success_rate_7d": stats["success_rate_7d"],
         "calls_today": stats["calls_today"],
         "minutes_today": stats["minutes_today"],

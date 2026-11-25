@@ -37,6 +37,7 @@
             <div class="w-full md:w-60">
                 <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Search</label>
                 <input type="text" name="search" id="cdr-search" placeholder="Phone or Order ID..." x-model="search"
+                       @input="syncExportLink()"
                        @input.debounce.500ms="updateFilters()"
                        class="w-full bg-slate-950 border border-slate-800 focus:border-teal-500/80 rounded-xl px-3 py-2 text-slate-100 text-xs focus:outline-none placeholder-slate-500">
             </div>
@@ -110,10 +111,7 @@
 </div>
 
 <script nonce="{{ csp_nonce }}">
-window.updateFilters = function () {
-    if (window.htmx) {
-        htmx.trigger('#filter-trigger', 'update-rows');
-    }
+window.syncExportLink = function () {
     const status = (document.getElementById('cdr-status') || {}).value || '';
     const search = (document.getElementById('cdr-search') || {}).value || '';
     const from = (document.getElementById('cdr-date-from') || {}).value || '';
@@ -128,6 +126,12 @@ window.updateFilters = function () {
         if (from) params.set('date_from', from);
         if (to) params.set('date_to', to);
         exportBtn.href = baseUrl + (params.toString() ? '?' + params.toString() : '');
+    }
+};
+window.updateFilters = function () {
+    window.syncExportLink();
+    if (window.htmx) {
+        htmx.trigger('#filter-trigger', 'update-rows');
     }
 };
 </script>

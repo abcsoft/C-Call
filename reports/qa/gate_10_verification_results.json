@@ -1,0 +1,22 @@
+{
+  "cross_session_credit_and_cache": "PASS (sidebar + Dashboard KPI + Redis wallet & stats invalidated -> immediate 300.00)",
+  "debit_insufficient_threshold_refund": "PASS",
+  "separate_worker_invalidation": "PASS (worker subprocess refund invalidated warm Redis; UI immediately showed 31.20)",
+  "authoritative_db_call_auth": "PASS (poisoned Redis 99999.00 could not bypass DB 0.10 InsufficientBalanceError)",
+  "cdr_filters_csv_and_expand": "PASS (status+search+date UI==CSV exact match, expand+collapse 0 JS errors)",
+  "csrf_and_affected_pages": "PASS",
+  "browsers": {
+    "chromium": "PASS",
+    "firefox": "PASS"
+  },
+  "errors": {
+    "console": [],
+    "page": [],
+    "http_500": [],
+    "unexpected_4xx": []
+  },
+  "initial_tenants": 101,
+  "initial_providers": 3,
+  "final_tenants": 101,
+  "final_providers": 3
+}
