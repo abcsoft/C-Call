@@ -8,7 +8,8 @@ def test_unauthenticated_root_renders_landing_page(client):
     resp = client.get("/", follow_redirects=False)
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "C-CALL IVR" in html
+    assert "C-Call IVR" in html
+    assert "Hind Siliguri" in html
     assert "/auth/login" in html
     assert "/auth/register" in html
 
