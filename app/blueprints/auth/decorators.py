@@ -12,7 +12,8 @@ def require_login(f):
     @wraps(f)
     def decorated_view(*args, **kwargs):
         if not current_user or not current_user.is_authenticated:
-            return redirect(url_for("auth.login", next=request.url))
+            next_path = request.full_path.rstrip("?") or request.path or "/"
+            return redirect(url_for("auth.login", next=next_path))
         return f(*args, **kwargs)
     return decorated_view
 

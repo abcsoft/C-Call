@@ -47,7 +47,27 @@ def inject_tenant_info():
 
 @customer_bp.route("/", methods=["GET"])
 def index():
-    return redirect(url_for("customer.dashboard"))
+    """Public landing page for visitors; authenticated users go straight to their console."""
+    if current_user and current_user.is_authenticated:
+        if current_user.is_super_admin:
+            return redirect(url_for("admin.dashboard"))
+        return redirect(url_for("customer.dashboard"))
+
+    plans = []
+    try:
+        plans = db.query(
+            """
+            SELECT id, name, price_monthly, included_minutes, max_flows, max_users, trial_days
+            FROM plans
+            WHERE archived_at IS NULL
+            ORDER BY COALESCE(price_monthly, 0) ASC, id ASC
+            LIMIT 6
+            """
+        )
+    except Exception as exc:
+        logger.debug("Landing page plans query fallback: %s", exc)
+
+    return render_template("landing.html", plans=plans)
 
 @customer_bp.route("/dashboard", methods=["GET"])
 @require_login

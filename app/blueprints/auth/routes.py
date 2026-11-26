@@ -141,12 +141,17 @@ def login():
             db.execute("UPDATE users SET last_login_at = now() WHERE id = %s", (user.id,))
 
             flash("Welcome back!", "success")
-            next_page = request.args.get("next")
+            next_page = request.args.get("next") or request.form.get("next")
             if next_page:
                 from urllib.parse import urlparse
                 parsed = urlparse(next_page)
-                # Only allow relative internal URLs (no scheme/netloc = internal)
-                if not parsed.scheme and not parsed.netloc:
+                # Only allow relative internal paths (no scheme/netloc and no // protocol-relative)
+                if (
+                    not parsed.scheme
+                    and not parsed.netloc
+                    and parsed.path.startswith("/")
+                    and not parsed.path.startswith("//")
+                ):
                     return redirect(next_page)
 
             if user.role == "super_admin":

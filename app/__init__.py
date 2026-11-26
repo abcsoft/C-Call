@@ -8,6 +8,7 @@ from typing import Any
 from flask import Flask, request, jsonify, render_template, g
 from flask_limiter.util import get_remote_address
 from flask_babel import Babel
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.config import config as _config_map
 from app.db import db
@@ -130,6 +131,10 @@ def create_app(config_name: str = "production") -> Flask:
     
     # Load configuration
     app.config.from_object(_config_map[config_name])
+
+    # Respect X-Forwarded-Proto / X-Forwarded-For / X-Forwarded-Host behind Traefik / Nginx
+    if os.environ.get("TRUSTED_PROXIES") or config_name == "production":
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
     # Sentry DSN init
     sentry_dsn = app.config.get("SENTRY_DSN")

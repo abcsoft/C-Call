@@ -16,7 +16,7 @@
             <p class="text-slate-400 text-sm mt-2 font-medium">Bangladesh's E-commerce Voice Confirmation Platform</p>
         </div>
 
-        <form method="POST" action="{{ url_for('auth.login') }}" class="space-y-5">
+        <form method="POST" action="{{ url_for('auth.login', next=request.args.get('next')) if request.args.get('next') else url_for('auth.login') }}" class="space-y-5">
             {{ form.csrf_token }}
 
             <!-- Email Address -->

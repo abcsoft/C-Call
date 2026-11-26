@@ -1,0 +1,536 @@
+{% extends "base.html" %}
+
+{% block title %}C-Call IVR — Bangladesh's E-commerce Voice Confirmation Platform{% endblock %}
+
+{% block extra_head %}
+<style>
+    .landing-shell {
+        min-height: 100vh;
+        background:
+            radial-gradient(60rem 40rem at 12% -8%, rgba(20, 184, 166, 0.14), transparent 60%),
+            radial-gradient(50rem 36rem at 88% 8%, rgba(99, 102, 241, 0.14), transparent 60%),
+            #020617;
+        color: #f1f5f9;
+        position: relative;
+        overflow-x: hidden;
+    }
+    .landing-container {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 0 1.25rem;
+    }
+    .landing-nav {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        backdrop-filter: blur(14px);
+        background: rgba(2, 6, 23, 0.78);
+        border-bottom: 1px solid rgba(30, 41, 59, 0.75);
+    }
+    .landing-nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 4.5rem;
+        gap: 1rem;
+    }
+    .landing-logo {
+        font-family: 'Outfit', sans-serif;
+        font-weight: 800;
+        font-size: 1.5rem;
+        letter-spacing: -0.02em;
+        background: linear-gradient(90deg, #2dd4bf, #34d399, #818cf8);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-decoration: none;
+    }
+    .landing-nav-links {
+        display: flex;
+        align-items: center;
+        gap: 1.75rem;
+    }
+    .landing-nav-links a {
+        color: #94a3b8;
+        font-size: 0.875rem;
+        font-weight: 500;
+        text-decoration: none;
+        transition: color 0.15s ease;
+    }
+    .landing-nav-links a:hover {
+        color: #f8fafc;
+    }
+    .landing-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+    }
+    .btn-ghost {
+        padding: 0.55rem 1.05rem;
+        border-radius: 0.75rem;
+        border: 1px solid rgba(51, 65, 85, 0.9);
+        background: rgba(15, 23, 42, 0.75);
+        color: #e2e8f0;
+        font-size: 0.875rem;
+        font-weight: 600;
+        text-decoration: none;
+        transition: all 0.15s ease;
+        white-space: nowrap;
+    }
+    .btn-ghost:hover {
+        border-color: rgba(45, 212, 191, 0.65);
+        color: #ffffff;
+    }
+    .btn-primary {
+        padding: 0.6rem 1.25rem;
+        border-radius: 0.75rem;
+        background: linear-gradient(90deg, #14b8a6, #10b981);
+        color: #020617;
+        font-size: 0.875rem;
+        font-weight: 700;
+        text-decoration: none;
+        box-shadow: 0 10px 25px -8px rgba(20, 184, 166, 0.45);
+        transition: transform 0.15s ease, filter 0.15s ease;
+        white-space: nowrap;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+    }
+    .btn-primary:hover {
+        filter: brightness(1.08);
+        transform: translateY(-1px);
+    }
+    .hero-section {
+        padding: 4.5rem 0 4rem;
+    }
+    .hero-grid {
+        display: grid;
+        grid-template-columns: 1.15fr 0.85fr;
+        gap: 3rem;
+        align-items: center;
+    }
+    .hero-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.35rem 0.9rem;
+        border-radius: 9999px;
+        border: 1px solid rgba(45, 212, 191, 0.3);
+        background: rgba(13, 148, 136, 0.12);
+        color: #5eead4;
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        margin-bottom: 1.25rem;
+    }
+    .hero-title {
+        font-family: 'Outfit', sans-serif;
+        font-size: clamp(2.15rem, 4.2vw, 3.35rem);
+        font-weight: 800;
+        line-height: 1.1;
+        letter-spacing: -0.025em;
+        color: #f8fafc;
+        margin-bottom: 1.25rem;
+    }
+    .hero-gradient-text {
+        background: linear-gradient(90deg, #2dd4bf, #34d399, #818cf8);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+    .hero-sub {
+        color: #94a3b8;
+        font-size: 1.05rem;
+        line-height: 1.7;
+        max-width: 36rem;
+        margin-bottom: 2rem;
+    }
+    .hero-cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.9rem;
+        margin-bottom: 2rem;
+    }
+    .hero-stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid rgba(30, 41, 59, 0.8);
+    }
+    .stat-num {
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.35rem;
+        font-weight: 700;
+        color: #f8fafc;
+    }
+    .stat-label {
+        font-size: 0.78rem;
+        color: #64748b;
+        margin-top: 0.15rem;
+    }
+    .glass-card {
+        background: rgba(15, 23, 42, 0.68);
+        border: 1px solid rgba(30, 41, 59, 0.9);
+        backdrop-filter: blur(16px);
+        border-radius: 1.25rem;
+        padding: 1.5rem;
+        box-shadow: 0 24px 48px -18px rgba(2, 6, 23, 0.85);
+    }
+    .flow-step {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.85rem 1rem;
+        border-radius: 0.85rem;
+        background: rgba(2, 6, 23, 0.65);
+        border: 1px solid rgba(30, 41, 59, 0.9);
+        margin-bottom: 0.75rem;
+    }
+    .flow-step:last-child {
+        margin-bottom: 0;
+    }
+    .pill-ok {
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 0.22rem 0.6rem;
+        border-radius: 9999px;
+        background: rgba(16, 185, 129, 0.15);
+        border: 1px solid rgba(16, 185, 129, 0.35);
+        color: #34d399;
+        white-space: nowrap;
+    }
+    .section-pad {
+        padding: 4rem 0;
+        border-top: 1px solid rgba(30, 41, 59, 0.65);
+    }
+    .section-heading {
+        text-align: center;
+        max-width: 40rem;
+        margin: 0 auto 2.75rem;
+    }
+    .section-heading h2 {
+        font-family: 'Outfit', sans-serif;
+        font-size: 2rem;
+        font-weight: 700;
+        color: #f8fafc;
+        margin-bottom: 0.6rem;
+    }
+    .section-heading p {
+        color: #94a3b8;
+        font-size: 0.95rem;
+    }
+    .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1.25rem;
+    }
+    .feature-icon {
+        width: 2.5rem;
+        height: 2.5rem;
+        border-radius: 0.75rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(20, 184, 166, 0.12);
+        border: 1px solid rgba(20, 184, 166, 0.28);
+        color: #2dd4bf;
+        font-weight: 800;
+        font-family: 'Outfit', sans-serif;
+        margin-bottom: 1rem;
+    }
+    .card-title {
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.08rem;
+        font-weight: 700;
+        color: #f1f5f9;
+        margin-bottom: 0.45rem;
+    }
+    .card-desc {
+        color: #94a3b8;
+        font-size: 0.875rem;
+        line-height: 1.6;
+    }
+    .plan-price {
+        font-family: 'Outfit', sans-serif;
+        font-size: 2rem;
+        font-weight: 800;
+        color: #f8fafc;
+        margin: 0.75rem 0;
+    }
+    .plan-list {
+        list-style: none;
+        padding: 0;
+        margin: 1rem 0 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        color: #cbd5e1;
+        font-size: 0.86rem;
+    }
+    .landing-footer {
+        border-top: 1px solid rgba(30, 41, 59, 0.8);
+        padding: 2.25rem 0;
+        color: #64748b;
+        font-size: 0.85rem;
+    }
+    .footer-inner {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+    }
+    @media (max-width: 920px) {
+        .hero-grid, .grid-3 {
+            grid-template-columns: 1fr;
+        }
+        .landing-nav-links {
+            display: none;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="landing-shell">
+    <!-- Top Navigation -->
+    <header class="landing-nav">
+        <div class="landing-container landing-nav-inner">
+            <a href="{{ url_for('customer.index') }}" class="landing-logo">C-CALL IVR</a>
+
+            <nav class="landing-nav-links">
+                <a href="#features">Features</a>
+                <a href="#workflow">How It Works</a>
+                <a href="#plans">Plans</a>
+            </nav>
+
+            <div class="landing-actions">
+                <a href="{{ url_for('auth.login') }}" class="btn-ghost">Sign In</a>
+                <a href="{{ url_for('auth.register') }}" class="btn-primary">Create Business Account</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="hero-section">
+        <div class="landing-container hero-grid">
+            <div>
+                <div class="hero-badge">Bangladesh IP-PBX &bull; Automated COD Order Confirmation</div>
+                <h1 class="hero-title">
+                    Verify Every E-commerce Order with <span class="hero-gradient-text">Automated Bangla Voice Calls</span>
+                </h1>
+                <p class="hero-sub">
+                    Stop shipping fake Cash-on-Delivery orders. C-Call V2 automatically dials customers via IP-PBX SIP trunks, plays dynamic Bangla or English voice scripts, captures DTMF keypad confirmation, and updates your store in real time.
+                </p>
+                <div class="hero-cta-row">
+                    <a href="{{ url_for('auth.register') }}" class="btn-primary">Start Free Trial &rarr;</a>
+                    <a href="{{ url_for('auth.login') }}" class="btn-ghost">Merchant &amp; Admin Sign In</a>
+                </div>
+                <div class="hero-stats">
+                    <div>
+                        <div class="stat-num">1 ms</div>
+                        <div class="stat-label">Domestic SIP Signaling</div>
+                    </div>
+                    <div>
+                        <div class="stat-num">DTMF 1/2</div>
+                        <div class="stat-label">Instant Confirm / Cancel</div>
+                    </div>
+                    <div>
+                        <div class="stat-num">REST + HMAC</div>
+                        <div class="stat-label">WooCommerce &amp; Webhooks</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Pipeline Preview Card -->
+            <div class="glass-card">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.15rem;">
+                    <div>
+                        <div style="font-size:0.75rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">Automated Call Pipeline</div>
+                        <div style="font-family:'Outfit',sans-serif;font-size:1.15rem;font-weight:700;color:#f8fafc;margin-top:0.2rem;">Order #CC-4821 &bull; ৳1,450 COD</div>
+                    </div>
+                    <span class="pill-ok">SIP READY</span>
+                </div>
+
+                <div class="flow-step">
+                    <div>
+                        <div style="font-size:0.86rem;font-weight:600;color:#e2e8f0;">1. Store Order Received</div>
+                        <div style="font-size:0.76rem;color:#64748b;">WooCommerce / API queue dispatched</div>
+                    </div>
+                    <span class="pill-ok">Queued</span>
+                </div>
+
+                <div class="flow-step">
+                    <div>
+                        <div style="font-size:0.86rem;font-weight:600;color:#e2e8f0;">2. Outbound SIP INVITE</div>
+                        <div style="font-size:0.76rem;color:#64748b;">Dedicated CLI pool &bull; 017****4820</div>
+                    </div>
+                    <span class="pill-ok">Answered</span>
+                </div>
+
+                <div class="flow-step">
+                    <div>
+                        <div style="font-size:0.86rem;font-weight:600;color:#e2e8f0;">3. Bangla IVR &amp; DTMF Capture</div>
+                        <div style="font-size:0.76rem;color:#64748b;">&ldquo;Press 1 to confirm, 2 to cancel&rdquo;</div>
+                    </div>
+                    <span class="pill-ok">Pressed 1</span>
+                </div>
+
+                <div class="flow-step">
+                    <div>
+                        <div style="font-size:0.86rem;font-weight:600;color:#e2e8f0;">4. Webhook &amp; CDR Logged</div>
+                        <div style="font-size:0.76rem;color:#64748b;">Order confirmed &bull; Wallet billed accurately</div>
+                    </div>
+                    <span class="pill-ok">Confirmed</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="section-pad">
+        <div class="landing-container">
+            <div class="section-heading">
+                <h2>Built for High-Volume Bangladeshi E-commerce</h2>
+                <p>Multi-tenant architecture with isolated wallets, carrier-grade SIP handling, and end-to-end call telemetry.</p>
+            </div>
+
+            <div class="grid-3">
+                <div class="glass-card">
+                    <div class="feature-icon">01</div>
+                    <h3 class="card-title">Visual IVR Flows &amp; Voice Scripts</h3>
+                    <p class="card-desc">Design multi-step Bangla or English confirmation menus with custom WAV uploads or cloud TTS voices.</p>
+                </div>
+                <div class="glass-card">
+                    <div class="feature-icon">02</div>
+                    <h3 class="card-title">Smart Auto-Retry &amp; DND Rules</h3>
+                    <p class="card-desc">Automatically reschedule unanswered or busy calls while respecting quiet hours and maximum attempt caps.</p>
+                </div>
+                <div class="glass-card">
+                    <div class="feature-icon">03</div>
+                    <h3 class="card-title">Direct IP-PBX SIP Trunks</h3>
+                    <p class="card-desc">Connect multiple SIP gateways, assign merchant CLIs, and monitor live active channels and diagnostics.</p>
+                </div>
+                <div class="glass-card">
+                    <div class="feature-icon">04</div>
+                    <h3 class="card-title">Atomic Prepaid Wallet</h3>
+                    <p class="card-desc">Per-minute or pulse-based billing with real-time low-balance alerts, transaction ledgers, and refunds.</p>
+                </div>
+                <div class="glass-card">
+                    <div class="feature-icon">05</div>
+                    <h3 class="card-title">REST API &amp; Signed Webhooks</h3>
+                    <p class="card-desc">Trigger confirmation calls from WooCommerce, Shopify, or custom ERPs with scoped API keys and HMAC webhooks.</p>
+                </div>
+                <div class="glass-card">
+                    <div class="feature-icon">06</div>
+                    <h3 class="card-title">Live Calls &amp; CDR Exports</h3>
+                    <p class="card-desc">Track ongoing SIP sessions in real time, inspect DTMF responses, and export filtered CSV call records.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Workflow -->
+    <section id="workflow" class="section-pad">
+        <div class="landing-container">
+            <div class="section-heading">
+                <h2>Go Live in Three Simple Steps</h2>
+                <p>No hardware PBX needed &mdash; onboard your store in minutes.</p>
+            </div>
+            <div class="grid-3">
+                <div class="glass-card">
+                    <div class="feature-icon">1</div>
+                    <h3 class="card-title">Register Your Store</h3>
+                    <p class="card-desc">Create your merchant account, generate a scoped API key, and link your WooCommerce or custom checkout webhook.</p>
+                </div>
+                <div class="glass-card">
+                    <div class="feature-icon">2</div>
+                    <h3 class="card-title">Set Bangla IVR Script</h3>
+                    <p class="card-desc">Upload your branded voice prompt or configure TTS templates with Press-1 confirm and Press-2 cancel routing.</p>
+                </div>
+                <div class="glass-card">
+                    <div class="feature-icon">3</div>
+                    <h3 class="card-title">Automate Confirmations</h3>
+                    <p class="card-desc">Every new COD order triggers an instant verification call and syncs confirmed status straight to your dashboard.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Plans -->
+    <section id="plans" class="section-pad">
+        <div class="landing-container">
+            <div class="section-heading">
+                <h2>Flexible Plans for Every Store Size</h2>
+                <p>Start with a free trial and scale seamlessly as your daily order volume grows.</p>
+            </div>
+            <div class="grid-3">
+                {% if plans %}
+                    {% for plan in plans %}
+                    <div class="glass-card" style="display:flex;flex-direction:column;justify-content:space-between;">
+                        <div>
+                            <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;color:#2dd4bf;font-weight:700;">{{ plan.name }}</div>
+                            <div class="plan-price">
+                                {% if plan.price_monthly and plan.price_monthly > 0 %}
+                                    ৳{{ "%.0f"|format(plan.price_monthly) }}<span style="font-size:0.9rem;font-weight:500;color:#64748b;"> / month</span>
+                                {% else %}
+                                    Free<span style="font-size:0.9rem;font-weight:500;color:#64748b;"> / {{ plan.trial_days or 14 }}-day trial</span>
+                                {% endif %}
+                            </div>
+                            <ul class="plan-list">
+                                <li>&bull; {{ plan.included_minutes or 0 }} included minutes</li>
+                                <li>&bull; Up to {{ plan.max_flows or 1 }} IVR flow{{ 's' if (plan.max_flows or 1) != 1 else '' }}</li>
+                                <li>&bull; Up to {{ plan.max_users or 1 }} team member{{ 's' if (plan.max_users or 1) != 1 else '' }}</li>
+                            </ul>
+                        </div>
+                        <a href="{{ url_for('auth.register') }}" class="btn-primary" style="justify-content:center;">Get Started</a>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="glass-card">
+                        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;color:#2dd4bf;font-weight:700;">Free Trial</div>
+                        <div class="plan-price">Free</div>
+                        <ul class="plan-list">
+                            <li>&bull; 14-day merchant trial</li>
+                            <li>&bull; IVR flow &amp; API sandbox</li>
+                        </ul>
+                        <a href="{{ url_for('auth.register') }}" class="btn-primary" style="justify-content:center;">Get Started</a>
+                    </div>
+                    <div class="glass-card">
+                        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;color:#2dd4bf;font-weight:700;">Starter</div>
+                        <div class="plan-price">Pay As You Go</div>
+                        <ul class="plan-list">
+                            <li>&bull; Automated COD voice calls</li>
+                            <li>&bull; Live CDR &amp; webhook sync</li>
+                        </ul>
+                        <a href="{{ url_for('auth.register') }}" class="btn-primary" style="justify-content:center;">Get Started</a>
+                    </div>
+                    <div class="glass-card">
+                        <div style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.06em;color:#2dd4bf;font-weight:700;">Pro</div>
+                        <div class="plan-price">Scale</div>
+                        <ul class="plan-list">
+                            <li>&bull; Dedicated CLI numbers</li>
+                            <li>&bull; Priority call concurrency</li>
+                        </ul>
+                        <a href="{{ url_for('auth.register') }}" class="btn-primary" style="justify-content:center;">Get Started</a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="landing-footer">
+        <div class="landing-container footer-inner">
+            <div>&copy; 2026 C-Call IVR. Automated E-commerce Order Confirmation Platform.</div>
+            <div style="display:flex;gap:1.25rem;">
+                <a href="{{ url_for('auth.login') }}" style="color:#94a3b8;text-decoration:none;">Sign In</a>
+                <a href="{{ url_for('auth.register') }}" style="color:#94a3b8;text-decoration:none;">Register</a>
+                <a href="{{ url_for('health.live') }}" style="color:#94a3b8;text-decoration:none;">System Status</a>
+            </div>
+        </div>
+    </footer>
+</div>
+{% endblock %}
