@@ -78,11 +78,12 @@ class ProductionConfig(BaseConfig):
     TESTING = False
     ENV = "production"
     FLASK_ENV = "production"
-    # Always True in production — TLS enforced at Nginx layer.
-    SESSION_COOKIE_SECURE = True
+    # True by default in production — TLS enforced at Nginx layer.
+    # Override with SESSION_COOKIE_SECURE=false for pre-TLS staging (e.g. HTTP tunnel).
+    SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").lower() != "false"
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
-    PREFERRED_URL_SCHEME = "https"
+    PREFERRED_URL_SCHEME = os.environ.get("PREFERRED_URL_SCHEME", "https")
     ALLOW_PRIVATE_WEBHOOKS_FOR_DEV: bool = False
 
 

@@ -104,8 +104,7 @@ services:
         --maxmemory 48mb
         --maxmemory-policy noeviction
         --save 900 1
-        --appendonly yes
-        --appendfsync everysec
+        --appendonly no
         --protected-mode yes
         --bind 0.0.0.0
         --loglevel notice
@@ -118,6 +117,7 @@ services:
     cap_add:
       - SETUID
       - SETGID
+      - DAC_OVERRIDE
     deploy:
       resources:
         limits:
