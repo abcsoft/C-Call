@@ -1,0 +1,288 @@
+/* C-Call IVR — Clean Light UI Theme (White background + Hind Siliguri + Emerald accents) */
+
+html, body {
+    background-color: #f9fafb !important;
+    color: #111827 !important;
+    font-family: 'Hind Siliguri', 'Inter', sans-serif;
+}
+
+.font-outfit {
+    font-family: 'Hind Siliguri', 'Outfit', sans-serif !important;
+}
+
+/* Custom clean light scrollbar */
+::-webkit-scrollbar-track {
+    background: #f3f4f6 !important;
+}
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1 !important;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8 !important;
+}
+
+/* Global surface overrides for dark-utility child templates */
+.bg-slate-950,
+.bg-slate-950\/80,
+.bg-slate-950\/60,
+.bg-slate-950\/40 {
+    background-color: #f9fafb !important;
+}
+
+.bg-slate-900,
+.bg-slate-900\/80,
+.bg-slate-900\/60,
+.bg-slate-900\/40,
+.bg-slate-900\/30,
+.bg-slate-800\/50,
+.bg-slate-800\/40,
+.bg-slate-800 {
+    background-color: #ffffff !important;
+}
+
+.bg-slate-900\/60,
+.bg-slate-900\/40,
+.bg-slate-800\/50 {
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* Crisp light borders */
+.border-slate-900,
+.border-slate-800,
+.border-slate-800\/80,
+.border-slate-800\/60,
+.border-slate-700,
+.border-slate-700\/60,
+.border-slate-700\/50,
+.divide-slate-800\/50 > :not([hidden]) ~ :not([hidden]),
+.divide-slate-800 > :not([hidden]) ~ :not([hidden]) {
+    border-color: #e5e7eb !important;
+}
+
+/* Readable dark typography on white surfaces */
+.text-slate-100,
+.text-slate-200 {
+    color: #111827 !important;
+}
+.text-slate-300 {
+    color: #374151 !important;
+}
+.text-slate-400 {
+    color: #4b5563 !important;
+}
+.text-slate-500 {
+    color: #6b7280 !important;
+}
+
+/* Accent text readability on white */
+.text-teal-400,
+.text-teal-300,
+.text-emerald-400,
+.text-emerald-300 {
+    color: #047857 !important;
+}
+.text-indigo-400,
+.text-indigo-300 {
+    color: #0f766e !important;
+}
+.text-rose-400,
+.text-rose-300,
+.text-red-400,
+.text-red-300 {
+    color: #b91c1c !important;
+}
+.text-amber-400,
+.text-amber-300 {
+    color: #b45309 !important;
+}
+
+/* Alert & status banner tints in light mode */
+.bg-rose-950\/60,
+.bg-rose-950\/80,
+.bg-red-950\/60 {
+    background-color: #fef2f2 !important;
+    border-color: #fecaca !important;
+    color: #991b1b !important;
+}
+.bg-amber-950\/60,
+.bg-yellow-950\/60 {
+    background-color: #fffbeb !important;
+    border-color: #fde68a !important;
+    color: #92400e !important;
+}
+.bg-blue-950\/60,
+.bg-indigo-950\/20 {
+    background-color: #f0fdfa !important;
+    border-color: #99f6e4 !important;
+    color: #115e59 !important;
+}
+.bg-emerald-950\/80,
+.bg-teal-950\/60,
+.bg-teal-900\/60 {
+    background-color: #ecfdf5 !important;
+    border-color: #a7f3d0 !important;
+    color: #065f46 !important;
+}
+
+/* Primary buttons & action readability */
+.bg-gradient-to-r.from-teal-500.to-emerald-500,
+.bg-indigo-500,
+.bg-indigo-600,
+.bg-teal-500,
+.bg-emerald-600 {
+    background: #047857 !important;
+    color: #ffffff !important;
+    border-color: #047857 !important;
+}
+.bg-gradient-to-r.from-teal-500.to-emerald-500:hover,
+.bg-indigo-500:hover,
+.bg-indigo-600:hover,
+.bg-teal-500:hover,
+.bg-emerald-600:hover {
+    background: #065f46 !important;
+}
+.bg-rose-500,
+.bg-red-600 {
+    background-color: #dc2626 !important;
+    color: #ffffff !important;
+}
+.bg-amber-500 {
+    background-color: #d97706 !important;
+    color: #ffffff !important;
+}
+
+/* Form controls in light mode */
+main input[type="text"],
+main input[type="email"],
+main input[type="password"],
+main input[type="number"],
+main input[type="url"],
+main input[type="search"],
+main input[type="date"],
+main select,
+main textarea,
+.cc-input {
+    background-color: #ffffff !important;
+    border: 1px solid #d1d5db !important;
+    color: #111827 !important;
+}
+main input::placeholder,
+main textarea::placeholder,
+.cc-input::placeholder {
+    color: #9ca3af !important;
+}
+main input:focus,
+main select:focus,
+main textarea:focus,
+.cc-input:focus {
+    border-color: #047857 !important;
+    outline: none !important;
+    box-shadow: 0 0 0 2px rgba(4, 120, 87, 0.14) !important;
+}
+
+/* Tables in light mode */
+main table thead {
+    background-color: #f8fafc !important;
+    color: #4b5563 !important;
+    border-bottom: 1px solid #e5e7eb !important;
+}
+main table tbody tr:hover {
+    background-color: #f9fafb !important;
+}
+
+/* Sidebar clean light surfaces */
+.cc-sidebar {
+    background-color: #ffffff !important;
+    border-right: 1px solid #e5e7eb !important;
+}
+.cc-nav-active {
+    background-color: #ecfdf5 !important;
+    color: #047857 !important;
+    border-left: 3px solid #047857 !important;
+    border-radius: 0.5rem !important;
+}
+.cc-nav-item {
+    color: #4b5563 !important;
+    border-left: 3px solid transparent !important;
+    border-radius: 0.5rem !important;
+}
+.cc-nav-item:hover {
+    background-color: #f3f4f6 !important;
+    color: #111827 !important;
+}
+
+/* Auth layout helpers */
+.cc-auth-page {
+    min-height: 100vh;
+    background-color: #f9fafb;
+    color: #111827;
+    display: flex;
+    flex-direction: column;
+}
+.cc-auth-topbar {
+    background-color: #ffffff;
+    border-bottom: 1px solid #e5e7eb;
+    padding: 0.9rem 1.25rem;
+}
+.cc-auth-topbar-inner {
+    max-width: 1040px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.cc-auth-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    font-size: 1.15rem;
+    color: #0f172a;
+    text-decoration: none;
+}
+.cc-brand-badge {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: #047857;
+    color: #ffffff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.875rem;
+    font-weight: 700;
+}
+.cc-auth-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2.5rem 1rem;
+}
+.cc-auth-card {
+    width: 100%;
+    max-width: 420px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 2rem;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+.cc-btn-primary {
+    width: 100%;
+    padding: 0.7rem 1rem;
+    background-color: #047857;
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 0.95rem;
+    border-radius: 7px;
+    border: 1px solid #047857;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    display: inline-block;
+    text-align: center;
+    text-decoration: none;
+}
+.cc-btn-primary:hover {
+    background-color: #065f46;
+}

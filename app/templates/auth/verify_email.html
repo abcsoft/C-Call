@@ -1,28 +1,26 @@
 {% extends "base.html" %}
 
-{% block title %}Email Verification — C-Call IVR{% endblock %}
+{% block title %}ইমেইল ভেরিফিকেশন — C-Call IVR{% endblock %}
 
 {% block content %}
-<div class="min-h-screen flex items-center justify-center bg-slate-950 relative overflow-hidden px-4">
-    <!-- Glowing background circles -->
-    <div class="absolute w-[40rem] h-[40rem] -top-40 -left-40 bg-teal-500/10 rounded-full blur-[10rem] pointer-events-none"></div>
-    <div class="absolute w-[40rem] h-[40rem] -bottom-40 -right-40 bg-indigo-500/10 rounded-full blur-[10rem] pointer-events-none"></div>
-
-    <div class="w-full max-w-md bg-slate-900/60 border border-slate-800/80 backdrop-blur-xl rounded-2xl shadow-2xl p-8 z-10 text-center">
-        <div class="mb-6 flex justify-center">
-            <div class="w-16 h-16 bg-teal-500/15 rounded-full flex items-center justify-center text-teal-400">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-8 h-8">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-            </div>
+<div class="cc-auth-page">
+    <header class="cc-auth-topbar">
+        <div class="cc-auth-topbar-inner">
+            <a href="{{ url_for('customer.index') }}" class="cc-auth-brand">
+                <span class="cc-brand-badge">C</span>
+                <span>C-Call IVR</span>
+            </a>
         </div>
+    </header>
 
-        <h1 class="text-2xl font-bold text-slate-100 mb-2">Verification Processing</h1>
-        <p class="text-slate-400 text-sm mb-6">অনুগ্রহ করে অপেক্ষা করুন, আপনার অ্যাকাউন্ট ভেরিফাই করা হচ্ছে...</p>
-
-        <a href="{{ url_for('auth.login') }}" class="inline-block px-6 py-2.5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-bold rounded-xl text-sm transition-all shadow-md">
-            লগইন পেজে যান
-        </a>
-    </div>
+    <main class="cc-auth-main">
+        <div class="cc-auth-card text-center">
+            <h1 class="text-xl font-bold text-slate-900 mb-2">ইমেইল ভেরিফিকেশন</h1>
+            <p class="text-slate-600 text-sm mb-6">অনুগ্রহ করে অপেক্ষা করুন, আপনার অ্যাকাউন্ট ভেরিফাই করা হচ্ছে...</p>
+            <a href="{{ url_for('auth.login') }}" class="cc-btn-primary">
+                লগইন পেজে যান
+            </a>
+        </div>
+    </main>
 </div>
 {% endblock %}

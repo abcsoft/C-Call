@@ -1,95 +1,100 @@
 {% extends "base.html" %}
 
-{% block title %}Register Business — C-Call IVR{% endblock %}
+{% block title %}রেজিস্ট্রেশন — C-Call IVR{% endblock %}
 
 {% block content %}
-<div class="min-h-screen flex items-center justify-center bg-slate-950 relative overflow-hidden px-4 py-12">
-    <!-- Glowing background circles -->
-    <div class="absolute w-[40rem] h-[40rem] -top-40 -left-40 bg-teal-500/10 rounded-full blur-[10rem] pointer-events-none"></div>
-    <div class="absolute w-[40rem] h-[40rem] -bottom-40 -right-40 bg-indigo-500/10 rounded-full blur-[10rem] pointer-events-none"></div>
-
-    <div class="w-full max-w-md bg-slate-900/60 border border-slate-800/80 backdrop-blur-xl rounded-2xl shadow-2xl p-8 z-10 relative">
-        <div class="text-center mb-8">
-            <h1 class="font-outfit font-extrabold text-3xl tracking-tight bg-gradient-to-r from-teal-400 via-emerald-400 to-indigo-400 bg-clip-text text-transparent">
-                GET STARTED
-            </h1>
-            <p class="text-slate-400 text-sm mt-2 font-medium">Create your merchant account in minutes</p>
+<div class="cc-auth-page">
+    <header class="cc-auth-topbar">
+        <div class="cc-auth-topbar-inner">
+            <a href="{{ url_for('customer.index') }}" class="cc-auth-brand">
+                <span class="cc-brand-badge">C</span>
+                <span>C-Call IVR</span>
+            </a>
+            <a href="{{ url_for('auth.login') }}" class="text-sm font-semibold text-emerald-700 hover:underline">লগইন করুন</a>
         </div>
+    </header>
 
-        <form method="POST" action="{{ url_for('auth.register') }}" class="space-y-4">
-            {{ form.csrf_token }}
-
-            <!-- Business Name -->
-            <div>
-                <label for="business_name" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Business / Store Name</label>
-                <input type="text" name="business_name" id="business_name" required
-                       class="w-full bg-slate-950/80 border {% if form.business_name.errors %}border-rose-500/60 focus:border-rose-500{% else %}border-slate-800 focus:border-teal-500/80{% endif %} focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 text-sm transition-all focus:outline-none"
-                       placeholder="e.g. Dhaka Fashion" value="{{ form.business_name.data or '' }}">
-                {% if form.business_name.errors %}
-                    <p class="text-rose-400 text-xs mt-1.5 font-medium">{{ form.business_name.errors[0] }}</p>
-                {% endif %}
+    <main class="cc-auth-main">
+        <div class="cc-auth-card">
+            <div class="mb-6">
+                <h1 class="text-2xl font-bold text-slate-900">মার্চেন্ট অ্যাকাউন্ট খুলুন</h1>
+                <p class="text-slate-600 text-sm mt-1">কয়েক মিনিটের মধ্যেই আপনার স্টোরের জন্য অটো-কল সেটআপ করুন।</p>
             </div>
 
-            <!-- Email Address -->
-            <div>
-                <label for="email" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Email Address</label>
-                <input type="email" name="email" id="email" required
-                       hx-post="{{ url_for('auth.check_email') }}"
-                       hx-trigger="keyup changed delay:500ms"
-                       hx-target="#email-error"
-                       class="w-full bg-slate-950/80 border {% if form.email.errors %}border-rose-500/60 focus:border-rose-500{% else %}border-slate-800 focus:border-teal-500/80{% endif %} focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 text-sm transition-all focus:outline-none"
-                       placeholder="you@example.com" value="{{ form.email.data or '' }}">
-                <div id="email-error">
-                    {% if form.email.errors %}
-                        <p class="text-rose-400 text-xs mt-1.5 font-medium">{{ form.email.errors[0] }}</p>
+            <form method="POST" action="{{ url_for('auth.register') }}" class="space-y-4">
+                {{ form.csrf_token }}
+
+                <!-- Business Name -->
+                <div>
+                    <label for="business_name" class="block text-slate-700 text-sm font-semibold mb-1.5">স্টোর / ব্যবসার নাম</label>
+                    <input type="text" name="business_name" id="business_name" required
+                           class="cc-input w-full rounded-lg px-3.5 py-2.5 text-sm"
+                           placeholder="যেমন: ঢাকা ফ্যাশন" value="{{ form.business_name.data or '' }}">
+                    {% if form.business_name.errors %}
+                        <p class="text-rose-600 text-xs mt-1 font-medium">{{ form.business_name.errors[0] }}</p>
                     {% endif %}
                 </div>
+
+                <!-- Email Address -->
+                <div>
+                    <label for="email" class="block text-slate-700 text-sm font-semibold mb-1.5">ইমেইল অ্যাড্রেস</label>
+                    <input type="email" name="email" id="email" required
+                           hx-post="{{ url_for('auth.check_email') }}"
+                           hx-trigger="keyup changed delay:500ms"
+                           hx-target="#email-error"
+                           class="cc-input w-full rounded-lg px-3.5 py-2.5 text-sm"
+                           placeholder="you@example.com" value="{{ form.email.data or '' }}">
+                    <div id="email-error">
+                        {% if form.email.errors %}
+                            <p class="text-rose-600 text-xs mt-1 font-medium">{{ form.email.errors[0] }}</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Mobile Number -->
+                <div>
+                    <label for="phone" class="block text-slate-700 text-sm font-semibold mb-1.5">মোবাইল নম্বর</label>
+                    <input type="text" name="phone" id="phone" required
+                           class="cc-input w-full rounded-lg px-3.5 py-2.5 text-sm"
+                           placeholder="যেমন: 01712345678" value="{{ form.phone.data or '' }}">
+                    {% if form.phone.errors %}
+                        <p class="text-rose-600 text-xs mt-1 font-medium">{{ form.phone.errors[0] }}</p>
+                    {% endif %}
+                </div>
+
+                <!-- Password -->
+                <div>
+                    <label for="password" class="block text-slate-700 text-sm font-semibold mb-1.5">পাসওয়ার্ড</label>
+                    <input type="password" name="password" id="password" required
+                           class="cc-input w-full rounded-lg px-3.5 py-2.5 text-sm"
+                           placeholder="কমপক্ষে ৮ অক্ষর">
+                    {% if form.password.errors %}
+                        <p class="text-rose-600 text-xs mt-1 font-medium">{{ form.password.errors[0] }}</p>
+                    {% endif %}
+                </div>
+
+                <!-- Confirm Password -->
+                <div>
+                    <label for="confirm_password" class="block text-slate-700 text-sm font-semibold mb-1.5">পাসওয়ার্ড নিশ্চিত করুন</label>
+                    <input type="password" name="confirm_password" id="confirm_password" required
+                           class="cc-input w-full rounded-lg px-3.5 py-2.5 text-sm"
+                           placeholder="পুনরায় পাসওয়ার্ড লিখুন">
+                    {% if form.confirm_password.errors %}
+                        <p class="text-rose-600 text-xs mt-1 font-medium">{{ form.confirm_password.errors[0] }}</p>
+                    {% endif %}
+                </div>
+
+                <!-- Submit Button -->
+                <button type="submit" class="cc-btn-primary mt-2">
+                    অ্যাকাউন্ট তৈরি করুন
+                </button>
+            </form>
+
+            <div class="mt-6 pt-5 border-t border-slate-200 text-center text-sm text-slate-600">
+                ইতোমধ্যে অ্যাকাউন্ট আছে?
+                <a href="{{ url_for('auth.login') }}" class="text-emerald-700 font-semibold hover:underline">লগইন করুন</a>
             </div>
-
-            <!-- Mobile Number -->
-            <div>
-                <label for="phone" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Mobile Number</label>
-                <input type="text" name="phone" id="phone" required
-                       class="w-full bg-slate-950/80 border {% if form.phone.errors %}border-rose-500/60 focus:border-rose-500{% else %}border-slate-800 focus:border-teal-500/80{% endif %} focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 text-sm transition-all focus:outline-none"
-                       placeholder="e.g. 01712345678" value="{{ form.phone.data or '' }}">
-                {% if form.phone.errors %}
-                     <p class="text-rose-400 text-xs mt-1.5 font-medium">{{ form.phone.errors[0] }}</p>
-                {% endif %}
-            </div>
-
-            <!-- Password -->
-            <div>
-                <label for="password" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Password</label>
-                <input type="password" name="password" id="password" required
-                       class="w-full bg-slate-950/80 border {% if form.password.errors %}border-rose-500/60 focus:border-rose-500{% else %}border-slate-800 focus:border-teal-500/80{% endif %} focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 text-sm transition-all focus:outline-none"
-                       placeholder="Minimum 8 characters">
-                {% if form.password.errors %}
-                     <p class="text-rose-400 text-xs mt-1.5 font-medium">{{ form.password.errors[0] }}</p>
-                {% endif %}
-            </div>
-
-            <!-- Confirm Password -->
-            <div>
-                <label for="confirm_password" class="block text-slate-300 text-xs font-semibold uppercase tracking-wider mb-2">Confirm Password</label>
-                <input type="password" name="confirm_password" id="confirm_password" required
-                       class="w-full bg-slate-950/80 border {% if form.confirm_password.errors %}border-rose-500/60 focus:border-rose-500{% else %}border-slate-800 focus:border-teal-500/80{% endif %} focus:ring-1 focus:ring-teal-500/30 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 text-sm transition-all focus:outline-none"
-                       placeholder="Re-enter password">
-                {% if form.confirm_password.errors %}
-                     <p class="text-rose-400 text-xs mt-1.5 font-medium">{{ form.confirm_password.errors[0] }}</p>
-                {% endif %}
-            </div>
-
-            <!-- Submit Button -->
-            <button type="submit" 
-                    class="w-full py-3 px-4 mt-2 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-bold rounded-xl text-sm transition-all shadow-lg hover:shadow-teal-500/20 active:scale-[0.98]">
-                Create Account
-            </button>
-        </form>
-
-        <div class="mt-8 pt-6 border-t border-slate-800/80 text-center text-xs text-slate-400 font-medium">
-            Already have an account? 
-            <a href="{{ url_for('auth.login') }}" class="text-teal-400 hover:text-teal-300 transition-colors">Sign in here</a>
         </div>
-    </div>
+    </main>
 </div>
 {% endblock %}
