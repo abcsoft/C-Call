@@ -329,3 +329,215 @@ main table tbody tr:hover {
 .cc-btn-primary:hover {
     background-color: #065f46;
 }
+
+/* Advanced Dashboard Components */
+.tabular-nums {
+    font-variant-numeric: tabular-nums;
+}
+
+.cc-dash-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.cc-quick-links {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.cc-chip-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.85rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #374151;
+    background-color: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.625rem;
+    text-decoration: none;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+.cc-chip-btn:hover {
+    background-color: #f8fafc;
+    border-color: #cbd5e1;
+    color: #111827;
+}
+.cc-chip-btn-primary {
+    background-color: #047857;
+    border-color: #047857;
+    color: #ffffff;
+}
+.cc-chip-btn-primary:hover {
+    background-color: #065f46;
+    border-color: #065f46;
+    color: #ffffff;
+}
+
+.cc-kpi-card {
+    background-color: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.875rem;
+    padding: 1.25rem;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    text-decoration: none;
+}
+.cc-kpi-card:hover {
+    border-color: #cbd5e1;
+    box-shadow: 0 6px 16px -6px rgba(15, 23, 42, 0.08);
+    transform: translateY(-1px);
+}
+.cc-kpi-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+.cc-kpi-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+}
+.cc-kpi-value {
+    font-size: 1.875rem;
+    font-weight: 700;
+    line-height: 1.15;
+    color: #0f172a;
+    margin-top: 0.55rem;
+    font-variant-numeric: tabular-nums;
+}
+.cc-icon-box {
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 0.625rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.cc-icon-emerald {
+    background-color: #ecfdf5;
+    color: #047857;
+    border: 1px solid #d1fae5;
+}
+.cc-icon-slate {
+    background-color: #f8fafc;
+    color: #334155;
+    border: 1px solid #e2e8f0;
+}
+.cc-icon-amber {
+    background-color: #fffbeb;
+    color: #b45309;
+    border: 1px solid #fde68a;
+}
+.cc-icon-rose {
+    background-color: #fef2f2;
+    color: #dc2626;
+    border: 1px solid #fecaca;
+}
+.cc-kpi-foot {
+    margin-top: 0.9rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #f1f5f9;
+    font-size: 0.75rem;
+    color: #6b7280;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.cc-panel {
+    background-color: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.875rem;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+.cc-panel-header {
+    padding: 1.15rem 1.35rem;
+    border-bottom: 1px solid #f1f5f9;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+.cc-panel-body {
+    padding: 1.35rem;
+}
+
+.cc-progress-track {
+    width: 100%;
+    height: 6px;
+    background-color: #f1f5f9;
+    border-radius: 9999px;
+    overflow: hidden;
+    margin-top: 0.65rem;
+}
+.cc-progress-fill {
+    height: 100%;
+    border-radius: 9999px;
+    transition: width 0.3s ease;
+}
+
+.cc-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.cc-pill-green {
+    background-color: #ecfdf5;
+    color: #047857;
+    border: 1px solid #a7f3d0;
+}
+.cc-pill-red {
+    background-color: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+}
+.cc-pill-amber {
+    background-color: #fffbeb;
+    color: #b45309;
+    border: 1px solid #fde68a;
+}
+.cc-pill-slate {
+    background-color: #f8fafc;
+    color: #475569;
+    border: 1px solid #e2e8f0;
+}
+
+.cc-rank-badge {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 9999px;
+    background-color: #f1f5f9;
+    color: #334155;
+    font-size: 0.72rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 0.5rem;
+}
+

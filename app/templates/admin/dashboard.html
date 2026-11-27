@@ -3,172 +3,273 @@
 {% block title %}Admin Dashboard — C-Call Console{% endblock %}
 
 {% block admin_content %}
-<div class="space-y-8">
+<div class="space-y-6">
     <!-- Header -->
-    <div>
-        <h1 class="font-outfit font-extrabold text-3xl text-slate-100 tracking-tight">Platform Overview</h1>
-        <p class="text-slate-400 text-sm mt-1">Global platform metrics, active calls, alerts, and revenue summary</p>
+    <div class="cc-dash-header">
+        <div>
+            <div class="flex items-center gap-2.5 flex-wrap">
+                <h1 class="font-outfit font-bold text-2xl sm:text-3xl text-slate-900 tracking-tight">Platform Overview</h1>
+                <span class="cc-pill cc-pill-green">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                    Platform Healthy
+                </span>
+            </div>
+            <p class="text-slate-600 text-sm mt-1">Global platform metrics, SIP trunk status, alerts, and revenue telemetry</p>
+        </div>
+
+        <div class="cc-quick-links">
+            <a href="{{ url_for('admin.live_calls_page') }}" class="cc-chip-btn">Live Calls</a>
+            <a href="{{ url_for('admin.customers_list') }}" class="cc-chip-btn">Merchants</a>
+            <a href="{{ url_for('admin.providers_panel') }}" class="cc-chip-btn">SIP Gateways</a>
+            <a href="{{ url_for('admin.cdr_logs') }}" class="cc-chip-btn cc-chip-btn-primary">CDR Logs</a>
+        </div>
     </div>
 
     <!-- A. KPI Cards Row -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Total Tenants</p>
-            <div class="flex items-baseline gap-2 mt-3">
-                <span class="text-3xl font-outfit font-bold text-indigo-400 tracking-tight">{{ stats.total_tenants }}</span>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <a href="{{ url_for('admin.customers_list') }}" class="cc-kpi-card">
+            <div class="cc-kpi-top">
+                <div>
+                    <p class="cc-kpi-label">Total Tenants</p>
+                    <div class="cc-kpi-value">{{ stats.total_tenants }}</div>
+                </div>
+                <div class="cc-icon-box cc-icon-slate">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                </div>
             </div>
-            <p class="text-[10px] text-slate-500 mt-2">{{ stats.trial_tenants }} on trial</p>
-        </div>
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Active Tenants</p>
-            <div class="flex items-baseline gap-2 mt-3">
-                <span class="text-3xl font-outfit font-bold text-emerald-400 tracking-tight">{{ stats.active_tenants }}</span>
+            <div class="cc-kpi-foot">
+                <span>{{ stats.trial_tenants }} on trial</span>
+                <span class="font-semibold text-emerald-700">View &rarr;</span>
             </div>
-            <p class="text-[10px] text-slate-500 mt-2">Billable accounts</p>
-        </div>
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Calls Today</p>
-            <div class="flex items-baseline gap-2 mt-3">
-                <span class="text-3xl font-outfit font-bold text-slate-200 tracking-tight">{{ stats.calls_today }}</span>
+        </a>
+
+        <div class="cc-kpi-card">
+            <div class="cc-kpi-top">
+                <div>
+                    <p class="cc-kpi-label">Active Tenants</p>
+                    <div class="cc-kpi-value" style="color:#047857;">{{ stats.active_tenants }}</div>
+                </div>
+                <div class="cc-icon-box cc-icon-emerald">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                </div>
             </div>
-            <p class="text-[10px] text-slate-500 mt-2">{{ stats.calls_mtd }} this month</p>
-        </div>
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Revenue Today</p>
-            <div class="flex items-baseline gap-1 mt-3">
-                <span class="text-xs text-slate-500 font-bold">৳</span>
-                <span class="text-3xl font-outfit font-bold text-emerald-400 tracking-tight">{{ "%.2f"|format(stats.revenue_today) }}</span>
+            <div class="cc-kpi-foot">
+                <span>Billable accounts</span>
+                {% set pct_active = ((stats.active_tenants / stats.total_tenants) * 100)|round|int if stats.total_tenants else 0 %}
+                <span class="cc-pill cc-pill-green">{{ pct_active }}%</span>
             </div>
-            <p class="text-[10px] text-slate-500 mt-2">৳{{ "%.2f"|format(stats.revenue_mtd) }} MTD</p>
         </div>
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-            <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Active Calls Now
-            </p>
-            <div class="flex items-baseline gap-2 mt-3">
-                <span class="text-3xl font-outfit font-extrabold text-teal-400 tracking-tight">{{ stats.active_calls_now }}</span>
+
+        <a href="{{ url_for('admin.cdr_logs') }}" class="cc-kpi-card">
+            <div class="cc-kpi-top">
+                <div>
+                    <p class="cc-kpi-label">Calls Today</p>
+                    <div class="cc-kpi-value">{{ stats.calls_today }}</div>
+                </div>
+                <div class="cc-icon-box cc-icon-slate">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.94.725l.548 2.2a1 1 0 01-.321.988l-1.305.98a10.582 10.582 0 004.872 4.872l.98-1.305a1 1 0 01.988-.321l2.2.548a1 1 0 01.725.94V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path></svg>
+                </div>
             </div>
-            <p class="text-[10px] text-slate-500 mt-2">Live SIP/RTP sessions</p>
-        </div>
+            <div class="cc-kpi-foot">
+                <span>{{ stats.calls_mtd }} this month</span>
+                <span class="font-semibold text-slate-600">CDR &rarr;</span>
+            </div>
+        </a>
+
+        <a href="{{ url_for('admin.revenue_report') }}" class="cc-kpi-card">
+            <div class="cc-kpi-top">
+                <div>
+                    <p class="cc-kpi-label">Revenue Today</p>
+                    <div class="cc-kpi-value" style="color:#047857;">৳{{ "%.2f"|format(stats.revenue_today) }}</div>
+                </div>
+                <div class="cc-icon-box cc-icon-emerald">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </div>
+            </div>
+            <div class="cc-kpi-foot">
+                <span>৳{{ "%.2f"|format(stats.revenue_mtd) }} MTD</span>
+                <span class="font-semibold text-emerald-700">Reports &rarr;</span>
+            </div>
+        </a>
+
+        <a href="{{ url_for('admin.live_calls_page') }}" class="cc-kpi-card">
+            <div class="cc-kpi-top">
+                <div>
+                    <p class="cc-kpi-label flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Active Calls Now
+                    </p>
+                    <div class="cc-kpi-value" style="color:#0f766e;">{{ stats.active_calls_now }}</div>
+                </div>
+                <div class="cc-icon-box cc-icon-emerald">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                </div>
+            </div>
+            <div class="cc-kpi-foot">
+                <span>Live SIP/RTP sessions</span>
+                <span class="font-semibold text-emerald-700">Monitor &rarr;</span>
+            </div>
+        </a>
     </div>
 
     <!-- Warning Banner for Active Tenants with No Phone Numbers -->
     {% if no_number_tenants %}
-    <div class="bg-rose-950/60 border border-rose-500/40 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-rose-200 backdrop-blur-md mb-6">
+    <div class="bg-rose-950/60 border border-rose-500/40 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-rose-200">
         <div class="flex gap-3">
-            <svg class="w-6 h-6 text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="w-5 h-5 text-rose-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
             </svg>
             <div>
                 <h4 class="font-bold text-sm">Active Tenants without Phone Numbers</h4>
-                <p class="text-xs text-rose-300 mt-1">⚠ There are {{ no_number_tenants|length }} active tenant(s) with no phone numbers assigned. All calls for these accounts will fail silently.</p>
+                <p class="text-xs text-rose-300 mt-0.5">There are {{ no_number_tenants|length }} active tenant(s) with no phone numbers assigned. All calls for these accounts will fail silently.</p>
             </div>
         </div>
-        <a href="{{ url_for('admin.numbers_panel') }}" class="py-2 px-4 bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold rounded-xl text-xs transition-colors self-start sm:self-center shadow-md active:scale-95">
+        <a href="{{ url_for('admin.numbers_panel') }}" class="py-2 px-4 bg-rose-500 hover:bg-rose-400 font-bold rounded-lg text-xs transition-colors self-start sm:self-center">
             Manage Numbers
         </a>
     </div>
     {% endif %}
 
-    <!-- B. Alerts Panel -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- B. Operational Health & Alerts Panel -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <!-- Low balance tenants -->
-        <div class="bg-slate-900/60 border border-amber-800/40 backdrop-blur-md rounded-2xl p-5">
-            <h3 class="font-outfit font-bold text-sm text-amber-300 uppercase tracking-wider mb-3">Low Balance (&lt; ৳10)</h3>
-            {% if low_balance_tenants %}
-            <ul class="space-y-2 max-h-48 overflow-y-auto">
-                {% for t in low_balance_tenants %}
-                <li class="flex items-center justify-between text-sm bg-slate-950/40 rounded-lg px-3 py-2">
-                    <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="text-slate-200 hover:text-indigo-400 hover:underline truncate">{{ t.business_name }}</a>
-                    <span class="flex items-center gap-2 shrink-0">
-                        <span class="text-amber-400 font-mono text-xs">৳{{ "%.2f"|format(t.balance) }}</span>
-                        <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="text-[10px] font-bold uppercase text-teal-400 hover:text-teal-300">Credit</a>
-                    </span>
-                </li>
-                {% endfor %}
-            </ul>
-            {% else %}
-            <p class="text-xs text-slate-500">No tenants under threshold.</p>
-            {% endif %}
+        <div class="cc-panel flex flex-col justify-between">
+            <div class="cc-panel-header">
+                <h3 class="font-bold text-sm text-slate-900">Low Balance (&lt; ৳10)</h3>
+                <span class="cc-pill {{ 'cc-pill-amber' if low_balance_tenants else 'cc-pill-green' }}">
+                    {{ low_balance_tenants|length if low_balance_tenants else 0 }} alerts
+                </span>
+            </div>
+            <div class="cc-panel-body">
+                {% if low_balance_tenants %}
+                <ul class="space-y-2 max-h-44 overflow-y-auto">
+                    {% for t in low_balance_tenants %}
+                    <li class="flex items-center justify-between text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                        <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="text-slate-800 hover:underline font-medium truncate">{{ t.business_name }}</a>
+                        <span class="flex items-center gap-2 shrink-0">
+                            <span class="text-amber-700 font-mono text-xs font-semibold">৳{{ "%.2f"|format(t.balance) }}</span>
+                            <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="text-xs font-semibold text-emerald-700 hover:underline">Credit</a>
+                        </span>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="text-xs text-slate-500">No tenants under threshold. All merchant wallets look healthy.</p>
+                {% endif %}
+            </div>
         </div>
 
         <!-- Failed webhooks -->
-        <div class="bg-slate-900/60 border border-red-800/40 backdrop-blur-md rounded-2xl p-5 flex flex-col justify-between">
-            <div>
-                <h3 class="font-outfit font-bold text-sm text-red-300 uppercase tracking-wider mb-3">Failed Webhooks (1h)</h3>
-                <span class="text-4xl font-outfit font-extrabold text-red-400">{{ failed_webhooks_count }}</span>
+        <div class="cc-panel flex flex-col justify-between">
+            <div class="cc-panel-header">
+                <h3 class="font-bold text-sm text-slate-900">Failed Webhooks (1h)</h3>
+                <span class="cc-pill {{ 'cc-pill-red' if failed_webhooks_count > 0 else 'cc-pill-green' }}">
+                    {{ 'Attention' if failed_webhooks_count > 0 else 'Healthy' }}
+                </span>
             </div>
-            <a href="{{ url_for('admin.cdr_logs') }}" class="text-xs font-semibold text-slate-400 hover:text-indigo-400 mt-4 inline-block">View call logs &rarr;</a>
+            <div class="cc-panel-body flex items-end justify-between">
+                <div>
+                    <span class="text-4xl font-bold tabular-nums" style="color: {{ '#b91c1c' if failed_webhooks_count > 0 else '#0f172a' }};">{{ failed_webhooks_count }}</span>
+                    <p class="text-xs text-slate-500 mt-1">Delivery failures in last 60 mins</p>
+                </div>
+                <a href="{{ url_for('admin.cdr_logs') }}" class="cc-chip-btn">View call logs &rarr;</a>
+            </div>
         </div>
 
         <!-- SIP provider status -->
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-5">
-            <h3 class="font-outfit font-bold text-sm text-slate-300 uppercase tracking-wider mb-3">SIP Trunk Status</h3>
-            {% if sip_providers %}
-            <ul class="space-y-2">
-                {% for p in sip_providers %}
-                <li class="flex items-center justify-between text-sm">
-                    <span class="text-slate-300">{{ p.name }}</span>
-                    <span class="flex items-center gap-1.5">
-                        <span class="w-2 h-2 rounded-full {{ 'bg-emerald-500' if p.healthy else 'bg-red-500' }}"></span>
-                        <span class="text-[10px] uppercase font-semibold {{ 'text-emerald-400' if p.healthy else 'text-red-400' }}">{{ p.status }}</span>
-                    </span>
-                </li>
-                {% endfor %}
-            </ul>
-            {% else %}
-            <p class="text-xs text-slate-500">No SIP providers configured.</p>
-            {% endif %}
+        <div class="cc-panel flex flex-col justify-between">
+            <div class="cc-panel-header">
+                <h3 class="font-bold text-sm text-slate-900">SIP Trunk Status</h3>
+                <a href="{{ url_for('admin.providers_panel') }}" class="text-xs font-semibold text-emerald-700 hover:underline">Manage &rarr;</a>
+            </div>
+            <div class="cc-panel-body">
+                {% if sip_providers %}
+                <ul class="space-y-2.5">
+                    {% for p in sip_providers %}
+                    <li class="flex items-center justify-between text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                        <span class="text-slate-800 font-medium">{{ p.name }}</span>
+                        <span class="cc-pill {{ 'cc-pill-green' if p.healthy else 'cc-pill-red' }}">
+                            <span class="w-1.5 h-1.5 rounded-full {{ 'bg-emerald-600' if p.healthy else 'bg-red-600' }}"></span>
+                            {{ p.status|upper }}
+                        </span>
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="text-xs text-slate-500">No SIP providers configured.</p>
+                {% endif %}
+            </div>
         </div>
     </div>
 
     <!-- C. Revenue Chart -->
-    <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-        <h3 class="font-outfit font-bold text-lg text-slate-100 mb-4">Revenue — Last 30 Days</h3>
-        <canvas id="revenueChart" height="90"></canvas>
+    <div class="cc-panel">
+        <div class="cc-panel-header">
+            <div>
+                <h3 class="font-bold text-base text-slate-900">Revenue — Last 30 Days</h3>
+                <p class="text-xs text-slate-500">Daily platform call revenue in BDT (৳)</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="cc-pill cc-pill-green">Today: ৳{{ "%.2f"|format(stats.revenue_today) }}</span>
+                <span class="cc-pill cc-pill-slate">MTD: ৳{{ "%.2f"|format(stats.revenue_mtd) }}</span>
+            </div>
+        </div>
+        <div class="cc-panel-body">
+            <div style="height: 240px;">
+                <canvas id="revenueChart"></canvas>
+            </div>
+        </div>
     </div>
 
     <!-- D. Top Tenants Tables -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-            <h3 class="font-outfit font-bold text-lg text-slate-100 mb-4">Top Tenants — By Call Volume</h3>
-            <div class="overflow-x-auto border border-slate-800/80 rounded-xl">
-                <table class="w-full text-left text-xs text-slate-300">
-                    <thead class="bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider">
-                        <tr><th class="px-4 py-2.5">Tenant</th><th class="px-4 py-2.5 text-right">Calls</th></tr>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div class="cc-panel overflow-hidden">
+            <div class="cc-panel-header">
+                <h3 class="font-bold text-base text-slate-900">Top Tenants — By Call Volume</h3>
+                <a href="{{ url_for('admin.customers_list') }}" class="text-xs font-semibold text-emerald-700 hover:underline">All merchants &rarr;</a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs">
+                    <thead class="font-semibold uppercase tracking-wider">
+                        <tr><th class="px-5 py-3">Tenant</th><th class="px-5 py-3 text-right">Calls</th></tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-800/50">
+                    <tbody class="divide-y divide-slate-200">
                         {% for t in stats.top_tenants_by_volume %}
                         <tr>
-                            <td class="px-4 py-3 font-semibold text-slate-200">
-                                <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="hover:text-indigo-400 hover:underline">{{ t.business_name }}</a>
+                            <td class="px-5 py-3 font-semibold text-slate-800">
+                                <span class="cc-rank-badge">{{ loop.index }}</span>
+                                <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="hover:underline">{{ t.business_name }}</a>
                             </td>
-                            <td class="px-4 py-3 text-right font-outfit font-bold">{{ t.call_count }}</td>
+                            <td class="px-5 py-3 text-right font-bold tabular-nums text-slate-900">{{ t.call_count }}</td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="2" class="px-4 py-5 text-center text-slate-500">No calls yet.</td></tr>
+                        <tr><td colspan="2" class="px-5 py-6 text-center text-slate-500">No calls yet.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
         </div>
-        <div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-6">
-            <h3 class="font-outfit font-bold text-lg text-slate-100 mb-4">Top Tenants — By Revenue</h3>
-            <div class="overflow-x-auto border border-slate-800/80 rounded-xl">
-                <table class="w-full text-left text-xs text-slate-300">
-                    <thead class="bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider">
-                        <tr><th class="px-4 py-2.5">Tenant</th><th class="px-4 py-2.5 text-right">Revenue</th></tr>
+
+        <div class="cc-panel overflow-hidden">
+            <div class="cc-panel-header">
+                <h3 class="font-bold text-base text-slate-900">Top Tenants — By Revenue</h3>
+                <a href="{{ url_for('admin.revenue_report') }}" class="text-xs font-semibold text-emerald-700 hover:underline">Revenue report &rarr;</a>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs">
+                    <thead class="font-semibold uppercase tracking-wider">
+                        <tr><th class="px-5 py-3">Tenant</th><th class="px-5 py-3 text-right">Revenue</th></tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-800/50">
+                    <tbody class="divide-y divide-slate-200">
                         {% for t in stats.top_tenants_by_revenue %}
                         <tr>
-                            <td class="px-4 py-3 font-semibold text-slate-200">
-                                <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="hover:text-indigo-400 hover:underline">{{ t.business_name }}</a>
+                            <td class="px-5 py-3 font-semibold text-slate-800">
+                                <span class="cc-rank-badge">{{ loop.index }}</span>
+                                <a href="{{ url_for('admin.customer_detail', tenant_id=t.id) }}" class="hover:underline">{{ t.business_name }}</a>
                             </td>
-                            <td class="px-4 py-3 text-right font-outfit font-bold text-emerald-400">৳{{ "%.2f"|format(t.revenue) }}</td>
+                            <td class="px-5 py-3 text-right font-bold tabular-nums text-emerald-700">৳{{ "%.2f"|format(t.revenue) }}</td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="2" class="px-4 py-5 text-center text-slate-500">No revenue yet.</td></tr>
+                        <tr><td colspan="2" class="px-5 py-6 text-center text-slate-500">No revenue yet.</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>
@@ -187,23 +288,72 @@
     const labels = revenueData.map(r => r.day);
     const values = revenueData.map(r => parseFloat(r.revenue));
 
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, 240);
+    grad.addColorStop(0, 'rgba(4, 120, 87, 0.22)');
+    grad.addColorStop(1, 'rgba(4, 120, 87, 0.01)');
+
     new Chart(canvas, {
-        type: 'bar',
+        type: 'line',
         data: {
             labels: labels,
             datasets: [{
                 label: 'Revenue (BDT)',
                 data: values,
-                backgroundColor: '#047857',
-                borderRadius: 4,
+                borderColor: '#047857',
+                backgroundColor: grad,
+                borderWidth: 2.25,
+                fill: true,
+                tension: 0.3,
+                pointRadius: 3,
+                pointBackgroundColor: '#047857',
+                pointHoverRadius: 5,
             }],
         },
         options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
             scales: {
-                x: { ticks: { color: '#4b5563' }, grid: { color: '#e5e7eb' } },
-                y: { ticks: { color: '#4b5563' }, grid: { color: '#e5e7eb' } },
+                x: {
+                    ticks: { color: '#6b7280', font: { size: 11 } },
+                    grid: { display: false },
+                },
+                y: {
+                    beginAtZero: true,
+                    suggestedMax: 10,
+                    ticks: {
+                        color: '#6b7280',
+                        font: { size: 11 },
+                        callback: (val) => '৳' + val,
+                    },
+                    grid: { color: '#f1f5f9' },
+                    border: { display: false },
+                },
             },
-            plugins: { legend: { labels: { color: '#374151' } } },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                    align: 'end',
+                    labels: {
+                        color: '#374151',
+                        usePointStyle: true,
+                        pointStyle: 'circle',
+                        font: { size: 11, family: 'Hind Siliguri, Inter, sans-serif' },
+                    },
+                },
+                tooltip: {
+                    backgroundColor: '#0f172a',
+                    titleColor: '#f8fafc',
+                    bodyColor: '#e2e8f0',
+                    padding: 10,
+                    cornerRadius: 8,
+                    callbacks: {
+                        label: (item) => ' Revenue: ৳' + Number(item.parsed.y || 0).toFixed(2),
+                    },
+                },
+            },
         },
     });
 })();

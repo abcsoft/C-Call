@@ -1,54 +1,91 @@
 <!-- Today's Orders -->
-<div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-5 relative overflow-hidden group">
-    <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Today's Orders</p>
-    <div class="flex items-baseline gap-1 mt-3">
-        <span class="text-3xl font-outfit font-extrabold text-slate-100 tracking-tight">{{ stats.today_orders }}</span>
+<div class="cc-kpi-card">
+    <div class="cc-kpi-top">
+        <div>
+            <p class="cc-kpi-label">Today's Orders</p>
+            <div class="cc-kpi-value">{{ stats.today_orders }}</div>
+        </div>
+        <div class="cc-icon-box cc-icon-slate">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
+            </svg>
+        </div>
     </div>
-    <div class="text-[10px] text-slate-500 mt-2 font-medium flex flex-wrap gap-2">
-        <span class="text-emerald-400 font-bold">{{ stats.today_confirmed }} Conf</span>
-        <span class="text-rose-400 font-bold">{{ stats.today_cancelled }} Can</span>
-        <span class="text-amber-400 font-bold">{{ stats.today_no_answer }} N/A</span>
+    <div class="cc-kpi-foot">
+        <span class="cc-pill cc-pill-green">{{ stats.today_confirmed }} Conf</span>
+        <span class="cc-pill cc-pill-red">{{ stats.today_cancelled }} Can</span>
+        <span class="cc-pill cc-pill-amber">{{ stats.today_no_answer }} N/A</span>
     </div>
 </div>
 
 <!-- Wallet Balance -->
-<a href="{{ url_for('customer.wallet_panel') }}" class="bg-slate-900/60 border border-slate-800/80 hover:border-indigo-500/50 backdrop-blur-md rounded-2xl p-5 relative overflow-hidden group block transition-all">
-    <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Wallet Balance</p>
-    <div class="flex items-baseline gap-1 mt-3">
-        <span class="text-3xl font-outfit font-extrabold text-slate-100 tracking-tight">৳{{ "%.2f"|format(balance) }}</span>
+<a href="{{ url_for('customer.wallet_panel') }}" class="cc-kpi-card">
+    <div class="cc-kpi-top">
+        <div>
+            <p class="cc-kpi-label">Wallet Balance</p>
+            <div class="cc-kpi-value">৳{{ "%.2f"|format(balance) }}</div>
+        </div>
+        <div class="cc-icon-box {{ 'cc-icon-rose' if low_balance else 'cc-icon-emerald' }}">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path>
+            </svg>
+        </div>
     </div>
-    {% if low_balance %}
-        <p class="text-[10px] text-rose-400 mt-2 font-semibold flex items-center gap-1">
-            <span class="inline-block w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping"></span>
-            Low Balance warning!
-        </p>
-    {% else %}
-        <p class="text-[10px] text-slate-500 mt-2 font-medium">Click to recharge</p>
-    {% endif %}
+    <div class="cc-kpi-foot">
+        {% if low_balance %}
+            <span class="cc-pill cc-pill-red">Low Balance warning!</span>
+            <span class="font-semibold text-emerald-700">Recharge &rarr;</span>
+        {% else %}
+            <span class="cc-pill cc-pill-green">Prepaid Active</span>
+            <span class="font-semibold text-slate-600">Top up &rarr;</span>
+        {% endif %}
+    </div>
 </a>
 
 <!-- Success Rate (7-day) -->
-<div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-5 relative overflow-hidden group">
-    <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Success Rate (7d)</p>
-    <div class="flex items-baseline gap-1 mt-3">
-        {% set rate = stats.success_rate_7d %}
-        {% if rate >= 70.0 %}
-            <span class="text-3xl font-outfit font-extrabold text-emerald-400 tracking-tight">{{ rate }}%</span>
-        {% elif rate >= 50.0 %}
-            <span class="text-3xl font-outfit font-extrabold text-amber-400 tracking-tight">{{ rate }}%</span>
-        {% else %}
-            <span class="text-3xl font-outfit font-extrabold text-rose-400 tracking-tight">{{ rate }}%</span>
-        {% endif %}
+{% set rate = stats.success_rate_7d %}
+<div class="cc-kpi-card">
+    <div class="cc-kpi-top">
+        <div>
+            <p class="cc-kpi-label">Success Rate (7d)</p>
+            <div class="cc-kpi-value" style="color: {{ '#047857' if rate >= 70.0 else ('#b45309' if rate >= 50.0 else '#b91c1c') }};">
+                {{ rate }}%
+            </div>
+        </div>
+        <div class="cc-icon-box {{ 'cc-icon-emerald' if rate >= 70.0 else ('cc-icon-amber' if rate >= 50.0 else 'cc-icon-rose') }}">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+        </div>
     </div>
-    <p class="text-[10px] text-slate-500 mt-2 font-medium">Confirmed / Total last 7 days</p>
+    <div>
+        <div class="cc-progress-track">
+            <div class="cc-progress-fill" style="width: {{ [rate, 100]|min }}%; background-color: {{ '#047857' if rate >= 70.0 else ('#d97706' if rate >= 50.0 else '#dc2626') }};"></div>
+        </div>
+        <div class="cc-kpi-foot" style="border-top:none;margin-top:0.35rem;padding-top:0;">
+            <span>Confirmed / Total last 7 days</span>
+        </div>
+    </div>
 </div>
 
 <!-- Calls Today -->
-<div class="bg-slate-900/60 border border-slate-800/80 backdrop-blur-md rounded-2xl p-5 relative overflow-hidden group">
-    <p class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Calls Today</p>
-    <div class="flex items-baseline gap-1 mt-3">
-        <span class="text-3xl font-outfit font-extrabold text-slate-100 tracking-tight">{{ stats.calls_today }}</span>
-        <span class="text-xs text-slate-400 font-semibold ml-1">calls</span>
+<div class="cc-kpi-card">
+    <div class="cc-kpi-top">
+        <div>
+            <p class="cc-kpi-label">Calls Today</p>
+            <div class="cc-kpi-value">
+                {{ stats.calls_today }}
+                <span class="text-sm font-medium text-slate-500 ml-1">calls</span>
+            </div>
+        </div>
+        <div class="cc-icon-box cc-icon-emerald">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.94.725l.548 2.2a1 1 0 01-.321.988l-1.305.98a10.582 10.582 0 004.872 4.872l.98-1.305a1 1 0 01.988-.321l2.2.548a1 1 0 01.725.94V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"></path>
+            </svg>
+        </div>
     </div>
-    <p class="text-[10px] text-slate-500 mt-2 font-medium">{{ stats.minutes_today }} mins talk duration</p>
+    <div class="cc-kpi-foot">
+        <span>{{ stats.minutes_today }} mins talk duration</span>
+        <span class="cc-pill cc-pill-slate">Live SIP</span>
+    </div>
 </div>
