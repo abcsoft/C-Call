@@ -124,9 +124,9 @@
     </div>
 
     <!-- Main Workspace Split: Quick Call Composer + Analytics Overview -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+    <div class="cc-split-grid">
         <!-- Quick Call Composer (5 cols) -->
-        <div class="lg:col-span-5 cc-panel flex flex-col">
+        <div class="cc-panel flex flex-col">
             <div class="cc-panel-header cursor-pointer select-none" @click="quickCallOpen = !quickCallOpen">
                 <div class="flex items-center gap-2.5">
                     <div class="cc-icon-box cc-icon-emerald">
@@ -196,7 +196,7 @@
         </div>
 
         <!-- 7-Day Analytics Overview (7 cols) -->
-        <div class="lg:col-span-7 cc-panel flex flex-col justify-between">
+        <div class="cc-panel flex flex-col justify-between">
             <div class="cc-panel-header">
                 <div>
                     <h3 class="font-bold text-base text-slate-900">Analytics Overview</h3>
